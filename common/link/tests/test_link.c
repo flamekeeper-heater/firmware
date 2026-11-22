@@ -192,6 +192,11 @@ static void f_poll(void *c, const link_desired *w, link_status *o) {
   o->state = 1;
   o->supply = 1230;
 }
+static int f_new_plug(void *c) {
+  (*(int *) c)++;
+  return LINK_OK;
+}
+
 static int f_describe(void *c, uint8_t index, link_param_desc *o) {
   (void) c;
   if (index != 0)
@@ -358,8 +363,23 @@ static void test_server(void) {
   CHECK_EQ(link_reply_result(r), LINK_NOT_SUPPORTED);
   roundtrip(&m, LINK_OP_PARAM_GET, set, 2, r);
   CHECK_EQ(link_reply_result(r), LINK_NOT_SUPPORTED);
+  roundtrip(&m, LINK_OP_GLOW_NEW_PLUG, NULL, 0, r);
+  CHECK_EQ(link_reply_result(r), LINK_NOT_SUPPORTED);
   roundtrip(&m, 0x77, NULL, 0, r);
   CHECK_EQ(link_reply_result(r), LINK_UNKNOWN_OP);
+
+  /* A new glow plug fitted: no payload. */
+  int new_plugs = 0;
+  link_mcu np;
+  memset(&np, 0, sizeof(np));
+  np.ctx = &new_plugs;
+  np.glow_new_plug = f_new_plug;
+  roundtrip(&np, LINK_OP_GLOW_NEW_PLUG, NULL, 0, r);
+  CHECK_EQ(link_reply_result(r), LINK_OK);
+  CHECK_EQ(new_plugs, 1);
+  roundtrip(&np, LINK_OP_GLOW_NEW_PLUG, set, 1, r);
+  CHECK_EQ(link_reply_result(r), LINK_BAD_LENGTH);
+  CHECK_EQ(new_plugs, 1);
 
   /* With the major checked: no POLL before a HELLO, nor after one of an unknown major. */
   uint8_t client_major = 0;

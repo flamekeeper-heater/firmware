@@ -92,7 +92,11 @@ class FakeHeater : public fk::Heater {
   }
   void set_room_temperature(float c) override { room = c; }
   void set_altitude(float m) override { altitude = m; }
-  int fuel_trim = 0, fan_trim = 0, trims_calls = 0, fault_resets = 0;
+  int fuel_trim = 0, fan_trim = 0, trims_calls = 0, fault_resets = 0, plugs_fitted = 0;
+  fk::Outcome glow_plug_fitted() override {
+    plugs_fitted++;
+    return fk::Outcome::ok();
+  }
   void set_trims(int fuel, int fan) override {
     fuel_trim = fuel;
     fan_trim = fan;

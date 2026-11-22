@@ -833,6 +833,21 @@ static void glow_start(Rig &r, float ohm) {
   r.step(5 * SEC);
 }
 
+static void test_glow_plug_type_warning() {
+  Rig r;
+  // The heater started with a plug-type warning: alert 12, with its text.
+  r.h.st.plug_warning = true;
+  r.step(2 * SEC);
+  CHECK(r.c.status().alerts & fk::alert::GLOW_PLUG_TYPE);
+  CHECK(r.alerted(12));
+  // A new plug fitted (after checking the setting): the alert goes.
+  r.h.st.plug_warning = false;
+  CHECK(r.a.glow_new_plug().accepted());
+  r.step(2 * SEC);
+  CHECK(!(r.c.status().alerts & fk::alert::GLOW_PLUG_TYPE));
+  CHECK_EQ(r.h.plugs_fitted, 1);
+}
+
 static void test_glow_health() {
   Rig r;
   r.set(fk::M_GLOW_DRIFT, 30);
@@ -851,9 +866,10 @@ static void test_glow_health() {
   CHECK(r.alerted(8));
   CHECK_EQ(m.glow_n, 6);
   CHECK(m.glow_readings[5] >= 1440 && m.glow_readings[5] <= 1460);
-  // A new plug: a new baseline, the alert gone.
+  // A new plug: a new baseline, the alert gone, and the heater told (it forgets the plug's type).
   CHECK(r.a.glow_new_plug().accepted());
   CHECK(!(r.c.status().alerts & fk::alert::GLOW_DRIFT));
+  CHECK_EQ(r.h.plugs_fitted, 1);
   CHECK_EQ(r.a.maintenance().glow_n, 0);
   CHECK_EQ(r.a.maintenance().glow_baseline_mohm, 0xFFFF);
   glow_start(r, 1.2f);
@@ -1074,6 +1090,7 @@ int main() {
   test_bluetooth_room();
   test_protocol();
   test_low_battery();
+  test_glow_plug_type_warning();
   test_glow_health();
   test_burnoff();
   test_co();

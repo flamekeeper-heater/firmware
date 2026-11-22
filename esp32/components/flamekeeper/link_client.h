@@ -56,6 +56,7 @@ class LinkClient : public Heater {
   void set_apply_events(bool on) { this->apply_events_ = on; }
   // Clears a latched fault on the MCU (a user reset).
   Outcome reset_fault() override;
+  Outcome glow_plug_fitted() override;
 
   // --- Heater ---
   uint32_t capabilities() const override;

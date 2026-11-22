@@ -330,6 +330,7 @@ void LinkClient::read_status(HeaterStatus &out) const {
   for (const Param &p : this->params_)
     staged += (p.staged_here || (p.value.flags & LINK_PARAM_STAGED)) ? 1 : 0;
   out.params_pending = staged;
+  out.plug_warning = this->have_status_ && (this->status_.flags & LINK_STATUS_PLUG_WARNING) != 0;
   out.heat_exchanger_c = fixed(s.heat_exchanger, LINK_UNKNOWN_I16, 10.0f);
   out.supply_v = fixed(s.supply, LINK_UNKNOWN_U16, 100.0f);
   out.fan_rpm = fixed(s.fan_rpm, LINK_UNKNOWN_U16, 1.0f);
@@ -423,6 +424,13 @@ Outcome LinkClient::reset_fault() {
   if (!(this->status_.flags & LINK_STATUS_FAULT_LATCHED))
     return Outcome::refuse(Result::REFUSED, "the heater has no latched fault to reset");
   return this->queue_(LINK_OP_FAULT_RESET, nullptr, 0);
+}
+
+Outcome LinkClient::glow_plug_fitted() {
+  if (!this->up_)
+    return Outcome::refuse(Result::NO_REPLY, "the heater does not answer");
+  // An MCU without a plug check answers "not supported": nothing to forget, and nothing to show.
+  return this->queue_(LINK_OP_GLOW_NEW_PLUG, nullptr, 0);
 }
 
 Outcome LinkClient::reset_parameters() {

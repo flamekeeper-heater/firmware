@@ -142,6 +142,7 @@ struct HeaterStatus {
   uint8_t panel_fault{0};  // the E-number the heater's own panel would show
   uint16_t prime_left_s{0};
   uint8_t params_pending{0};
+  bool plug_warning{false};  // the run started although the glow plug may not be the type set
   float update_progress{NAN};  // %, heater firmware update
 
   // measurements
@@ -297,6 +298,8 @@ class Heater {
     (void) fan_rpm;
   }
   // Clears a latched fault that needs a user reset, if its cause is gone.
+  // A new glow plug is fitted: a heater that checks the plug's type forgets the old one.
+  virtual Outcome glow_plug_fitted() { return Outcome::ok(); }
   virtual Outcome reset_fault() { return Outcome::refuse(Result::NOT_SUPPORTED, "this heater has no fault reset"); }
 
   // Parameters: an empty table by default.

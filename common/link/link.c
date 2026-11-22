@@ -449,6 +449,10 @@ size_t link_server_handle(const link_mcu *m, const uint8_t *req, uint8_t *reply)
       NEED(0);
       result = HAVE(fault_reset) ? m->fault_reset(m->ctx) : LINK_NOT_SUPPORTED;
       break;
+    case LINK_OP_GLOW_NEW_PLUG:
+      NEED(0);
+      result = HAVE(glow_new_plug) ? m->glow_new_plug(m->ctx) : LINK_NOT_SUPPORTED;
+      break;
     case LINK_OP_UPDATE_PREPARE: {
       NEED(0);
       uint8_t method = 0;

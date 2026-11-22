@@ -219,6 +219,9 @@ static void test_heat_cycle() {
   CHECK(b.s.pump.fault == PUMP_FAULT_NONE);
   // Started two minutes after power-on: not cold, nothing remembered, a 12 V supply: a warning.
   CHECK(b.s.plug_judged && b.s.plug_refused == 0 && b.s.plug_warning);
+  esphome::flamekeeper::HeaterStatus hs;
+  b.client.read_status(hs);
+  CHECK(hs.plug_warning);  // the flag reached the ESP32
   CHECK(b.s.pump.strokes > 100);  // real strokes through the run
   CHECK(b.stroke_ms_total == b.s.pump.strokes * 38);
   CHECK(b.s.glow.fault == GLOW_FAULT_NONE);
@@ -335,6 +338,10 @@ static void test_plug_cold_check() {
   CHECK(safety_plug_save_pending(&b.s));
   CHECK(!b.s.plug_warning);
   CHECK(b.s.plug.last_r_mohm > 150 && b.s.plug.last_r_mohm < 400);  // the model's 0.2 Ohm plug
+  // "New glow plug fitted" from the ESP32: the remembered check is gone.
+  CHECK(b.client.glow_plug_fitted().accepted());
+  b.run(1 * SEC);
+  CHECK(b.s.plug.rec.verified_type == 0);
 }
 
 int main() {

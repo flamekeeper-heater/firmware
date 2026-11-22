@@ -40,6 +40,8 @@ static void fill_status(safety *s, link_status *o) {
     o->flags |= LINK_STATUS_NO_STARTS;
   if (s->params.staged_mask)
     o->flags |= LINK_STATUS_PARAMS_STAGED;
+  if (s->plug_warning)
+    o->flags |= LINK_STATUS_PLUG_WARNING;
   o->start_ack = s->gate.last;
   o->start_result = s->start_result;
   o->power = b->running_power;
@@ -158,6 +160,13 @@ static int on_param_defaults(void *ctx) {
   return LINK_OK;
 }
 
+static int on_glow_new_plug(void *ctx) {
+  safety *s = (safety *) ctx;
+  plug_new_plug(&s->plug);
+  s->plug_warning = 0;
+  return LINK_OK;
+}
+
 static int on_param_help(void *ctx, uint16_t id, const char **text) {
   (void) ctx;
   const param_def *d = params_find(id);
@@ -246,6 +255,7 @@ void safety_init(safety *s, const burn_params *p, const glow_params *gp, const f
   s->mcu.param_discard = on_param_discard;
   s->mcu.param_defaults = on_param_defaults;
   s->mcu.param_help = on_param_help;
+  s->mcu.glow_new_plug = on_glow_new_plug;
   s->mcu.client_major = &s->client_major;
 }
 

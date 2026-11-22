@@ -56,6 +56,7 @@ static const uint16_t GLOW_DRIFT = 1u << 8;
 static const uint16_t BURNOFF_DUE = 1u << 9;
 static const uint16_t CO_ALARM = 1u << 10;
 static const uint16_t CO_SENSOR = 1u << 11;
+static const uint16_t GLOW_PLUG_TYPE = 1u << 12;  // a run started with a plug-type warning
 }  // namespace alert
 
 namespace automatic {

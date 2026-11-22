@@ -703,6 +703,10 @@ void Automation::step_battery_(uint32_t now, const Status &s) {
 // ---------------------------------------------------------------- glow plug
 
 void Automation::step_glow_(uint32_t now, const Status &s) {
+  // The heater started with a plug-type warning (a 12 V supply: it could not overheat the plug).
+  if (s.answering && s.plug_warning)
+    this->set_alert_(alert::GLOW_PLUG_TYPE, true,
+                     "the glow plug may not be the type set: check the plug type setting, then New glow plug fitted");
   const bool on = s.answering && s.state == HeaterState::STARTING && std::isfinite(s.glow_v) &&
                   std::isfinite(s.glow_a) && s.glow_v > 4.0f && s.glow_a > 2.0f;
   if (on) {
@@ -773,6 +777,10 @@ void Automation::glow_reading_(uint16_t mohm) {
 }
 
 Outcome Automation::glow_new_plug() {
+  // The heater forgets the old plug's type check too (a safety MCU that has one).
+  if (Heater *h = this->c_.heater())
+    h->glow_plug_fitted();
+  this->set_alert_(alert::GLOW_PLUG_TYPE, false, "");
   this->maint_.glow_baseline_mohm = 0xFFFF;
   this->maint_.glow_starts = 0;
   this->maint_.glow_n = 0;

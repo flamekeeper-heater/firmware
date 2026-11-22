@@ -77,6 +77,7 @@ high byte first. `seq` (1-255) is echoed in the reply, and result codes are the 
 | `03` DETAIL | | slower measurements: stage temperatures, glow and fan voltage and current, pump current, CO |
 | `20`-`26` | parameters: describe, get, set, apply, discard, defaults, help | |
 | `30` FAULT_RESET | | clears a latched fault once its cause is gone |
+| `31` GLOW_NEW_PLUG | | a new glow plug is fitted: its remembered type check goes (Status flag bit 6 reports a start that ran with a plug-type warning) |
 | `40` UPDATE_PREPARE | | agrees to an update; refuses starts until reset |
 
 **Timing.** The ESP32 polls every 100 ms; the MCU replies within 20 ms. Three missed replies and the

@@ -39,6 +39,7 @@ enum {
   LINK_OP_PARAM_DEFAULTS = 0x25,
   LINK_OP_PARAM_HELP = 0x26,
   LINK_OP_FAULT_RESET = 0x30,
+  LINK_OP_GLOW_NEW_PLUG = 0x31, /* a new glow plug is fitted: its remembered type check goes */
   LINK_OP_UPDATE_PREPARE = 0x40,
 };
 
@@ -158,6 +159,7 @@ typedef struct {
 #define LINK_STATUS_DEADMAN_STOP (1u << 3)
 #define LINK_STATUS_PARAMS_STAGED (1u << 4)
 #define LINK_STATUS_NO_STARTS (1u << 5)
+#define LINK_STATUS_PLUG_WARNING (1u << 6) /* this run started with a glow-plug-type warning */
 
 typedef struct {
   uint8_t state, detail, fault, fault_detail, flags;
@@ -245,6 +247,7 @@ typedef struct {
    * sent); "" when there is none. */
   int (*param_help)(void *ctx, uint16_t id, const char **text);
   int (*fault_reset)(void *ctx);
+  int (*glow_new_plug)(void *ctx);
   int (*update_prepare)(void *ctx, uint8_t *method);
   /* Where the server keeps the ESP32's link major from its last HELLO (0 = none yet). With it set,
    * POLL is refused with LINK_NOT_SUPPORTED until a HELLO of this major (DESIGN.md);
