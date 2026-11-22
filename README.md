@@ -102,6 +102,7 @@ Needs `arm-none-eabi-gcc` (no vendor HAL or C library). It has not run on a chip
 
 ```bash
 stm32/build.sh   # stm32/build/safety.elf and .bin, and the flash and RAM use
+python3 -I stm32/tools/check_registers.py --svd STM32G030.svd   # the register map against ST's SVD
 ```
 
 ## Tests
