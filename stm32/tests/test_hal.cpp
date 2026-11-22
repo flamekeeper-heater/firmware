@@ -18,14 +18,14 @@ static int checks = 0, failures = 0;
     }                                                     \
   } while (0)
 
-// The bits match the updater's.
+// The bits match the map both sides share (common/g030/g030_map.h).
 static void test_optr_bits() {
-  CHECK(FLASH_OPTR_IWDG_SW == g030::OPTR_IWDG_SW);
-  CHECK(FLASH_OPTR_IWDG_STOP == g030::OPTR_IWDG_STOP);
-  CHECK(FLASH_OPTR_IWDG_STDBY == g030::OPTR_IWDG_STDBY);
-  CHECK(FLASH_OPTR_NBOOT_SEL == g030::OPTR_NBOOT_SEL);
-  CHECK(FLASH_OPTR_NBOOT1 == g030::OPTR_NBOOT1);
-  CHECK(FLASH_OPTR_NBOOT0 == g030::OPTR_NBOOT0);
+  CHECK(FLASH_OPTR_IWDG_SW == G030_OPTR_IWDG_SW);
+  CHECK(FLASH_OPTR_IWDG_STOP == G030_OPTR_IWDG_STOP);
+  CHECK(FLASH_OPTR_IWDG_STDBY == G030_OPTR_IWDG_STDBY);
+  CHECK(FLASH_OPTR_NBOOT_SEL == G030_OPTR_NBOOT_SEL);
+  CHECK(FLASH_OPTR_NBOOT1 == G030_OPTR_NBOOT1);
+  CHECK(FLASH_OPTR_NBOOT0 == G030_OPTR_NBOOT0);
 }
 
 // The MCU accepts exactly what the updater would leave alone, over every combination of the six
