@@ -791,6 +791,16 @@ void regressions() {
               {426291, U_FAULT_RESET, 0, 0},
               {449200, U_HEAT, 0, 0}},
              483420 + 10 * SEC);
+  // An MCU reset with a hot heat exchanger: the saved parameters were loaded into the table but not
+  // handed to the sequencer (it was already cooling down, so not "off"), which then ran the
+  // cooldown, and every later start, on the defaults (seed 213, moved earlier).
+  regression("params_after_hot_reset",
+             {{300 * SEC, U_PARAM, 48, 1055619670},
+              {310 * SEC, U_POWER, 92, 0},
+              {320 * SEC, U_APPLY, 1, 0},
+              {330 * SEC, U_HEAT, 0, 0},
+              {650 * SEC, M_RESET, 6, 0}},
+             660 * SEC);
 }
 
 }  // namespace
