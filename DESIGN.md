@@ -159,6 +159,13 @@ out (heartbeat modes, the glow enable, single short pump pulses, the latch reset
 The heartbeat, which enables both high sides, otherwise runs from the fan check through burn-off
 and while priming.
 
+`stm32/core/pump.*` turns the fuel rate into strokes, one millisecond at a time: 38 ms strokes at a
+12 V equivalent duty whatever the supply, at most 6 Hz (10 Hz priming), the first only once the
+heartbeat has run 20 ms with the high side reporting no fault. It stops the pump and the heartbeat
+for the hardware overcurrent cut, current still flowing 10 ms after a stroke or appearing between
+strokes, and a stroke with no current rise (an open coil). A high-side fault gets one heartbeat
+restart per run; a second locks out.
+
 `stm32/core/safety.*` joins them all to the link: the start-number rule, the dead-man, the status and
 the update handshake.
 

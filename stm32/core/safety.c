@@ -63,8 +63,11 @@ static void on_poll(void *ctx, const link_desired *want, link_status *out) {
     else if (want->mode == LINK_MODE_HEAT &&
              free_a2s * 100u < s->glow.p.bucket_cap_a2s * SAFETY_GLOW_START_FREE_PERCENT)
       s->start_result = LINK_BUSY; /* the glow plug's stage is still resting */
-    else
+    else {
       s->start_result = (uint8_t) burn_start(b, want->mode, want->power, s->now, &s->in);
+      if (s->start_result == LINK_OK)
+        pump_new_run(&s->pump); /* a new run: the high side's one re-arm again */
+    }
   }
   if (want->mode == LINK_MODE_OFF) {
     if (burn_active(b))
@@ -86,14 +89,18 @@ static int on_fault_reset(void *ctx) {
   burn_inputs in = s->in;
   in.glow_fault = 0;
   in.fan_fault = 0;
+  in.pump_fault = 0;
   int r = burn_fault_reset(&s->burn, &in);
   if (r == LINK_OK) {
     if (s->glow.fault != GLOW_FAULT_NONE)
       glow_init(&s->glow, &s->glow.p, s->now);
     if (s->fan.fault != FAN_FAULT_NONE)
       fan_init(&s->fan, &s->fan.p, s->now);
+    if (s->pump.fault != PUMP_FAULT_NONE)
+      pump_init(&s->pump, &s->pump.p);
     s->in.glow_fault = 0;
     s->in.fan_fault = 0;
+    s->in.pump_fault = 0;
   }
   return r;
 }
@@ -112,8 +119,8 @@ static int on_update_prepare(void *ctx, uint8_t *method) {
 }
 
 void safety_init(safety *s, const burn_params *p, const glow_params *gp, const fan_params *fp,
-                 const checks_params *cp, uint32_t now, const burn_inputs *in, uint8_t reset_reason,
-                 uint8_t checks) {
+                 const checks_params *cp, const pump_params *pp, uint32_t now, const burn_inputs *in,
+                 uint8_t reset_reason, uint8_t checks) {
   memset(s, 0, sizeof(*s));
   s->now = now;
   s->in = *in;
@@ -123,6 +130,7 @@ void safety_init(safety *s, const burn_params *p, const glow_params *gp, const f
   glow_init(&s->glow, gp, now);
   fan_init(&s->fan, fp, now);
   checks_init(&s->chk, cp, now);
+  pump_init(&s->pump, pp);
   link_parser_init(&s->parser, LINK_REQUEST);
   link_start_gate_init(&s->gate);
   link_deadman_init(&s->deadman);
@@ -152,6 +160,7 @@ void safety_step(safety *s, uint32_t now, const burn_inputs *in) {
   s->in.glow_fault = (uint8_t) (in->glow_fault || s->glow.fault != GLOW_FAULT_NONE);
   s->in.fan_fault = in->fan_fault ? in->fan_fault : s->fan.fault;
   s->in.precheck = s->precheck_result;
+  s->in.pump_fault = in->pump_fault ? in->pump_fault : s->pump.fault;
   if (burn_fuel_steps(&s->burn) && s->burn.step != BURN_STEP_PRIMING) {
     s->run_ms += dt;
     s->run_time_s += s->run_ms / 1000u;
@@ -182,7 +191,7 @@ static int heartbeat_wanted(const burn *b) {
   }
 }
 
-checks_out safety_ms(safety *s, uint32_t now, const checks_obs *o) {
+safety_io safety_ms(safety *s, uint32_t now, const checks_obs *o, pump_meas *pm) {
   checks *c = &s->chk;
   if (!s->power_up_started) {
     s->power_up_started = 1;
@@ -209,9 +218,19 @@ checks_out safety_ms(safety *s, uint32_t now, const checks_obs *o) {
                          : (c->failed & CHECK_FAILS_PUMP) != 0 ? BURN_PRECHECK_FAILED_PUMP
                          : (c->failed & CHECK_FAILS_GLOW) != 0 ? BURN_PRECHECK_FAILED_GLOW
                                                                : BURN_PRECHECK_FAILED;
-  if (!checks_busy(c) && !was_power_up && !was_pre_start)
-    out.heartbeat = heartbeat_wanted(&s->burn) ? CHECKS_HB_RUNNING : CHECKS_HB_STOPPED;
-  return out;
+  safety_io io = {out.heartbeat, out.glow_en, out.latch_reset, out.pump_pulse_us, 0};
+  if (!checks_busy(c) && !was_power_up && !was_pre_start) {
+    /* The pump strokes, and the heartbeat the burn needs unless the pump holds it off. */
+    pm->hb_running_ms = s->hb_running_ms;
+    pump_out po = pump_ms(&s->pump, now, s->burn.out.pump_cHz, s->burn.step == BURN_STEP_PRIMING, pm);
+    io.pump_duty = po.duty;
+    io.heartbeat = heartbeat_wanted(&s->burn) && !po.hb_hold_off ? CHECKS_HB_RUNNING : CHECKS_HB_STOPPED;
+  }
+  if (io.heartbeat == CHECKS_HB_RUNNING)
+    s->hb_running_ms = (uint16_t) (s->hb_running_ms < 60000u ? s->hb_running_ms + 1u : 60000u);
+  else
+    s->hb_running_ms = 0;
+  return io;
 }
 
 uint16_t safety_fan_step(safety *s, uint32_t now, const fan_meas *m) {

@@ -210,7 +210,7 @@ void burn_set_power(burn *b, uint8_t power) { b->power = power > 100 ? 100 : pow
 int burn_fault_reset(burn *b, const burn_inputs *in) {
   if (!b->fault_latched)
     return R_REFUSED;
-  if (in->overheat_latch || in->co_alarm || in->glow_fault || in->fan_fault)
+  if (in->overheat_latch || in->co_alarm || in->glow_fault || in->fan_fault || in->pump_fault)
     return R_REFUSED; /* the cause is still there */
   b->fault_latched = 0;
   b->fault = BURN_FAULT_NONE;
@@ -288,6 +288,17 @@ static void checks(burn *b, uint32_t now, const burn_inputs *in) {
       b->fault = BURN_FAULT_FAN, b->why = why, enter(b, BURN_STEP_OFF, now);
     else
       fault_stop(b, BURN_FAULT_FAN, why, now);
+    return;
+  }
+  if (in->pump_fault && !(b->fault == BURN_FAULT_PUMP && b->fault_latched)) {
+    /* The pump stage stopped itself (and the heartbeat): burn off and cool, no restart. */
+    b->fault_latched = 1;
+    if (b->step == BURN_STEP_OFF)
+      b->fault = BURN_FAULT_PUMP, b->why = BURN_WHY_PUMP_STAGE;
+    else if (b->step == BURN_STEP_PRIMING)
+      b->fault = BURN_FAULT_PUMP, b->why = BURN_WHY_PUMP_STAGE, enter(b, BURN_STEP_OFF, now);
+    else
+      fault_stop(b, BURN_FAULT_PUMP, BURN_WHY_PUMP_STAGE, now);
     return;
   }
   if (in->co_alarm && !(b->fault == BURN_FAULT_CO && b->fault_latched)) {

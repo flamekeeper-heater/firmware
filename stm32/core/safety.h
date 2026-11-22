@@ -12,6 +12,7 @@
 #include "checks.h"
 #include "fan.h"
 #include "glow.h"
+#include "pump.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,6 +35,8 @@ typedef struct {
   glow glow;
   fan fan;
   checks chk;
+  pump pump;
+  uint16_t hb_running_ms; /* the heartbeat as last asked: running this long (0 = not) */
   uint8_t power_up_started;
   uint8_t precheck_started; /* the pre-start test of the current start has begun */
   uint8_t precheck_result;  /* BURN_PRECHECK_* for the sequencer */
@@ -57,8 +60,8 @@ typedef struct {
 
 /* reset_reason and checks come from the start-up code. */
 void safety_init(safety *s, const burn_params *p, const glow_params *gp, const fan_params *fp,
-                 const checks_params *cp, uint32_t now, const burn_inputs *in, uint8_t reset_reason,
-                 uint8_t checks);
+                 const checks_params *cp, const pump_params *pp, uint32_t now, const burn_inputs *in,
+                 uint8_t reset_reason, uint8_t checks);
 
 /* One received byte. When it completes a request, the reply is written to reply (LINK_FRAME_MAX
  * bytes) and its length returned; otherwise 0. */
@@ -77,11 +80,19 @@ glow_cmd safety_glow_period(safety *s, uint32_t now, glow_meas *m);
  * pass's fan readings. Call it every pass, after safety_step. */
 uint16_t safety_fan_step(safety *s, uint32_t now, const fan_meas *m);
 
+/* What the millisecond step asks of the hardware. */
+typedef struct {
+  uint8_t heartbeat;      /* CHECKS_HB_* */
+  uint8_t glow_en;        /* a self-test's glow enable (GLOW_EN = this OR the glow planner's) */
+  uint8_t latch_reset;    /* LATCH_RESET level */
+  uint16_t pump_pulse_us; /* a self-test's single pump pulse */
+  uint16_t pump_duty;     /* PUMP_CMD duty for this millisecond, permille (0 = low) */
+} safety_io;
+
 /* Every millisecond: the self-tests while one runs (the power-up test by itself after a reset,
- * the pre-start test when the sequencer asks), else the heartbeat the burn needs. The hardware
- * layer drives the heartbeat, LATCH_RESET and any test pump pulse from the result, and sets
- * GLOW_EN when either this or the glow planner asks for it. */
-checks_out safety_ms(safety *s, uint32_t now, const checks_obs *o);
+ * the pre-start test when the sequencer asks), else the pump strokes and the heartbeat the burn
+ * needs. o: the self-tests' readings; pm: the pump's (its hb_running_ms is filled in here). */
+safety_io safety_ms(safety *s, uint32_t now, const checks_obs *o, pump_meas *pm);
 
 /* A heat start waits while more than this share of the glow plug's heat budget is used (after any
  * reset it starts full and drains in 240 s). PROVISIONAL. */

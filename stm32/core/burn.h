@@ -80,6 +80,7 @@ enum {
   BURN_WHY_GLOW_STAGE = 14,     /* the glow planner stopped: stuck low side or repeated trips */
   BURN_WHY_FAN_STAGE = 15,      /* the fan's switch stuck on, or the fan turning against its command */
   BURN_WHY_SELF_TEST = 16,      /* the pre-start self-test failed: the board needs looking at */
+  BURN_WHY_PUMP_STAGE = 17,     /* overcurrent, current between strokes, open coil, high side */
 };
 
 typedef struct {
@@ -137,6 +138,7 @@ typedef struct {
   uint8_t glow_fault;      /* 1: the glow stage failed (low side stuck on, repeated trips) */
   uint8_t fan_fault;       /* the fan stage's fault (fan.h FAN_FAULT_*), 0 none */
   uint8_t precheck;        /* the pre-start self-test: BURN_PRECHECK_* */
+  uint8_t pump_fault;      /* the pump stage's fault (pump.h PUMP_FAULT_*), 0 none */
 } burn_inputs;
 
 enum {

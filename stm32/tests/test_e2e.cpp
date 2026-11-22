@@ -43,6 +43,8 @@ struct Bench : LinkTransport {
   int latch_armed = 0;
   uint16_t test_pulse = 0;
   int glow_en = 0;
+  double pump_i = 0;  // the pump coil's current, A (6 Ohm, 2 ms)
+  uint32_t stroke_ms_total = 0;
   int max_heartbeat_gap_in_burn = 0;
   std::deque<uint8_t> to_esp;
   LinkClient client{this};
@@ -57,8 +59,10 @@ struct Bench : LinkTransport {
     fan_params_default(&fp);
     checks_params cp;
     checks_params_default(&cp);
+    pump_params pp;
+    pump_params_default(&pp);
     burn_inputs in = inputs();
-    safety_init(&s, &p, &gp, &fp, &cp, now, &in, LINK_RESET_POWER_ON, 0);
+    safety_init(&s, &p, &gp, &fp, &cp, &pp, now, &in, LINK_RESET_POWER_ON, 0);
   }
   burn_inputs inputs() const {
     burn_inputs in;
@@ -70,6 +74,7 @@ struct Bench : LinkTransport {
     in.glow_fault = 0;
     in.fan_fault = 0;
     in.precheck = 0;
+    in.pump_fault = 0;
     return in;
   }
   // ESP32 -> MCU: the MCU answers each complete request at once (well inside its 20 ms).
@@ -118,7 +123,17 @@ struct Bench : LinkTransport {
     co.latch_armed = (uint8_t) latch_armed;
     co.pump_hs_ok = 1;
     co.hx_c10 = heater_model_hx(&m);
-    checks_out out = safety_ms(&s, t, &co);
+    pump_meas pm;
+    pm.vin_cv = 1260;
+    pm.i_ma = (uint16_t) (pump_i * 1000);
+    pm.overcurrent = 0;
+    pm.hs_ok = 1;
+    pm.hb_running_ms = 0;
+    safety_io out = safety_ms(&s, t, &co, &pm);
+    double v = (pump_on && out.pump_duty) ? out.pump_duty / 1000.0 * 12.6 : 0;
+    pump_i += (v / 6.0 - pump_i) * 0.393;
+    if (out.pump_duty)
+      stroke_ms_total++;
     hb_running_ms = out.heartbeat == CHECKS_HB_RUNNING ? hb_running_ms + 1 : 0;
     if (out.latch_reset)
       latch_armed = 1;
@@ -199,6 +214,9 @@ static void test_heat_cycle() {
   CHECK(b.s.power_up_failed == 0);
   CHECK(b.latch_armed);
   CHECK(b.max_heartbeat_gap_in_burn == 0);
+  CHECK(b.s.pump.fault == PUMP_FAULT_NONE);
+  CHECK(b.s.pump.strokes > 100);  // real strokes through the run
+  CHECK(b.stroke_ms_total == b.s.pump.strokes * 38);
   CHECK(b.s.glow.fault == GLOW_FAULT_NONE);
 }
 
@@ -240,8 +258,10 @@ static void test_mcu_reset_mid_run() {
   fan_params_default(&fp);
   checks_params cp;
   checks_params_default(&cp);
+  pump_params pp;
+  pump_params_default(&pp);
   burn_inputs in = b.inputs();
-  safety_init(&b.s, &p, &gp, &fp, &cp, b.now, &in, LINK_RESET_WATCHDOG, 0);
+  safety_init(&b.s, &p, &gp, &fp, &cp, &pp, b.now, &in, LINK_RESET_WATCHDOG, 0);
   b.latch_armed = 0;  // a reset leaves the latch tripped until the power-up test re-arms it
   CHECK(b.s.burn.step == BURN_STEP_COOLDOWN);
   CHECK(b.run_until_state(BURN_STATE_COOLING, 5 * SEC));

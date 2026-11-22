@@ -34,7 +34,7 @@ typedef struct {
   burn b;
   heater_model m;
   uint32_t now;
-  uint8_t latch, co, glow_fault, fan_fault;
+  uint8_t latch, co, glow_fault, fan_fault, pump_fault;
   uint8_t precheck; /* what the pre-start self-test reports (passes by default) */
   /* What the run did. */
   uint32_t glow_ms, glow_no_air_ms, pump_ms, max_glow_attempt_ms;
@@ -51,6 +51,7 @@ static burn_inputs inputs(const rig *r) {
   in.glow_fault = r->glow_fault;
   in.fan_fault = r->fan_fault;
   in.precheck = r->precheck;
+  in.pump_fault = r->pump_fault;
   return in;
 }
 
@@ -346,6 +347,23 @@ static void test_precheck(void) {
   CHECK_EQ(r3.pump_ms, 0);
 }
 
+static void test_pump_stage_fault(void) {
+  rig r;
+  rig_init(&r, 0, 10);
+  CHECK_EQ(start(&r, HEAT, 50), 0);
+  CHECK(run_until_step(&r, BURN_STEP_RUNNING, 5 * MIN));
+  r.pump_fault = 2; /* current between strokes: the low side conducts */
+  run(&r, TICK);
+  CHECK_EQ(r.b.fault, BURN_FAULT_PUMP);
+  CHECK_EQ(r.b.why, BURN_WHY_PUMP_STAGE);
+  CHECK_EQ(r.b.step, BURN_STEP_BURN_OFF);
+  CHECK_EQ(r.b.out.pump_cHz, 0);
+  CHECK(r.b.out.fan_rpm > 0); /* the fan still cools it */
+  r.pump_fault = 0;
+  CHECK(run_until_step(&r, BURN_STEP_OFF, 25 * MIN));
+  CHECK_EQ(start(&r, HEAT, 50), 0x2F); /* latched until a reset */
+}
+
 static void test_fan_stall(void) {
   rig r;
   rig_init(&r, 0, 10);
@@ -481,6 +499,7 @@ int main(void) {
   test_glow_stage_fault();
   test_fan_stage_faults();
   test_precheck();
+  test_pump_stage_fault();
   test_fan_stall();
   test_sensor_open();
   test_reset_while_hot();
