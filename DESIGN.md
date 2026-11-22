@@ -206,6 +206,16 @@ tree, the alternate functions, the DMA request for the heartbeat burst, the ADC 
 programming all need checking on the first board or a NUCLEO-G031K8. Not done yet: the pump's
 overcurrent watchdog (PMP-7) and the CO sensor.
 
+`stm32/bringup/` is the bring-up image (`build.sh bringup`): the production start-up, board layer
+and core, plus a text console on the link UART that sits between the board layer and the chip's
+UART read and watchdog refresh. It shows the raw and converted readings, the reset reason, the
+option bytes and flash pages, and runs bench actions: a fixed fan duty or speed, the heartbeat
+alone, a few pump strokes, one glow probe pulse, the pre-start self-test, runs of the sequencer
+through the link's POLL handler, and the watchdog tests. Each action is asked for explicitly and
+time-limited, and reaches the stages only through the core's bench requests (compiled in only with
+`SAFETY_BENCH`), which the core honours only while the burn is off and no self-test runs, through
+the same stage drivers and rules as a run; a glow request is one probe pulse, cleared by the core.
+
 `stm32/core/safety.*` joins them all to the link: the start-number rule, the dead-man, the status and
 the update handshake.
 

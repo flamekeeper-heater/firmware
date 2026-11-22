@@ -13,7 +13,11 @@ static void on_info(void *ctx, link_info *out) {
   out->param_count = (uint8_t) PARAM_COUNT;
   out->reset_reason = s->reset_reason;
   out->checks = s->checks;
+#ifdef SAFETY_BENCH
+  strncpy(out->text, "Flamekeeper bring-up 0.1.0", LINK_TEXT_MAX); /* not for a heater in use */
+#else
   strncpy(out->text, "Flamekeeper safety 0.1.0", LINK_TEXT_MAX);
+#endif
   out->text[LINK_TEXT_MAX] = 0;
 }
 
@@ -340,9 +344,17 @@ safety_io safety_ms(safety *s, uint32_t now, const checks_obs *o, pump_meas *pm)
   if (!checks_busy(c) && !was_power_up && !was_pre_start) {
     /* The pump strokes, and the heartbeat the burn needs unless the pump holds it off. */
     pm->hb_running_ms = s->hb_running_ms;
-    pump_out po = pump_ms(&s->pump, now, s->burn.out.pump_cHz, s->burn.step == BURN_STEP_PRIMING, pm);
+    uint16_t rate = s->burn.out.pump_cHz;
+    int hb = heartbeat_wanted(&s->burn);
+#ifdef SAFETY_BENCH
+    if (s->burn.step == BURN_STEP_OFF) {
+      rate = s->bench.pump_cHz;
+      hb = s->bench.heartbeat;
+    }
+#endif
+    pump_out po = pump_ms(&s->pump, now, rate, s->burn.step == BURN_STEP_PRIMING, pm);
     io.pump_duty = po.duty;
-    io.heartbeat = heartbeat_wanted(&s->burn) && !po.hb_hold_off ? CHECKS_HB_RUNNING : CHECKS_HB_STOPPED;
+    io.heartbeat = hb && !po.hb_hold_off ? CHECKS_HB_RUNNING : CHECKS_HB_STOPPED;
   }
   if (io.heartbeat == CHECKS_HB_RUNNING)
     s->hb_running_ms = (uint16_t) (s->hb_running_ms < 60000u ? s->hb_running_ms + 1u : 60000u);
@@ -352,6 +364,12 @@ safety_io safety_ms(safety *s, uint32_t now, const checks_obs *o, pump_meas *pm)
 }
 
 uint16_t safety_fan_step(safety *s, uint32_t now, const fan_meas *m) {
+#ifdef SAFETY_BENCH
+  if (s->burn.step == BURN_STEP_OFF && s->bench.fan_duty > 0)
+    return fan_step_open(&s->fan, now, s->bench.fan_duty, m);
+  if (s->burn.step == BURN_STEP_OFF)
+    return fan_step(&s->fan, now, s->bench.fan_rpm, m);
+#endif
   return fan_step(&s->fan, now, s->burn.out.fan_rpm, m);
 }
 
@@ -359,7 +377,18 @@ glow_cmd safety_glow_period(safety *s, uint32_t now, glow_meas *m) {
   /* Airflow as the sequencer sees it too: both must agree (GLW-14). */
   if (s->in.fan_rpm < s->burn.p.glow_min_fan_rpm)
     m->airflow_ok = 0;
-  glow_cmd c = glow_period(&s->glow, now, s->burn.out.glow_w, m);
+  uint16_t power_w = s->burn.out.glow_w;
+#ifdef SAFETY_BENCH
+  int bench_probe = s->burn.step == BURN_STEP_OFF && s->bench.glow_probe && !checks_busy(&s->chk) &&
+                    s->hb_running_ms >= SAFETY_BENCH_GLOW_HB_MS;
+  if (bench_probe)
+    power_w = s->burn.p.glow_w; /* the planner's first pulse is always a probe (GLW-5) */
+#endif
+  glow_cmd c = glow_period(&s->glow, now, power_w, m);
+#ifdef SAFETY_BENCH
+  if (bench_probe && c.width_us > 0)
+    s->bench.glow_probe = 0; /* one pulse, then the plug is off again */
+#endif
   /* The plug-type check (GLW-10 to GLW-13), once per start, from the first probe's reading. */
   if (s->burn.step == BURN_STEP_PREHEAT && !s->plug_judged && s->glow.have_reading) {
     s->plug_judged = 1;

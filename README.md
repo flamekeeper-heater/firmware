@@ -101,8 +101,14 @@ and network is forgotten. The firmware and its signing key stay.
 Needs `arm-none-eabi-gcc` (no vendor HAL or C library). It has not run on a chip yet.
 
 ```bash
-stm32/build.sh   # stm32/build/safety.elf and .bin, and the flash and RAM use
+stm32/build.sh           # stm32/build/safety.elf and .bin, and the flash and RAM use
+stm32/build.sh bringup   # the bring-up image: stm32/build/bringup.elf and .bin
 ```
+
+The bring-up image is for a new board's first power-up, not for a heater in use: the same firmware
+with a text console on the link UART (J_DEBUG pins 6 and 7, 115200 8N1) that shows every reading
+and runs single, time-limited uses of each stage through the same drivers and interlocks.
+`stm32/bringup/console.h` lists its commands; `stm32/bringup/bringup.py` drives it from a USB-UART.
 
 ## Tests
 

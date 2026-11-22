@@ -78,6 +78,11 @@ void fan_init(fan *f, const fan_params *p, uint32_t now_ms);
  * it returns 0 until fan_init. */
 uint16_t fan_step(fan *f, uint32_t now_ms, uint16_t target_rpm, const fan_meas *m);
 
+/* Open loop at a fixed duty (the bring-up build's bench tests): the same 10 V cap, ramp, start
+ * current limit (always, as there is no speed to compare with), stall and stuck-on checks; no speed
+ * loop and no speed faults. 0 is the speed loop's off. */
+uint16_t fan_step_open(fan *f, uint32_t now_ms, uint16_t duty_permille, const fan_meas *m);
+
 /* The highest duty at this supply (FAN-1), permille. */
 uint16_t fan_duty_cap(const fan *f, uint16_t vin_cv);
 

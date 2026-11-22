@@ -63,6 +63,20 @@ typedef struct {
   uint32_t now;
   uint32_t run_ms;       /* lifetime burning time not yet counted in run_time_s */
   uint32_t run_time_s;
+#ifdef SAFETY_BENCH
+  /* The bring-up build only (stm32/bringup/): single bench actions, honoured only while the burn
+   * is off and no self-test runs, through the same stage drivers as a run, with every rule they
+   * keep there (the heartbeat bursts, the pump's arming and current checks, the glow planner's
+   * airflow, probe, caps and budget, the fan's cap, ramp and stall checks). */
+  struct {
+    uint8_t heartbeat; /* keep the heartbeat running */
+    uint16_t pump_cHz; /* strokes through the pump driver (needs the heartbeat) */
+    uint8_t glow_probe; /* one probe pulse through the glow planner, once the heartbeat has run
+                         * 20 ms; the core clears it as soon as that pulse is out */
+    uint16_t fan_rpm;  /* the fan's speed loop */
+    uint16_t fan_duty; /* or a fixed fan duty (fan_step_open), permille; this wins */
+  } bench;
+#endif
 } safety;
 
 /* reset_reason and checks come from the start-up code. */
@@ -113,6 +127,11 @@ typedef struct {
  * the pre-start test when the sequencer asks), else the pump strokes and the heartbeat the burn
  * needs. o: the self-tests' readings; pm: the pump's (its hb_running_ms is filled in here). */
 safety_io safety_ms(safety *s, uint32_t now, const checks_obs *o, pump_meas *pm);
+
+#ifdef SAFETY_BENCH
+/* A bench glow probe waits for the heartbeat to have run this long (GLW-7: the gate supply). */
+#define SAFETY_BENCH_GLOW_HB_MS 20u
+#endif
 
 /* A heat start waits while more than this share of the glow plug's heat budget is used (a start
  * straight after a long glow; the budget drains in 240 s). PROVISIONAL. */

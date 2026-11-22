@@ -49,3 +49,13 @@ cc $strict $san -c "$here/../board/board.c" -o "$out/board.o"
 cc -std=c99 -Wall -Wextra -Werror $san "$here/test_board.c" "$out/board.o" "$out/analog.o" "$out/safety.o" "$out/burn.o" \
   "$out/glow.o" "$out/fan.o" "$out/checks.o" "$out/pump.o" "$out/params.o" "$out/plug.o" "$out/link.o" -o "$out/test_board"
 "$out/test_board"
+
+# The bring-up build (bringup/): the console and the bench actions, over the core built with its
+# bench requests (SAFETY_BENCH), against a fake chip with a fan, a pump and a glow plug.
+for f in core/burn core/glow core/fan core/checks core/pump core/params core/plug core/safety board/analog \
+  board/board bringup/bench bringup/console; do
+  cc $strict $san -DSAFETY_BENCH -c "$here/../$f.c" -o "$out/bench_$(basename $f).o"
+done
+cc $strict $san -DSAFETY_BENCH -c "$link/link.c" -o "$out/bench_link.o"
+cc -std=c99 -Wall -Wextra -Werror $san -DSAFETY_BENCH "$here/test_bringup.c" "$out"/bench_*.o -o "$out/test_bringup"
+"$out/test_bringup"
