@@ -28,6 +28,7 @@
 #include "../stm32_boot.h"
 
 struct SimStm32 : public esphome::flamekeeper::BootPort {
+  using Boot = esphome::flamekeeper::Stm32Boot;
   static const uint32_t FLASH_SIZE = 64 * 1024;
   static const uint32_t FLASH_BASE = 0x08000000;
   static const uint32_t PAGE = 2048;
@@ -258,7 +259,7 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
     this->delayed.push_back(b);
   }
   void nack() {
-    this->emit(0x1F);
+    this->emit(Boot::NACK);
     this->idle();
   }
   void idle() {
@@ -282,9 +283,9 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
     if (++this->in_count == this->drop_in_at)
       return;
     if (!this->synced) {
-      if (b == 0x7F) {
+      if (b == Boot::SYNC) {
         this->synced = true;
-        this->emit(0x79);
+        this->emit(Boot::ACK);
       }
       return;  // anything else before the sync: ignored
     }
@@ -307,22 +308,23 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
           return;
         }
         switch (this->cmd) {
-          case 0x00:  // Get
-            this->reply({0x79, 11, 0x53, 0x00, 0x01, 0x02, 0x11, 0x21, 0x31, 0x44, 0x63, 0x73, 0x82, 0x92, 0x79});
+          case Boot::GET:  // the version, then the commands it takes
+            this->reply({Boot::ACK, 11, 0x53, Boot::GET, 0x01, Boot::GET_ID, Boot::READ, Boot::GO, Boot::WRITE,
+                         Boot::EXT_ERASE, 0x63, 0x73, 0x82, 0x92, Boot::ACK});
             return this->idle();
-          case 0x02:  // Get ID
-            this->reply({0x79, 0x01, uint8_t(this->pid >> 8), uint8_t(this->pid), 0x79});
+          case Boot::GET_ID:
+            this->reply({Boot::ACK, 0x01, uint8_t(this->pid >> 8), uint8_t(this->pid), Boot::ACK});
             return this->idle();
-          case 0x11:
-          case 0x31:
-          case 0x44:
+          case Boot::READ:
+          case Boot::WRITE:
+          case Boot::EXT_ERASE:
             if (!this->rdp_level0())
               return this->nack();
-            this->emit(0x79);
+            this->emit(Boot::ACK);
             this->stage = 1;
             return;
-          case 0x21:
-            this->emit(0x79);
+          case Boot::GO:
+            this->emit(Boot::ACK);
             this->stage = 1;
             return;
           default:
@@ -330,7 +332,7 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
         }
       }
       case 1:
-        if (this->cmd == 0x44) {  // the page count, then the pages or a special erase
+        if (this->cmd == Boot::EXT_ERASE) {  // the page count, then the pages or a special erase
           if (v.size() < 2)
             return;
           this->stage = 2;
@@ -342,26 +344,26 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
           return this->nack();
         this->address = uint32_t(v[0]) << 24 | uint32_t(v[1]) << 16 | uint32_t(v[2]) << 8 | v[3];
         this->in.clear();
-        if (this->cmd == 0x21)
+        if (this->cmd == Boot::GO)
           return this->go();
-        if (!this->readable(this->address, 1) || (this->cmd == 0x31 && (this->address & 3)))
+        if (!this->readable(this->address, 1) || (this->cmd == Boot::WRITE && (this->address & 3)))
           return this->nack();
-        this->emit(0x79);
+        this->emit(Boot::ACK);
         this->stage = 2;
         return;
       case 2:
-        if (this->cmd == 0x11) {
+        if (this->cmd == Boot::READ) {
           if (v.size() < 2)
             return;
           if (uint8_t(v[0] ^ v[1]) != 0xFF || !this->readable(this->address, uint32_t(v[0]) + 1))
             return this->nack();
           const uint32_t n = uint32_t(v[0]) + 1;
-          this->emit(0x79);
+          this->emit(Boot::ACK);
           for (uint32_t i = 0; i < n; i++)
             this->emit(this->peek(this->address + i));
           return this->idle();
         }
-        if (this->cmd == 0x31) {
+        if (this->cmd == Boot::WRITE) {
           if (v.empty() || v.size() < size_t(v[0]) + 3)
             return;
           if (xor_of(v.data(), v.size() - 1) != v.back())
@@ -369,7 +371,7 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
           const std::vector<uint8_t> data(v.begin() + 1, v.end() - 1);
           return this->write(uint32_t(data.size()), data.data());
         }
-        // 0x44
+        // Extended Erase
         {
           const uint16_t n = uint16_t(v[0] << 8 | v[1]);
           if (n >= 0xFFF0) {  // mass or bank erase: the count, then a checksum
@@ -379,7 +381,7 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
               return this->nack();
             std::memset(this->flash, 0xFF, sizeof(this->flash));
             this->mass_erased = this->saved_touched = true;
-            this->later(ERASE_MS * 32, 0x79);
+            this->later(ERASE_MS * 32, Boot::ACK);
             return this->idle();
           }
           const size_t need = 2 + 2 * (size_t(n) + 1) + 1;
@@ -400,7 +402,7 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
               this->saved_touched = true;
             this->erases++;
           }
-          this->later(ERASE_MS * (n + 1u), 0x79);
+          this->later(ERASE_MS * (n + 1u), Boot::ACK);
           return this->idle();
         }
       default:
@@ -428,12 +430,12 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
         std::memset(this->opt, 0xFF, OPT_SIZE);
         std::memcpy(this->opt, data, n);
       }
-      this->later(WRITE_MS, 0x79);
+      this->later(WRITE_MS, Boot::ACK);
       this->reset_after_reply = true;
       return;
     }
     if (a >= 0x20000000u) {  // RAM
-      this->emit(0x79);
+      this->emit(Boot::ACK);
       return;
     }
     if (a < FLASH_BASE || a + n > FLASH_BASE + FLASH_SIZE || (a & 7) || (n & 7))
@@ -456,13 +458,13 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
       return this->power_off();
     if (this->write_count == this->corrupt_write_at || int(off / PAGE) == this->bad_page)
       this->flash[off + n / 2] ^= 0x10;
-    this->later(WRITE_MS, 0x79);
+    this->later(WRITE_MS, Boot::ACK);
   }
 
   void go() {
     if (this->go_nack || !(this->address >= FLASH_BASE && this->address < FLASH_BASE + FLASH_SIZE))
       return this->nack();
-    this->emit(0x79);
+    this->emit(Boot::ACK);
     this->gos++;
     this->idle();
     this->synced = false;

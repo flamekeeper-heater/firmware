@@ -238,7 +238,7 @@ void McuUpdate::loop(uint32_t now) {
         this->port_->drive_boot(false);
         this->phase_ = Phase::SYNC;
         this->syncs_ = 0;
-        this->boot_.sync(now);
+        this->boot_.sync();
       }
       return;
     case Phase::SYNC: {
@@ -253,7 +253,7 @@ void McuUpdate::loop(uint32_t now) {
         return;
       }
       if (++this->syncs_ < SYNC_TRIES) {
-        this->boot_.sync(now);
+        this->boot_.sync();
         return;
       }
       if (++this->entries_ < ENTRY_TRIES) {
@@ -330,35 +330,35 @@ void McuUpdate::issue_(uint32_t now) {
   bool ok = true;
   switch (this->step_) {
     case Step::GET:
-      this->boot_.get(now);
+      this->boot_.get();
       break;
     case Step::GET_ID:
-      this->boot_.get_id(now);
+      this->boot_.get_id();
       break;
     case Step::READ_OPTIONS:
     case Step::CHECK_OPTIONS:
-      this->boot_.read(g030::OPTION_BASE, g030::OPTION_SIZE, now);
+      this->boot_.read(g030::OPTION_BASE, g030::OPTION_SIZE);
       break;
     case Step::ERASE: {
       const uint16_t page = this->redo_page_ ? this->page_ : this->erase_index_;
       this->touched_ = true;
-      ok = this->boot_.erase(&page, 1, now);
+      ok = this->boot_.erase(&page, 1);
       break;
     }
     case Step::WRITE: {
       uint8_t block[Stm32Boot::BLOCK];
       this->block_bytes_(block);
-      ok = this->boot_.write(this->block_address_(), block, this->block_len_(), now);
+      ok = this->boot_.write(this->block_address_(), block, this->block_len_());
       break;
     }
     case Step::VERIFY:
-      this->boot_.read(this->block_address_(), this->block_len_(), now);
+      this->boot_.read(this->block_address_(), this->block_len_());
       break;
     case Step::WRITE_OPTIONS:
-      ok = this->boot_.write_options(this->options_, g030::OPTION_SIZE, now);
+      ok = this->boot_.write_options(this->options_, g030::OPTION_SIZE);
       break;
     case Step::GO:
-      this->boot_.go(g030::FLASH_BASE, now);
+      this->boot_.go(g030::FLASH_BASE);
       break;
   }
   if (!ok)
@@ -389,7 +389,7 @@ void McuUpdate::command_ok_(uint32_t now) {
   switch (this->step_) {
     case Step::GET: {
       // The version byte, then the commands: Read, Go, Write and Extended Erase are needed.
-      static const uint8_t NEEDED[] = {0x11, 0x21, 0x31, 0x44};
+      static const uint8_t NEEDED[] = {Stm32Boot::READ, Stm32Boot::GO, Stm32Boot::WRITE, Stm32Boot::EXT_ERASE};
       for (uint8_t c : NEEDED) {
         if (n < 2 || std::memchr(r + 1, c, n - 1) == nullptr) {
           char why[64];

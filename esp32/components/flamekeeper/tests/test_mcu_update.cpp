@@ -108,13 +108,13 @@ static void test_commands() {
   };
   CHECK(m.mode == SimStm32::BOOTLOADER);  // blank: EMPTY
   m.bootloader_framing(true);
-  b.sync(t);
+  b.sync();
   CHECK(wait() == Boot::Status::OK);
-  b.get(t);
+  b.get();
   CHECK(wait() == Boot::Status::OK);
   CHECK(b.reply_len() >= 5);
   CHECK(std::memchr(b.reply() + 1, 0x44, b.reply_len() - 1) != nullptr);
-  b.get_id(t);
+  b.get_id();
   CHECK(wait() == Boot::Status::OK);
   CHECK_EQ(b.reply_len(), 2);
   CHECK_EQ(b.reply()[0] << 8 | b.reply()[1], 0x466);
@@ -123,54 +123,54 @@ static void test_commands() {
   uint8_t block[256];
   for (int i = 0; i < 256; i++)
     block[i] = uint8_t(i * 7);
-  CHECK(b.write(0x08000100, block, 256, t));
+  CHECK(b.write(0x08000100, block, 256));
   CHECK(wait() == Boot::Status::OK);
-  b.read(0x08000100, 256, t);
+  b.read(0x08000100, 256);
   CHECK(wait() == Boot::Status::OK);
   CHECK_EQ(b.reply_len(), 256);
   CHECK(std::memcmp(b.reply(), block, 256) == 0);
-  CHECK(b.write(0x08000100, block, 256, t));  // not erased: the bootloader refuses
+  CHECK(b.write(0x08000100, block, 256));  // not erased: the bootloader refuses
   CHECK(wait() == Boot::Status::NACK);
   uint16_t page0 = 0;
-  CHECK(b.erase(&page0, 1, t));
+  CHECK(b.erase(&page0, 1));
   CHECK(wait() == Boot::Status::OK);
   CHECK_EQ(m.flash[0x100], 0xFF);
   // The last block below page 30 is the application's.
-  CHECK(b.write(0x0800EF00, block, 256, t));
+  CHECK(b.write(0x0800EF00, block, 256));
   CHECK(wait() == Boot::Status::OK);
-  b.read(0x1FFF7800, 8, t);
+  b.read(0x1FFF7800, 8);
   CHECK(wait() == Boot::Status::OK);
   CHECK_EQ(SimStm32::get_le(b.reply()), CONFIGURED_OPTR);
-  b.read(0x40000000, 4, t);  // not memory
+  b.read(0x40000000, 4);  // not memory
   CHECK(wait() == Boot::Status::NACK);
 
   // Refused before a byte goes out: pages 30 and 31, beyond the application, odd sizes.
   const int sent = m.in_count;
   uint16_t saved[2] = {30, 31};
-  CHECK(!b.erase(saved, 1, t));
-  CHECK(!b.erase(saved + 1, 1, t));
+  CHECK(!b.erase(saved, 1));
+  CHECK(!b.erase(saved + 1, 1));
   uint16_t mixed[2] = {5, 30};
-  CHECK(!b.erase(mixed, 2, t));
-  CHECK(!b.erase(mixed, 0, t));
-  CHECK(!b.write(0x0800F000, block, 8, t));
-  CHECK(!b.write(0x0800EF08, block, 256, t));  // runs into page 30
-  CHECK(!b.write(0x0800FFF8, block, 8, t));
-  CHECK(!b.write(0x07FFFF00, block, 256, t));
-  CHECK(!b.write(0x08000004, block, 8, t));    // not on a double word
-  CHECK(!b.write(0x08000000, block, 12, t));
-  CHECK(!b.write(0x08000000, block, 0, t));
-  CHECK(!b.write(0x08000000, block, 264, t));
-  CHECK(!b.write(0x1FFF7800, block, 8, t));    // the option bytes have their own call
-  CHECK(!b.write_options(block, 8, t));         // ...for the whole area only
+  CHECK(!b.erase(mixed, 2));
+  CHECK(!b.erase(mixed, 0));
+  CHECK(!b.write(0x0800F000, block, 8));
+  CHECK(!b.write(0x0800EF08, block, 256));  // runs into page 30
+  CHECK(!b.write(0x0800FFF8, block, 8));
+  CHECK(!b.write(0x07FFFF00, block, 256));
+  CHECK(!b.write(0x08000004, block, 8));    // not on a double word
+  CHECK(!b.write(0x08000000, block, 12));
+  CHECK(!b.write(0x08000000, block, 0));
+  CHECK(!b.write(0x08000000, block, 264));
+  CHECK(!b.write(0x1FFF7800, block, 8));    // the option bytes have their own call
+  CHECK(!b.write_options(block, 8));         // ...for the whole area only
   CHECK_EQ(m.in_count, sent);
   CHECK(!b.busy());
   CHECK(m.saved_pages_intact());
 
   // A mangled reply: a stray byte where an ACK belongs.
   m.out.push_back({0x55, true});
-  b.get_id(t);
+  b.get_id();
   CHECK(wait() == Boot::Status::OK);  // stale bytes are dropped before a command
-  b.go(0x08000000, t);
+  b.go(0x08000000);
   CHECK(wait() == Boot::Status::OK);
   CHECK_EQ(m.gos, 1);
 }
