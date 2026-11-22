@@ -223,6 +223,10 @@ static int fuel_delivered(const burn *b) {
 void burn_stop(burn *b, uint8_t why, uint32_t now) {
   if (why != BURN_WHY_ASKED && b->why == BURN_WHY_NONE)
     b->why = why;
+  /* A stop from the link comes between passes: fuel and glow end now, not at the next pass (the
+   * pump and the glow planner run every millisecond and every 5 ms from these outputs). */
+  b->out.pump_cHz = 0;
+  b->out.glow_w = 0;
   if (fuel_delivered(b)) {
     enter(b, BURN_STEP_BURN_OFF, now);
     return;
