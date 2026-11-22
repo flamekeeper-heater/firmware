@@ -470,6 +470,7 @@ class Map:
         self.svd, self.hdr, self.names = svd, hdr, names
         self.bases = {}  # macro -> address, for macros naming a peripheral
         self.regs = {}  # macro -> {"param": bool, "offset", "fixed": (periph, addr) | None}
+        self.field_fns = {}  # function-like field macro -> [(field label, mask)]
         for name, (params, body, line) in hdr.items():
             if params is None and name in svd.periphs:
                 v = names(name)
@@ -607,7 +608,7 @@ def check_header(svd, m, hdr, names, st):
         if reg is None:
             report("NOTE", f"{where}: not a register, base, field, IRQ or DMAMUX name; not checked")
             continue
-        check_field_macro(m, st, where, reg, name[len(reg) + 1:], params, body, names)
+        check_field_macro(m, st, where, name, reg, name[len(reg) + 1:], params, body, names)
 
 
 def check_irq(svd, st, where, irq, value):
@@ -661,7 +662,7 @@ def find_field(fields, want):
     return None
 
 
-def check_field_macro(m, st, where, reg, rest, params, body, names):
+def check_field_macro(m, st, where, name, reg, rest, params, body, names):
     kind = "mask"
     for suf, k in (("_Pos", "pos"), ("_POS", "pos"), ("_SHIFT", "pos"), ("_Msk", "mask"),
                    ("_MSK", "mask"), ("_MASK", "mask")):
@@ -682,7 +683,7 @@ def check_field_macro(m, st, where, reg, rest, params, body, names):
     except NotConst:
         report("FAIL", f"{where}: cannot evaluate {body}")
         return
-    results = []
+    results, missing = [], []
     for periph, addr in m.instances(reg):
         label, fields = m.fields(periph, addr)
         if not fields:
@@ -697,22 +698,26 @@ def check_field_macro(m, st, where, reg, rest, params, body, names):
                     fval = "_".join(parts[i:])
                     break
         if f is None:
-            results.append((False, f"{label} has no field {rest}"))
+            missing.append((False, f"{label} has no field {rest}"))
             continue
         off, w = fields[f]
         w, extra = cmsis_vs_svd(st, reg, f, off, w, label)
         results.extend(extra)
         fmask = ((1 << w) - 1) << off
+        if kind == "fn":
+            m.field_fns.setdefault(name, []).append((f"{label}.{f}", fmask))
         if kind == "pos" or kind == "fn":
             ok = value == off
             results.append((ok, f"{label}.{f} at bit {off}" + ("" if ok else f", macro says {value}")))
         elif fval is not None:
-            ok = value != 0 and value & ~fmask == 0
+            ok = value & ~fmask == 0
             results.append((ok, f"value {fval} {value:#x} {'inside' if ok else 'outside'} "
                                 f"{label}.{f} (bits {off}..{off + w - 1})"))
         else:
             ok = value == fmask
             results.append((ok, f"{label}.{f} mask {fmask:#x}" + ("" if ok else f", macro says {value:#x}")))
+    if not results or not m.regs[reg]["param"]:
+        results += missing  # a family member without the field is fine if another has it
     if not results:
         report("FAIL", f"{where}: {reg} has no SVD register to check against")
     elif all(ok for ok, _ in results):
@@ -1029,7 +1034,7 @@ def check_sources(m, st, src_files, names):
     for path in src_files:
         rel = os.path.basename(path)
         text = strip_c(open(path, encoding="utf-8").read())
-        text = re.sub(r"^\s*#[^\n]*", "", text, flags=re.M)
+        text = re.sub(r"^[ \t]*#[^\n]*", "", text, flags=re.M)
         aliases = {}
         for stoks, lines in statements(tokenize(text)):
             toks = list(stoks)
@@ -1069,7 +1074,26 @@ def check_sources(m, st, src_files, names):
                     label, fields = m.fields(*m.instances(macro, inst)[0])
                     if label is None:
                         report("FAIL", f"{rel}:{ln} {macro}({inst}): {inst} has no such register")
-            clean = [t for t in toks if t != "@"]
+            kept = [(t, ln) for t, ln in zip(toks, lines) if t != "@"]
+            clean, lines = [t for t, _ in kept], [ln for _, ln in kept]
+            j = 0
+            while j < len(clean):
+                if clean[j] in m.field_fns and j + 1 < len(clean) and clean[j + 1] == "(":
+                    e = group_end(clean, j + 1)
+                    params, body, _ = m.hdr[clean[j]]
+                    arg = " ".join(clean[j + 2:e])
+                    what = f"{rel}:{lines[j]} {clean[j]}({arg})"
+                    try:
+                        v = ceval(body, names, {params[0]: ceval(arg, names)})
+                        for label, fmask in m.field_fns[clean[j]]:
+                            ok = v & ~fmask == 0
+                            report("PASS" if ok else "FAIL", f"{what} = {v:#x}: "
+                                   + ("inside" if ok else "outside") + f" {label} ({fmask:#x})")
+                    except NotConst:
+                        pass  # a variable argument: the macro itself is checked
+                    clean[j:e + 1] = ["FIELD_MACRO"]
+                    lines[j:e + 1] = [lines[j]]
+                j += 1
             for item, idx in items(clean, names):
                 if item[0] == "arith" or item in (("lit", 0),):
                     continue
