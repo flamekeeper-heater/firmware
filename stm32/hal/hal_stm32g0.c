@@ -60,13 +60,9 @@ uint8_t hal_reset_reason(void) {
   return LINK_RESET_UNKNOWN;
 }
 
-/* WDG-1, WDG-4: IWDG in hardware, stopped in neither stop nor standby, boot from the main flash. */
+/* WDG-1, WDG-4: the option bytes the ESP32's updater writes (hal_optr_wdg1_ok). */
 uint8_t hal_option_faults(void) {
-  uint32_t optr = FLASH_OPTR;
-  int iwdg_sw = (optr >> 16) & 1u, nboot_sel = (optr >> 24) & 1u, optverr = (FLASH_SR >> 15) & 1u;
-  const uint32_t runs = FLASH_OPTR_IWDG_STOP | FLASH_OPTR_IWDG_STDBY; /* both 1 (their default) */
-  int iwdg_frozen = (optr & runs) != runs;
-  return (uint8_t) ((iwdg_sw || iwdg_frozen || nboot_sel || optverr) ? LINK_CHECK_OPTION_BYTES : 0u);
+  return (uint8_t) (hal_optr_wdg1_ok(FLASH_OPTR, FLASH_SR) ? 0u : LINK_CHECK_OPTION_BYTES);
 }
 
 /* WDG-2, WDG-3: started on every start, about 80 ms (LSI 32 kHz / 4, 640). */

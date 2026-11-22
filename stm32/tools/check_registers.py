@@ -100,15 +100,12 @@ INLINE_CLAIMS = [
     ("RCC_CFGR", "(x >> 3) & 7u", "SWS", "bit"),
     ("SYST_CSR", "5u", "ENABLE|CLKSOURCE", "mask"),
     ("SYST_CSR", "1u << 16", "COUNTFLAG", "bit"),
-    # reset reason and option bytes
+    # reset reason
     ("RCC_CSR", "1u << 23", "RMVF", "bit"),
     ("RCC_CSR", "1u << 29", "IWDGRSTF", "bit"),
     ("RCC_CSR", "1u << 28", "SFTRSTF", "bit"),
     ("RCC_CSR", "1u << 27", "PWRRSTF", "bit"),
     ("RCC_CSR", "1u << 26", "PINRSTF", "bit"),
-    ("FLASH_OPTR", "(x >> 16) & 1u", "IWDG_SW", "bit"),
-    ("FLASH_OPTR", "(x >> 24) & 1u", "nBOOT_SEL", "bit"),
-    ("FLASH_SR", "(x >> 15) & 1u", "OPTVERR", "bit"),
     # watchdog
     ("IWDG_SR", "7u", "PVU|RVU|WVU", "mask"),
     # pins

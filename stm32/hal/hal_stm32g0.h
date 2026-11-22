@@ -40,4 +40,17 @@ static inline int hal_ecc_saved_page(uint32_t eccr) {
   return page - HAL_SAVED_PAGE_FIRST < HAL_SAVED_PAGES ? (int) (page - HAL_SAVED_PAGE_FIRST) : -1;
 }
 
+/* WDG-1, WDG-4: the option bytes as the ESP32's updater writes them (its optr_required): the IWDG
+ * started by hardware (IWDG_SW 0) and running in stop and standby (IWDG_STOP, IWDG_STDBY 1); boot
+ * from the BOOT0 pin (nBOOT_SEL 0), main flash while the pin is low and the ROM bootloader while
+ * the ESP32 holds it high (nBOOT1 1), nBOOT0 1. Every other bit is free. They are wrong too if they
+ * failed to load (FLASH_SR's OPTVERR). Host-tested against the updater's own rule. */
+#define HAL_OPTR_CHECKED                                                                     \
+  (FLASH_OPTR_IWDG_SW | FLASH_OPTR_IWDG_STOP | FLASH_OPTR_IWDG_STDBY | FLASH_OPTR_NBOOT_SEL | \
+   FLASH_OPTR_NBOOT1 | FLASH_OPTR_NBOOT0)
+#define HAL_OPTR_REQUIRED (FLASH_OPTR_IWDG_STOP | FLASH_OPTR_IWDG_STDBY | FLASH_OPTR_NBOOT1 | FLASH_OPTR_NBOOT0)
+static inline int hal_optr_wdg1_ok(uint32_t optr, uint32_t flash_sr) {
+  return (optr & HAL_OPTR_CHECKED) == HAL_OPTR_REQUIRED && !(flash_sr & FLASH_SR_OPTVERR);
+}
+
 #endif /* FLAMEKEEPER_HAL_STM32G0_H */

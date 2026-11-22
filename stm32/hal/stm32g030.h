@@ -197,7 +197,11 @@
 #define FLASH_KEY1 0x45670123u
 #define FLASH_KEY2 0xCDEF89ABu
 #define FLASH_MEM_BASE 0x08000000u
+#define FLASH_OPTR_IWDG_SW (1u << 16)    /* 0: the IWDG started by hardware */
 #define FLASH_OPTR_IWDG_STOP (1u << 17)  /* 0: the IWDG frozen in stop mode */
 #define FLASH_OPTR_IWDG_STDBY (1u << 18) /* 0: the IWDG frozen in standby */
+#define FLASH_OPTR_NBOOT_SEL (1u << 24)  /* 0: the BOOT0 pin chooses, with nBOOT1 */
+#define FLASH_OPTR_NBOOT1 (1u << 25)     /* 1: BOOT0 high boots the system memory (the ROM bootloader) */
+#define FLASH_OPTR_NBOOT0 (1u << 26)     /* the boot choice when nBOOT_SEL is 1 */
 
 #endif /* FLAMEKEEPER_STM32G030_H */
