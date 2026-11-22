@@ -204,9 +204,10 @@ typedef struct {
   int16_t start_c10, peak_c10;
   uint8_t flame;
   uint32_t flame_ms;
-  /* Glow on-time: this attempt's, and the last 10 minutes' in one-minute buckets (ms). */
+  /* Glow on-time: this attempt's, and the last 10 minutes' in one-minute buckets (ms): the
+   * current minute and the ten before it. */
   uint32_t glow_attempt_ms;
-  uint32_t glow_bucket[10];
+  uint32_t glow_bucket[11];
   uint32_t glow_bucket_start; /* when the current bucket began */
   uint8_t glow_bucket_i;
   uint32_t fan_on_ms;      /* when the fan was last asked to turn from standstill */

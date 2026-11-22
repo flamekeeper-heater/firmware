@@ -6,8 +6,11 @@
 enum { R_OK = 0x00, R_NOT_SUPPORTED = 0x13, R_NOT_OFF = 0x20, R_REFUSED = 0x2F };
 enum { MODE_OFF = 0, MODE_HEAT = 1, MODE_FAN = 2, MODE_PRIME = 3 };
 
+/* Glow on-time in one-minute buckets: the current one and the ten before it, so a minute's glow
+ * leaves the count only once all of it is more than 10 minutes old (GLW-1 holds in any 10 minutes,
+ * not only on the buckets' boundaries). */
 #define BUCKET_MS 60000u
-#define BUCKETS 10u
+#define BUCKETS 11u
 
 void burn_params_default(burn_params *p) {
   memset(p, 0, sizeof(*p));
