@@ -132,7 +132,6 @@ static void test_healthy(void) {
   uint32_t t = run(&c, &b, &now, 1);
   CHECK(c.failed == 0);
   CHECK(c.power_up_done);
-  CHECK(!c.latch_skipped);
   CHECK(b.latch_armed);
   CHECK(t >= 500 && t < 700);
   CHECK(b.max_pulse_us >= 100 && b.max_pulse_us <= 200);
@@ -211,9 +210,8 @@ static void test_latch_already_armed(void) {
   setup(&c, &b, &now);
   b.latch_armed = 1; /* armed by a brown-out, or by the bootloader's pull-up (OVH-3) */
   run(&c, &b, &now, 1);
-  CHECK(c.latch_skipped);
   CHECK(c.failed == 0);
-  CHECK(b.pulses == 3);
+  CHECK(b.pulses == 3); /* step 1 (the latch hold) cannot run */
 }
 
 static void test_sensor_and_heat(void) {

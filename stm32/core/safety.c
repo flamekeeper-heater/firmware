@@ -178,7 +178,7 @@ static int on_param_get(void *ctx, uint16_t id, link_param_value *out) {
   out->staged = out->value;
   if (s->params.staged_mask & (1u << i)) {
     out->flags |= LINK_PARAM_STAGED;
-    out->staged = s->params.staged[i];
+    out->staged = params_staged(&s->params, i);
   }
   return LINK_OK;
 }
@@ -194,7 +194,7 @@ static int heater_off(const safety *s) { return burn_is_off(&s->burn); }
 static int co_unfit_staged(const safety *s) {
   for (size_t i = 0; i < PARAM_COUNT; i++)
     if (PARAM_TABLE[i].offset == offsetof(burn_params, co_fitted))
-      return (s->params.staged_mask & (1u << i)) && s->params.staged[i] == 0 && s->burn.p.co_fitted;
+      return (s->params.staged_mask & (1u << i)) && params_staged(&s->params, i) == 0 && s->burn.p.co_fitted;
   return 0;
 }
 

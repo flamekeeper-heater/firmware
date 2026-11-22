@@ -203,15 +203,6 @@ void bench_stop(bench *bn, safety *s, uint32_t now) {
     s->bench.heartbeat = 0;
 }
 
-static uint8_t cold_type(const safety *s, uint16_t r_mohm) {
-  const plug_params *p = &s->plug.p;
-  if (r_mohm < p->r12_max_mohm)
-    return 12;
-  if (r_mohm >= p->r24_min_mohm && r_mohm <= p->r24_max_mohm)
-    return 24;
-  return 0;
-}
-
 static void step_out(bench *bn, safety *s, uint32_t now) {
   uint32_t in_phase = since(now, bn->phase_ms);
 
@@ -288,13 +279,10 @@ static void step_out(bench *bn, safety *s, uint32_t now) {
       return;
     }
     if (bn->phase == PH_READ && in_phase >= BENCH_GLOW_READ_MS) {
-      uint16_t i = s->glow.i_ca, v = s->glow.vin_then_cv;
-      uint32_t r = i ? (uint32_t) v * 1000u / i : 0xFFFFu;
-      if (r > 0xFFFFu)
-        r = 0xFFFFu;
+      uint16_t i = s->glow.i_ca, v = s->glow.vin_then_cv, r = plug_r_mohm(v, i);
       end_out(bn, s, BENCH_END_DONE);
       bench_event *e = last(bn);
-      e->a = i, e->b = v, e->c = (uint16_t) r, e->d = i ? cold_type(s, (uint16_t) r) : 0;
+      e->a = i, e->b = v, e->c = r, e->d = plug_type_of(&s->plug.p, r); /* no current: 0 */
     }
   }
 }

@@ -44,7 +44,7 @@ const param_def *params_find(uint16_t id);
 
 typedef struct {
   burn_params live;       /* what the sequencer runs with */
-  int32_t staged[32];     /* per table entry */
+  uint16_t staged[32];    /* per table entry, the field's 16 bits (params_staged reads it) */
   uint32_t staged_mask;   /* entries with a staged change */
   uint8_t save_pending;   /* applied with "save": the hardware layer writes params_pack to flash */
 } params;
@@ -53,6 +53,8 @@ typedef struct {
 void params_init(params *ps);
 
 int32_t params_value(const params *ps, size_t index);
+/* The value staged for a table entry (meaningful while its staged_mask bit is set). */
+int32_t params_staged(const params *ps, size_t index);
 
 /* The link's requests. They return the app protocol's result codes. */
 int params_set(params *ps, uint16_t id, int32_t value);        /* stage */

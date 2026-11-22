@@ -410,7 +410,7 @@ static void info_line(console *c, uint16_t i) {
       put(c, "vdda_mv ");
       put_u(c, c->b->vdda_mv);
       kv(c, "vrefint_cal", c->b->vrefint_cal);
-      kv(c, "plug_record", s->plug.rec.verified_type);
+      kv(c, "plug_record", s->plug.rec.verified_v);
       kv(c, "plug_setting", s->burn.p.plug_v);
       kv(c, "link_bad_frames", (int32_t) s->parser.bad);
       kv(c, "out_dropped", (int32_t) c->dropped);
@@ -525,7 +525,7 @@ static void par_line(console *c, uint16_t i) {
   put_fix(c, params_value(&s->params, i), d->decimals);
   if (s->params.staged_mask & (1u << i)) {
     put(c, " staged ");
-    put_fix(c, s->params.staged[i], d->decimals);
+    put_fix(c, params_staged(&s->params, i), d->decimals);
   }
 }
 

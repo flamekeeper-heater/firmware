@@ -55,7 +55,7 @@ void checks_begin_power_up(checks *c, uint32_t now_ms, const checks_obs *o) {
   c->kind = CHECKS_POWER_UP;
   c->failed = 0;
   c->begin_ms = now_ms;
-  c->latch_skipped = o->latch_armed; /* already armed: step 1 cannot run (OVH-3) */
+  /* Already armed (OVH-3: a brown-out, the bootloader's pull-up): step 1 cannot run. */
   stage(c, o->latch_armed ? PU_WAIT_REARM : PU_LATCH_HOLD, now_ms);
 }
 
@@ -68,19 +68,16 @@ void checks_begin_pre_start(checks *c, uint32_t now_ms) {
 
 static const checks_out OFF = {CHECKS_HB_STOPPED, 0, 0, 0};
 
-static checks_out fail(checks *c, uint16_t what) {
-  c->failed |= what;
+static checks_out done(checks *c) {
   if (c->kind == CHECKS_POWER_UP)
     c->power_up_done = 1;
   c->kind = CHECKS_IDLE;
   return OFF;
 }
 
-static checks_out done(checks *c) {
-  if (c->kind == CHECKS_POWER_UP)
-    c->power_up_done = 1;
-  c->kind = CHECKS_IDLE;
-  return OFF;
+static checks_out fail(checks *c, uint16_t what) {
+  c->failed |= what;
+  return done(c);
 }
 
 /* v below pct % of the supply. */
@@ -208,7 +205,7 @@ checks_out checks_step(checks *c, uint32_t now, const checks_obs *o) {
         return out;
       if (!o->pump_hs_ok)
         return fail(c, CHECK_FAIL_PUMP_HS_FAULT);
-      if ((uint32_t) o->pump_v_cv * 100u < (uint32_t) o->vin_cv * (100u - p->pump_on_percent))
+      if (below(o->pump_v_cv, o->vin_cv, (uint8_t) (100u - p->pump_on_percent)))
         return fail(c, CHECK_FAIL_PUMP_HS_NO_OUTPUT);
       stage(c, PS_GLOW_ON, now);
       out.glow_en = 1;

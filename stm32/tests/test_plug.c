@@ -38,16 +38,16 @@ static void test_cold_checks(void) {
   /* A cold 12 V plug, set as 12 V: go, and remembered. */
   CHECK(judge(&pl, 11 * MIN, 12, 12.6, 0.2, 100, 100) == PLUG_GO);
   CHECK(pl.last_cold);
-  CHECK(pl.rec.verified_type == 12 && pl.rec.verified_setting == 12 && pl.save_pending);
+  CHECK(pl.rec.verified_v == 12 && pl.save_pending);
 
   /* A 12 V plug set as 24 V on a 24 V supply: refused; on a 12 V supply: a warning. */
   setup(&pl);
   CHECK(judge(&pl, 11 * MIN, 24, 26.0, 0.2, 100, 100) == PLUG_REFUSE_TYPE);
-  CHECK(pl.rec.verified_type == 0);
+  CHECK(pl.rec.verified_v == 0);
   CHECK(judge(&pl, 11 * MIN, 24, 12.6, 0.2, 100, 100) == PLUG_WARN);
   /* A 24 V plug set as 24 V: go. */
   CHECK(judge(&pl, 11 * MIN, 24, 26.0, 1.6, 100, 100) == PLUG_GO);
-  CHECK(pl.rec.verified_type == 24);
+  CHECK(pl.rec.verified_v == 24);
   /* Outside every range: open, shorted, or between the two types. */
   setup(&pl);
   plug_begin(&pl, 11 * MIN, 100, 100);
@@ -111,7 +111,7 @@ static void test_warm_starts(void) {
 
   /* A new plug fitted: the remembered check is gone. */
   plug_new_plug(&pl);
-  CHECK(pl.rec.verified_type == 0 && pl.save_pending);
+  CHECK(pl.rec.verified_v == 0 && pl.save_pending);
   CHECK(judge(&pl, 12 * MIN, 12, 26.0, 1.0, 1500, 300) == PLUG_REFUSE_UNVERIFIED);
 }
 
@@ -123,14 +123,24 @@ static void test_record(void) {
   CHECK(plug_pack(&a, img, sizeof(img)) == PLUG_IMAGE_SIZE);
   setup(&b);
   CHECK(plug_unpack(&b, img, sizeof(img)) == 1);
-  CHECK(b.rec.verified_type == 24 && b.rec.verified_setting == 24);
+  CHECK(b.rec.verified_v == 24);
   img[3] ^= 1;
   setup(&b);
   CHECK(plug_unpack(&b, img, sizeof(img)) == 0);
-  CHECK(b.rec.verified_type == 0);
+  CHECK(b.rec.verified_v == 0);
   uint8_t blank[PLUG_IMAGE_SIZE];
   memset(blank, 0xFF, sizeof(blank));
   CHECK(plug_unpack(&b, blank, sizeof(blank)) == 0);
+}
+
+static void test_resistance(void) {
+  plug_params p;
+  plug_params_default(&p);
+  CHECK(plug_r_mohm(1260, 6300) == 200);
+  CHECK(plug_r_mohm(1260, 0) == 0xFFFFu);
+  CHECK(plug_r_mohm(3000, 1) == 0xFFFFu); /* above the range: as open */
+  CHECK(plug_type_of(&p, 200) == 12 && plug_type_of(&p, 1600) == 24);
+  CHECK(plug_type_of(&p, 950) == 0 && plug_type_of(&p, 3500) == 0 && plug_type_of(&p, 0xFFFFu) == 0);
 }
 
 int main(void) {
@@ -138,6 +148,7 @@ int main(void) {
   test_cold_definition();
   test_warm_starts();
   test_record();
+  test_resistance();
   printf("plug: %d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;
 }

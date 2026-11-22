@@ -61,11 +61,16 @@ const param_def PARAM_TABLE[] = {
 };
 const size_t PARAM_COUNT = sizeof(PARAM_TABLE) / sizeof(PARAM_TABLE[0]);
 
-const param_def *params_find(uint16_t id) {
+static size_t index_of(uint16_t id) {
   for (size_t i = 0; i < PARAM_COUNT; i++)
     if (PARAM_TABLE[i].id == id)
-      return &PARAM_TABLE[i];
-  return NULL;
+      return i;
+  return PARAM_COUNT;
+}
+
+const param_def *params_find(uint16_t id) {
+  size_t i = index_of(id);
+  return i < PARAM_COUNT ? &PARAM_TABLE[i] : NULL;
 }
 
 static int32_t read_field(const burn_params *bp, const param_def *d) {
@@ -107,18 +112,17 @@ void params_init(params *ps) {
 
 int32_t params_value(const params *ps, size_t index) { return read_field(&ps->live, &PARAM_TABLE[index]); }
 
-static size_t index_of(uint16_t id) {
-  for (size_t i = 0; i < PARAM_COUNT; i++)
-    if (PARAM_TABLE[i].id == id)
-      return i;
-  return PARAM_COUNT;
+/* Every field is at most 16 bits: a value in range keeps all of it in a uint16_t. */
+int32_t params_staged(const params *ps, size_t index) {
+  uint16_t raw = ps->staged[index];
+  return PARAM_TABLE[index].is_signed && raw >= 0x8000u ? (int32_t) raw - 0x10000 : (int32_t) raw;
 }
 
 int params_set(params *ps, uint16_t id, int32_t value) {
   size_t i = index_of(id);
   if (i == PARAM_COUNT || !in_range(&PARAM_TABLE[i], value))
     return LINK_OUT_OF_RANGE;
-  ps->staged[i] = value;
+  ps->staged[i] = (uint16_t) value;
   ps->staged_mask |= 1u << i;
   return LINK_STORED;
 }
@@ -134,7 +138,7 @@ int params_apply(params *ps, int heater_off, int save) {
   burn_params next = ps->live;
   for (size_t i = 0; i < PARAM_COUNT; i++)
     if (ps->staged_mask & (1u << i))
-      write_field(&next, &PARAM_TABLE[i], ps->staged[i]);
+      write_field(&next, &PARAM_TABLE[i], params_staged(ps, i));
   if (!consistent(&next))
     return LINK_OUT_OF_RANGE; /* kept staged: the app can correct one and apply again */
   ps->live = next;

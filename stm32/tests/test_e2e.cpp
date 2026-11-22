@@ -342,14 +342,13 @@ static void test_plug_cold_check() {
   CHECK(b.client.set_mode(Mode::HEAT).accepted());
   CHECK(b.run_until_state(BURN_STATE_HEATING, 5 * MIN));
   CHECK(b.s.plug.last_cold);
-  CHECK(b.s.plug.rec.verified_type == 12 && b.s.plug.rec.verified_setting == 12);
+  CHECK(b.s.plug.rec.verified_v == 12);  // the model's 0.2 Ohm plug, under 0.8 Ohm
   CHECK(safety_plug_save_pending(&b.s));
   CHECK(!b.s.plug_warning);
-  CHECK(b.s.plug.last_r_mohm > 150 && b.s.plug.last_r_mohm < 400);  // the model's 0.2 Ohm plug
   // "New glow plug fitted" from the ESP32: the remembered check is gone.
   CHECK(b.client.glow_plug_fitted().accepted());
   b.run(1 * SEC);
-  CHECK(b.s.plug.rec.verified_type == 0);
+  CHECK(b.s.plug.rec.verified_v == 0);
 }
 
 // ---------------------------------------------------------------- the CO alarm

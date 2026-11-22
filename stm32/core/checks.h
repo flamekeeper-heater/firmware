@@ -100,7 +100,6 @@ typedef struct {
   uint32_t boot_ms;      /* power-up, for the latch's re-arm delay */
   uint16_t failed;       /* CHECK_FAIL_* of the last test */
   uint8_t pulse_pending; /* a pulse went out last step: its peak comes in now */
-  uint8_t latch_skipped; /* power-up: the latch was already armed, so step 1 could not run */
   uint8_t power_up_done;
 } checks;
 
