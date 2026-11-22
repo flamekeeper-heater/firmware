@@ -189,7 +189,6 @@ typedef struct {
   uint16_t fan_rpm;  /* target speed; 0 = fan off */
   uint16_t pump_cHz; /* 0 = no fuel */
   uint16_t glow_w;   /* 0 = glow plug off */
-  uint8_t fan_reset; /* 1 for one pass: clear the fan stage's stall, the burn has dealt with it */
 } burn_outputs;
 
 typedef struct {

@@ -228,6 +228,28 @@ static int fuel_delivered(const burn *b) {
          b->step == BURN_STEP_WARM_UP || b->step == BURN_STEP_RUNNING;
 }
 
+/* The step a fan retry stands for: the one it goes on with after its wait. */
+static uint8_t effective_step(const burn *b) {
+  return b->step == BURN_STEP_FAN_RETRY ? b->retry_step : b->step;
+}
+
+/* Where a stop goes from here: a burn-off once fuel went in, off before that. Off, or already
+ * stopping (a retry on its way to a cooldown too), stays as it is. */
+static uint8_t stop_route(const burn *b) {
+  uint8_t s = effective_step(b);
+  if (fuel_delivered(b))
+    return BURN_STEP_BURN_OFF;
+  if (s == BURN_STEP_OFF || s == BURN_STEP_BURN_OFF || s == BURN_STEP_COOLDOWN)
+    return b->step;
+  return BURN_STEP_OFF;
+}
+
+static void stop_now(burn *b, uint32_t now) {
+  uint8_t to = stop_route(b);
+  if (to != b->step)
+    enter(b, to, now);
+}
+
 void burn_stop(burn *b, uint8_t why, uint32_t now) {
   if (why != BURN_WHY_ASKED && b->why == BURN_WHY_NONE)
     b->why = why;
@@ -235,37 +257,14 @@ void burn_stop(burn *b, uint8_t why, uint32_t now) {
    * pump and the glow planner run every millisecond and every 5 ms from these outputs). */
   b->out.pump_cHz = 0;
   b->out.glow_w = 0;
-  if (fuel_delivered(b)) {
-    enter(b, BURN_STEP_BURN_OFF, now);
-    return;
-  }
-  switch (b->step) {
-    case BURN_STEP_PRE_CHECK:
-    case BURN_STEP_SELF_TEST:
-    case BURN_STEP_PREHEAT:
-    case BURN_STEP_FAN_ONLY:
-    case BURN_STEP_PRIMING:
-      enter(b, BURN_STEP_OFF, now);
-      break;
-    case BURN_STEP_FAN_RETRY:
-      if (b->retry_step != BURN_STEP_COOLDOWN)
-        enter(b, BURN_STEP_OFF, now);
-      break; /* a run that had fuel still cools down */
-    default:
-      break; /* off, or already stopping */
-  }
+  stop_now(b, now);
 }
 
 /* A fault that ends the run: fuel off at once, the fan cools the heater if it still can. */
 static void fault_stop(burn *b, uint8_t fault, uint8_t why, uint32_t now) {
   b->fault = fault;
   b->why = why;
-  if (fuel_delivered(b))
-    enter(b, BURN_STEP_BURN_OFF, now);
-  else if (b->step == BURN_STEP_FAN_RETRY && b->retry_step == BURN_STEP_COOLDOWN)
-    ; /* the retry's cooldown still comes */
-  else if (b->step != BURN_STEP_BURN_OFF && b->step != BURN_STEP_COOLDOWN)
-    enter(b, BURN_STEP_OFF, now);
+  stop_now(b, now);
 }
 
 /* The fan stalled or never turned (FAN-3, FAN-5): fuel, glow and fan off at once; the fan tries
@@ -280,7 +279,6 @@ static void fan_stalled(burn *b, uint8_t why, uint32_t now, const burn_inputs *i
     enter(b, BURN_STEP_OFF, now);
     return;
   }
-  b->out.fan_reset = 1;
   if (b->step == BURN_STEP_OFF)
     return;
   int hot = temp_known(in->hx_c10) && in->hx_c10 >= b->p.hot_start_c10;
@@ -316,7 +314,9 @@ int burn_fault_reset(burn *b, const burn_inputs *in) {
 /* ---------------------------------------------------------------- the loop */
 
 uint8_t burn_state(const burn *b) {
-  switch (b->step) {
+  if (b->step == BURN_STEP_FAN_RETRY && b->retry_step == BURN_STEP_COOLDOWN)
+    return BURN_STATE_STOPPING; /* a fan retry on its way to the cooldown */
+  switch (effective_step(b)) {
     case BURN_STEP_PRE_CHECK:
     case BURN_STEP_SELF_TEST:
     case BURN_STEP_PREHEAT:
@@ -334,19 +334,14 @@ uint8_t burn_state(const burn *b) {
       return BURN_STATE_FAN_ONLY;
     case BURN_STEP_PRIMING:
       return BURN_STATE_PRIMING;
-    case BURN_STEP_FAN_RETRY:
-      return b->retry_step == BURN_STEP_COOLDOWN ? BURN_STATE_STOPPING
-             : b->retry_step == BURN_STEP_FAN_ONLY ? BURN_STATE_FAN_ONLY
-                                                   : BURN_STATE_STARTING;
     default:
       return BURN_STATE_OFF;
   }
 }
 
 int burn_active(const burn *b) {
-  if (b->step == BURN_STEP_FAN_RETRY)
-    return b->retry_step != BURN_STEP_COOLDOWN;
-  return b->step != BURN_STEP_OFF && b->step != BURN_STEP_BURN_OFF && b->step != BURN_STEP_COOLDOWN;
+  uint8_t s = effective_step(b);
+  return s != BURN_STEP_OFF && s != BURN_STEP_BURN_OFF && s != BURN_STEP_COOLDOWN;
 }
 
 int burn_fuel_steps(const burn *b) { return fuel_delivered(b) || b->step == BURN_STEP_PRIMING; }
@@ -686,7 +681,6 @@ void burn_step(burn *b, uint32_t now, const burn_inputs *in) {
     b->glow_bucket[b->glow_bucket_i] += dt;
   }
   uint16_t fan_before = b->out.fan_rpm;
-  b->out.fan_reset = 0;
   checks(b, now, in);
   /* A step that ends in this pass hands over at once: the outputs are always the new step's. */
   for (int i = 0; i < 4; i++) {

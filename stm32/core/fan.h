@@ -8,8 +8,9 @@
  *   its commanded speed the motor current is held at or below start_limit_ma (the fan's one-time
  *   fuse). Below estimate_min_permille of duty the current estimate is too coarse: the ramp runs on
  *   time alone there.
- * - Faults: a stalled motor (current, no Hall edges), current at zero duty (the switch stuck on),
- *   speed without a command or well above it, once the fan has had time to spin down.
+ * - Faults: a stalled motor (current, no Hall edges; it clears itself once the command is 0), current
+ *   at zero duty (the switch stuck on), speed without a command or well above it, once the fan has
+ *   had time to spin down.
  *
  * Gains and limits are PROVISIONAL until measured on the first boards. */
 #ifndef FLAMEKEEPER_FAN_H
@@ -81,7 +82,7 @@ void fan_init(fan *f, const fan_params *p, uint32_t now_ms);
 void fan_clear_fault(fan *f, uint32_t now_ms);
 
 /* One pass: the speed wanted (0 = off) and the readings. Returns the duty, permille. After a fault
- * it returns 0 until fan_clear_fault. */
+ * it returns 0: a stall until the speed wanted is 0, any other fault until fan_clear_fault. */
 uint16_t fan_step(fan *f, uint32_t now_ms, uint16_t target_rpm, const fan_meas *m);
 
 /* Open loop at a fixed duty (the bring-up build's bench tests): the same 10 V cap, ramp, start

@@ -88,7 +88,7 @@ static void tick(rig *r) {
   r->now += TICK;
   burn_inputs in = inputs(r);
   burn_step(&r->b, r->now, &in);
-  if (r->b.out.fan_reset) /* the safety glue starts the fan stage afresh */
+  if (r->fan_fault == 1 && r->b.out.fan_rpm == 0) /* the fan stage's stall clears at command 0 */
     r->fan_fault = 0;
   if (r->b.step > r->max_step_seen)
     r->max_step_seen = r->b.step;

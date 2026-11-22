@@ -68,6 +68,10 @@ static uint16_t step(fan *f, uint32_t now_ms, uint16_t target_rpm, uint16_t open
   const fan_params *p = &f->p;
   uint32_t dt = since(now_ms, f->last_ms);
   f->last_ms = now_ms;
+  /* A stall holds the duty at 0 until the command drops to 0: the burn has dealt with it then (it
+   * owns the retries and the lockout, FAN-5). Every other fault waits for a fault reset. */
+  if (f->fault == FAN_FAULT_STALL && target_rpm == 0 && open_permille == 0)
+    f->fault = FAN_FAULT_NONE;
   if (f->fault != FAN_FAULT_NONE)
     return set(f, 0);
 
