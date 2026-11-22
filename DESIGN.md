@@ -55,7 +55,7 @@ platforms.
 - A dropped Bluetooth or Wi-Fi connection changes nothing on the heater.
 - Only runs started from Home Assistant stop when Home Assistant is unreachable (15 minutes).
 - The ESP32 never drives the safety MCU's reset and boot pins except to update it, and only after
-  the MCU agrees (heater off and cold).
+  the MCU agrees (heater off and cold), or to finish its own update that the MCU agreed to.
 
 ## Link to the safety MCU
 
@@ -228,8 +228,21 @@ The C6 build verifies every update against the key in its running image's signat
 repository, and `keys/` holds its public half. `tools/release.sh` builds, signs and writes the
 release manifest.
 
-The safety MCU is updated by the ESP32 through the STM32's ROM bootloader on the same UART, after
-`UPDATE_PREPARE`.
+**The safety MCU** is updated by the ESP32 with the image its own build carries (`mcu_update.*` on
+`stm32_boot.*`, Home Assistant's "Update heater firmware"):
+
+- `UPDATE_PREPARE` first: only with the heater off and cold, and the MCU then refuses starts until
+  it resets. The ESP32 holds STM_BOOT high, pulses STM_NRST, and talks to the STM32's ROM
+  bootloader on the same UART at 8E1 (ST AN3155). This needs the option bytes' nBOOT_SEL at 0.
+- It checks the chip id (0x466) and reads the option bytes, erases only the image's pages (never
+  pages 30 and 31: the saved parameters and the plug record), reads every 256-byte block back, and
+  writes page 0 last, so a half-written image has no vector table and never runs. Go starts it; it
+  is done when HELLO reports the new version.
+- A failure before the erase restarts the old firmware. After it, the MCU waits in its bootloader
+  with every output off, and the update can be run again: the ESP32 remembers it over a restart
+  and takes the MCU without `UPDATE_PREPARE` once it has been silent for 5 s.
+- Writing the option bytes (the watchdog in hardware, boot from the BOOT0 pin) is a separate step,
+  not part of an update, and not yet proven on a chip.
 
 ## CO alarm
 
@@ -248,7 +261,8 @@ erased. DETAIL carries the state and a rough ppm reading.
 ## Tests
 
 - `esp32/components/flamekeeper/tests/run.sh`: the core on the host, with sanitizers, against a
-  simulated heater and a simulated safety MCU.
+  simulated heater and a simulated safety MCU, and the safety-MCU updater against a simulated STM32
+  ROM bootloader (NACKs, page erase, option bytes, lost bytes, a power loss mid-write).
 - `stm32/tests/run.sh`: the safety core (`stm32/core/`): the burn sequencer against a heater model
   (whole cycles, every way a run ends, the glow caps and the airflow rule), and end to end with the
   ESP32's real link client over a byte wire (dead-man, an MCU reset mid-run).
