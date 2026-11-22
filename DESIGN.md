@@ -204,7 +204,7 @@ burst and refreshes the watchdog. Saved data goes to flash only with the heater 
 start-up code, the linker script and `main`. It is built, but has not run on a chip yet: the clock
 tree, the alternate functions, the DMA request for the heartbeat burst, the ADC order and the flash
 programming all need checking on the first board or a NUCLEO-G031K8. Not done yet: the pump's
-overcurrent watchdog (PMP-7) and the CO sensor.
+overcurrent watchdog (PMP-7).
 
 `stm32/core/safety.*` joins them all to the link: the start-number rule, the dead-man, the status and
 the update handshake.
@@ -226,6 +226,13 @@ The safety MCU is updated by the ESP32 through the STM32's ROM bootloader on the
 It warms the sensor up, learns its clean-air resistance, and alarms on the resistance ratio. On an
 alarm the MCU stops the heater and latches the fault; an implausible reading latches a sensor fault
 and refuses starts. It is not a certified CO alarm.
+
+The safety core owns it and the board feeds it a reading a second, with the sensor's heater on from
+power-up (off a few seconds once per warm-up, to check it). Whether a sensor is fitted is the
+"CO sensor fitted" parameter alone, on by default; a sensor fault ends a run like the alarm, with
+its own fault code. Below -30 C the state reads "too cold" and the alarm still acts. The learnt
+clean-air resistance is kept in a small log in the plug record's flash page, so the page is rarely
+erased. DETAIL carries the state and a rough ppm reading.
 
 ## Tests
 
