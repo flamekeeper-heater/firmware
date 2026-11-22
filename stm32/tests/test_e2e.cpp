@@ -179,16 +179,25 @@ struct Bench : LinkTransport {
   }
 };
 
-static void test_glow_rests_after_reset() {
+static void test_glow_waits_after_reset() {
+  // After power-on a heat start goes ahead at once, but the fan runs 30 s longer before the first
+  // glow (GLW-21): the glow switches cool from a run the reset may have cut short.
   Bench b;
   b.run(2 * SEC);
-  // After power-on the glow stage's heat budget starts full: a heat start waits until half of it
-  // has drained (two minutes).
   b.client.set_power_demand(60);
-  b.client.set_mode(Mode::HEAT);
-  b.run(1 * SEC);
-  CHECK(b.client.raw_status().state == BURN_STATE_OFF);
-  CHECK(b.client.raw_status().start_result == LINK_BUSY);
+  CHECK(b.client.set_mode(Mode::HEAT).accepted());
+  CHECK(b.run_until_state(BURN_STATE_STARTING, 2 * SEC));
+  uint32_t asked = b.now, first_glow = 0, air_from = 0;
+  while (b.now - asked < 2 * MIN && first_glow == 0) {
+    b.tick();
+    if (air_from == 0 && b.s.in.fan_rpm >= b.s.burn.p.glow_min_fan_rpm)
+      air_from = b.now;
+    if (b.s.burn.out.glow_w > 0)
+      first_glow = b.now;
+  }
+  CHECK(air_from > 0 && first_glow > 0);
+  CHECK(first_glow - air_from >= 30 * SEC);
+  CHECK(first_glow - air_from < 31 * SEC);
 }
 
 static void test_heat_cycle() {
@@ -347,7 +356,7 @@ static void test_plug_cold_check() {
 int main() {
   test_plug_cold_check();
   test_parameters();
-  test_glow_rests_after_reset();
+  test_glow_waits_after_reset();
   test_heat_cycle();
   test_dead_man();
   test_mcu_reset_mid_run();

@@ -79,7 +79,8 @@ typedef struct {
   uint8_t holding;
 } glow;
 
-/* After a reset the heat budget starts as used up (GLW-21). */
+/* After a reset the heat budget starts empty; the burn runs the fan longer before the first glow
+ * (GLW-21). */
 void glow_init(glow *g, const glow_params *p, uint32_t now_ms);
 
 /* One PWM period. power_w: what the burn asks of the plug (0 = off). */

@@ -108,15 +108,20 @@ off -> fan only -> off          off -> pre-check -> priming -> off
 ```
 
 - The fan must turn before anything else: the glow plug only heats with measured airflow, and a
-  fan that does not reach its speed ends the start.
+  fan that does not reach its speed counts as a stall.
 - Glow on-time is capped per attempt and per 10 minutes, so a start that would exceed the cap
   waits.
 - Flame is seen as a rise of the heat exchanger temperature; a fall from the run's peak is a
   flame-out. Every stop after fuel has gone in burns off and cools down; a fan stall stops
   everything at once.
+- A stalled fan tries again after 5 s: a run that had fuel cools down, an earlier start or a
+  fan-only run carries on. After two retries the next stall locks the fan out until a fault reset;
+  the count forgets after 10 minutes of normal turning.
 - Overheat (firmware limit or the hardware latch), CO, an open sensor or the supply out of range
   end the run with a fault. The latch and CO faults need a fault reset once their cause is gone.
-- After a reset with a hot heat exchanger, it cools down first; nothing restarts by itself.
+- After a reset with a hot heat exchanger, it cools down first; nothing restarts by itself. The
+  first heat start within 4 minutes of a reset runs the fan 30 s longer before the glow, so the
+  glow switches cool from a run the reset may have cut short (provisional).
 - Fuel follows air: the pump falls at once and rises slowly, the fan rises at once and falls
   slowly, so the fuel never outruns the air.
 - A hot board (its thermistor above 85 C) holds the fan back: the allowed fan current falls with
@@ -134,8 +139,9 @@ current read in the last pulse scaled by the supply since:
 - Per pulse: short pulses at high current (0.3 ms above 100 A, 1.5 ms above 22 A), 15 A rms, at
   most 99 % duty. Duties too low for a readable pulse become 150 us pulses at a lower rate.
 - The power asked (90 W, 75 W on a low supply), reached by a gentle start from about 2.5 V.
-- A heat budget for the switching transistors (I² x t, drained only while the plug is off; full
-  after a reset, so a heat start waits until half of it has drained).
+- A heat budget for the switching transistors (I² x t, drained only while the plug is off; a heat
+  start waits until half of it is free). It starts empty after a reset: the longer fan run before
+  the first glow stands in for it.
 - Current between pulses (the low side stuck on) or repeated high-side trips: glow off at once
   and a fault that needs a reset. No airflow or a hot board: no glow.
 
@@ -148,7 +154,7 @@ current read in the last pulse scaled by the supply since:
   estimate is too coarse and the ramp runs on time alone.
 - Faults: a stalled motor (current, no Hall edges, 1 s), current at zero duty (the switch stuck
   on), and speed with no command or 20 % over it once the fan has had 30 s to slow down. A stall
-  stops everything at once; the others stop the fuel and burn off.
+  stops everything at once and the sequencer retries it; the others stop the fuel and burn off.
 
 `stm32/core/checks.*` tests the interlocks themselves, in 1 ms steps the hardware layer carries
 out (heartbeat modes, the glow enable, single short pump pulses, the latch reset line):

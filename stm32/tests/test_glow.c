@@ -278,15 +278,16 @@ static void test_no_reading_no_long_pulses(void) {
   CHECK(longest == 150);
 }
 
-static void test_reset_starts_full(void) {
+static void test_reset_starts_empty(void) {
+  /* The burn runs the fan longer after a reset instead (GLW-21). */
   glow g;
   glow_params p;
   glow_params_default(&p);
   glow_init(&g, &p, 1000);
-  CHECK(glow_bucket_a2s(&g) == 9720);
+  CHECK(glow_bucket_a2s(&g) == 0);
   glow_meas m = {1260, 0, 0, 1, 300, 0};
   glow_cmd c = glow_period(&g, 1005, 90, &m);
-  CHECK(c.width_us == 0); /* nothing until it has drained */
+  CHECK(c.width_us == 150); /* a probe at once */
 }
 
 int main(void) {
@@ -303,7 +304,7 @@ int main(void) {
   test_airflow_and_board();
   test_heat_budget();
   test_no_reading_no_long_pulses();
-  test_reset_starts_full();
+  test_reset_starts_empty();
   printf("glow: %d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;
 }

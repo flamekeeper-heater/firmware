@@ -44,6 +44,7 @@ enum {
   BURN_STEP_FAN_ONLY = 9,
   BURN_STEP_PRIMING = 10,
   BURN_STEP_PRE_CHECK = 11, /* the interlock self-test before a start that may stroke or glow */
+  BURN_STEP_FAN_RETRY = 12, /* the fan stalled: everything off, then the fan tries again (FAN-5) */
 };
 
 /* Faults: the app protocol's codes (link_status.fault). */
@@ -94,6 +95,19 @@ typedef struct {
   uint16_t fan_stall_rpm;     /* measured below this while asked to turn: stalled */
   uint16_t fan_spin_up_ms;    /* time the fan gets to reach glow_min_fan_rpm */
   uint16_t fan_stall_ms;      /* stalled this long: fault (FAN-3: 1 s) */
+  /* Stall retries (FAN-5: 2 at most). A stall stops fuel, glow and fan at once;
+   * after the wait the fan tries again: a run that had fuel cools down, a start before fuel or a
+   * fan-only run carries on. One stall more than this locks the fan out until a fault reset. The
+   * count forgets after the fan has turned normally this long. */
+  uint8_t fan_retries;
+  uint16_t fan_retry_wait_s;
+  uint16_t fan_retry_forget_s;
+  /* After a reset, the first heat start runs the fan this much longer before the glow, so the glow
+   * switches cool from a run the reset may have cut short (GLW-21: 30 s, in place of the glow
+   * budget starting full; PROVISIONAL until measured on the board). It applies to a
+   * start this soon after the reset only. */
+  uint16_t reset_fan_s;
+  uint16_t reset_fan_within_s;
 
   /* Fuel pump, 0.01 Hz. */
   uint16_t pump_start_cHz;    /* ignition */
@@ -171,6 +185,7 @@ typedef struct {
   uint16_t fan_rpm;  /* target speed; 0 = fan off */
   uint16_t pump_cHz; /* 0 = no fuel */
   uint16_t glow_w;   /* 0 = glow plug off */
+  uint8_t fan_reset; /* 1 for one pass: clear the fan stage's stall, the burn has dealt with it */
 } burn_outputs;
 
 typedef struct {
@@ -195,6 +210,13 @@ typedef struct {
   uint32_t glow_bucket_start; /* when the current bucket began */
   uint8_t glow_bucket_i;
   uint32_t fan_on_ms;      /* when the fan was last asked to turn from standstill */
+  uint8_t fan_stalls;      /* stalls since the count last forgot (FAN-5) */
+  uint32_t fan_ok_ms;      /* the fan's normal turning since the last stall */
+  uint8_t retry_step;      /* where a fan retry goes on */
+  uint32_t reset_ms;       /* when the MCU reset (burn_init) */
+  uint8_t reset_fan_due;   /* the first heat start after the reset still owes its longer fan */
+  uint8_t air_ok;          /* self-test: the fan has reached the glow's speed ... */
+  uint32_t air_ok_ms;      /* ... since then */
   uint32_t last_ms;
   uint32_t dt_ms;          /* this pass's step */
   uint8_t glow_on;

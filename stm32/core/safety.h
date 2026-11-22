@@ -114,8 +114,8 @@ typedef struct {
  * needs. o: the self-tests' readings; pm: the pump's (its hb_running_ms is filled in here). */
 safety_io safety_ms(safety *s, uint32_t now, const checks_obs *o, pump_meas *pm);
 
-/* A heat start waits while more than this share of the glow plug's heat budget is used (after any
- * reset it starts full and drains in 240 s). PROVISIONAL. */
+/* A heat start waits while more than this share of the glow plug's heat budget is used (a start
+ * straight after a long glow; the budget drains in 240 s). PROVISIONAL. */
 #define SAFETY_GLOW_START_FREE_PERCENT 50u
 
 #ifdef __cplusplus

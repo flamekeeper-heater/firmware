@@ -43,7 +43,8 @@ void glow_init(glow *g, const glow_params *p, uint32_t now_ms) {
   memset(g, 0, sizeof(*g));
   g->p = *p;
   g->last_ms = now_ms;
-  g->bucket_a2us = cap_a2us(g); /* GLW-21: after a reset the budget starts as used up */
+  /* After a reset the budget starts empty: the burn runs the fan longer before the first glow
+   * instead (GLW-21; burn_params.reset_fan_s). */
 }
 
 uint32_t glow_bucket_a2s(const glow *g) { return (uint32_t) (g->bucket_a2us / 1000000u); }

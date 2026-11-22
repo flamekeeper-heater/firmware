@@ -69,6 +69,7 @@ static void rig_init(rig *r, uint32_t start, double ambient_c) {
   burn_params_default(&p);
   burn_inputs in = inputs(r);
   burn_init(&r->b, &p, r->now, &in);
+  r->b.reset_fan_due = 0; /* most tests start long after the reset; test_reset_fan says otherwise */
 }
 
 static void tick(rig *r) {
@@ -86,6 +87,8 @@ static void tick(rig *r) {
   r->now += TICK;
   burn_inputs in = inputs(r);
   burn_step(&r->b, r->now, &in);
+  if (r->b.out.fan_reset) /* the safety glue starts the fan stage afresh */
+    r->fan_fault = 0;
   if (r->b.step > r->max_step_seen)
     r->max_step_seen = r->b.step;
   if (r->b.step == BURN_STEP_RUNNING && r->b.air_mp < r->b.fuel_mp)
@@ -183,7 +186,10 @@ static void test_glow_needs_airflow(void) {
   rig_init(&r, 0, 10);
   r.m.fan_max_rpm = 800; /* below the glow's minimum speed */
   CHECK_EQ(start(&r, HEAT, 50), 0);
-  CHECK(run_until_step(&r, BURN_STEP_OFF, 30 * SEC));
+  CHECK(run_until_step(&r, BURN_STEP_FAN_RETRY, 15 * SEC)); /* tried twice more (FAN-5) ... */
+  CHECK(run_until_step(&r, BURN_STEP_OFF, 60 * SEC));       /* ... then locked out */
+  CHECK_EQ(r.b.fan_stalls, 3);
+  CHECK(r.b.fault_latched);
   CHECK_EQ(r.b.fault, BURN_FAULT_FAN);
   CHECK_EQ(r.b.why, BURN_WHY_FAN_SPIN_UP);
   CHECK_EQ(r.glow_ms, 0);
@@ -332,18 +338,27 @@ static void test_fan_stage_faults(void) {
   CHECK_EQ(r.b.out.pump_cHz, 0);
   CHECK(r.b.fault_latched);
 
-  /* A stalled fan reported by the fan stage: everything off at once (no air to cool with). */
+  /* A stall reported by the fan stage: everything off at once (no air), the fan stage cleared,
+   * then the fan tries again and cools the heater down (FAN-5). */
   rig r2;
   rig_init(&r2, 0, 10);
   CHECK_EQ(start(&r2, HEAT, 50), 0);
   CHECK(run_until_step(&r2, BURN_STEP_RUNNING, 5 * MIN));
   r2.fan_fault = 1;
   run(&r2, TICK);
-  CHECK_EQ(r2.b.step, BURN_STEP_OFF);
+  CHECK_EQ(r2.b.step, BURN_STEP_FAN_RETRY);
+  CHECK_EQ(burn_state(&r2.b), BURN_STATE_STOPPING);
   CHECK_EQ(r2.b.why, BURN_WHY_FAN_STALL);
   CHECK_EQ(r2.b.out.fan_rpm, 0);
   CHECK_EQ(r2.b.out.pump_cHz, 0);
-  CHECK_EQ(start(&r2, HEAT, 50), 0x2F);
+  CHECK_EQ(r2.b.out.glow_w, 0);
+  CHECK_EQ(r2.fan_fault, 0);
+  CHECK(!r2.b.fault_latched);
+  CHECK(run_until_step(&r2, BURN_STEP_COOLDOWN, 6 * SEC));
+  CHECK(run_until_step(&r2, BURN_STEP_OFF, 20 * MIN));
+  CHECK_EQ(r2.b.why, BURN_WHY_FAN_STALL);
+  CHECK(!r2.b.fault_latched);
+  CHECK_EQ(start(&r2, HEAT, 50), 0); /* the user may start again */
 }
 
 static void test_precheck(void) {
@@ -475,13 +490,97 @@ static void test_fan_stall(void) {
   CHECK(run_until_step(&r, BURN_STEP_RUNNING, 5 * MIN));
   r.m.fan_stalled = 1;
   uint32_t t = r.now;
-  CHECK(run_until_step(&r, BURN_STEP_OFF, 10 * SEC));
+  CHECK(run_until_step(&r, BURN_STEP_FAN_RETRY, 10 * SEC));
   CHECK((uint32_t) (r.now - t) <= 6 * SEC); /* fan slows (inertia), then 1 s below the stall speed */
   CHECK_EQ(r.b.fault, BURN_FAULT_FAN);
   CHECK_EQ(r.b.why, BURN_WHY_FAN_STALL);
   run(&r, TICK);
   CHECK_EQ(r.b.out.pump_cHz, 0);
   CHECK_EQ(r.b.out.glow_w, 0);
+  CHECK_EQ(r.b.out.fan_rpm, 0);
+  /* It never frees: two retries (each a cooldown that does not turn), then locked out. */
+  uint32_t pump = r.pump_ms, glow = r.glow_ms;
+  CHECK(run_until_step(&r, BURN_STEP_OFF, 60 * SEC));
+  CHECK_EQ(r.b.fan_stalls, 3);
+  CHECK(r.b.fault_latched);
+  CHECK_EQ(r.pump_ms, pump);
+  CHECK_EQ(r.glow_ms, glow);
+  CHECK_EQ(start(&r, HEAT, 50), 0x2F);
+  run(&r, 5 * MIN);
+  CHECK_EQ(r.b.step, BURN_STEP_OFF); /* no more tries */
+  CHECK_EQ(r.b.out.fan_rpm, 0);
+  /* A fault reset clears it. */
+  r.m.fan_stalled = 0;
+  burn_inputs in = inputs(&r);
+  CHECK_EQ(burn_fault_reset(&r.b, &in), 0);
+  CHECK_EQ(r.b.fan_stalls, 0);
+}
+
+static void test_fan_stall_frees(void) {
+  /* A stall before any fuel: the start carries on once the fan turns again. */
+  rig r;
+  rig_init(&r, 0, 10);
+  CHECK_EQ(start(&r, HEAT, 50), 0);
+  CHECK(run_until_step(&r, BURN_STEP_PREHEAT, 10 * SEC));
+  r.m.fan_stalled = 1;
+  CHECK(run_until_step(&r, BURN_STEP_FAN_RETRY, 10 * SEC));
+  CHECK_EQ(burn_state(&r.b), BURN_STATE_STARTING);
+  CHECK_EQ(r.b.out.glow_w, 0);
+  r.m.fan_stalled = 0;
+  CHECK(run_until_step(&r, BURN_STEP_SELF_TEST, 6 * SEC));
+  CHECK_EQ(r.b.fault, BURN_FAULT_NONE);
+  CHECK(run_until_step(&r, BURN_STEP_RUNNING, 5 * MIN));
+  CHECK_EQ(r.b.fan_stalls, 1);
+  /* Ten minutes of normal turning and the count forgets. */
+  run(&r, 10 * MIN + SEC);
+  CHECK_EQ(r.b.fan_stalls, 0);
+
+  /* A fan-only run carries on too; a stop during the wait ends it at once. */
+  rig f;
+  rig_init(&f, 0, 10);
+  CHECK_EQ(start(&f, FAN, 50), 0);
+  run(&f, 20 * SEC);
+  f.m.fan_stalled = 1;
+  CHECK(run_until_step(&f, BURN_STEP_FAN_RETRY, 10 * SEC));
+  CHECK_EQ(burn_state(&f.b), BURN_STATE_FAN_ONLY);
+  f.m.fan_stalled = 0;
+  CHECK(run_until_step(&f, BURN_STEP_FAN_ONLY, 6 * SEC));
+  f.m.fan_stalled = 1;
+  CHECK(run_until_step(&f, BURN_STEP_FAN_RETRY, 20 * SEC));
+  burn_stop(&f.b, BURN_WHY_ASKED, f.now);
+  CHECK_EQ(f.b.step, BURN_STEP_OFF);
+}
+
+static void test_reset_fan(void) {
+  /* The first heat start soon after a reset runs the fan 30 s longer before the glow (GLW-21). */
+  rig r;
+  rig_init(&r, 0, 10);
+  r.b.reset_fan_due = 1;
+  CHECK_EQ(start(&r, HEAT, 50), 0);
+  CHECK(run_until_step(&r, BURN_STEP_SELF_TEST, SEC));
+  uint32_t t = r.now;
+  CHECK(run_until_step(&r, BURN_STEP_PREHEAT, 45 * SEC));
+  CHECK((uint32_t) (r.now - t) >= 30 * SEC);
+  CHECK((uint32_t) (r.now - t) <= 35 * SEC);
+  CHECK_EQ(r.glow_ms, 0);
+  /* The next start does not owe it. */
+  burn_stop(&r.b, BURN_WHY_ASKED, r.now);
+  run(&r, TICK);
+  CHECK_EQ(start(&r, HEAT, 50), 0);
+  t = r.now; /* the fan still turns: the self-test may pass in the first pass */
+  CHECK(run_until_step(&r, BURN_STEP_PREHEAT, 10 * SEC));
+  CHECK((uint32_t) (r.now - t) < 10 * SEC);
+
+  /* Nor does a first start long after the reset. */
+  rig q;
+  rig_init(&q, 0, 10);
+  q.b.reset_fan_due = 1;
+  run(&q, 5 * MIN);
+  CHECK_EQ(start(&q, HEAT, 50), 0);
+  CHECK(run_until_step(&q, BURN_STEP_SELF_TEST, SEC));
+  t = q.now;
+  CHECK(run_until_step(&q, BURN_STEP_PREHEAT, 10 * SEC));
+  CHECK((uint32_t) (q.now - t) < 10 * SEC);
 }
 
 static void test_sensor_open(void) {
@@ -609,6 +708,8 @@ int main(void) {
   test_board_too_hot();
   test_plug_refused();
   test_fan_stall();
+  test_fan_stall_frees();
+  test_reset_fan();
   test_sensor_open();
   test_reset_while_hot();
   test_fan_only_and_priming();

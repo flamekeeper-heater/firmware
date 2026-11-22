@@ -285,6 +285,8 @@ void safety_step(safety *s, uint32_t now, const burn_inputs *in) {
   if (link_deadman_expired(&s->deadman, now, burn_active(&s->burn)))
     burn_stop(&s->burn, BURN_WHY_DEADMAN, now); /* a full burn-off and cooldown, on its own */
   burn_step(&s->burn, now, &s->in);
+  if (s->burn.out.fan_reset) /* a stall the burn retries: the fan stage starts afresh */
+    fan_init(&s->fan, &s->fan.p, now);
 }
 
 const burn_outputs *safety_outputs(const safety *s) { return &s->burn.out; }
