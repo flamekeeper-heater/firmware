@@ -118,16 +118,24 @@ class McuUpdate : public McuUpdater {
   void set_text_(const char *fmt, ...);
   void enter_(uint32_t now);
   void issue_(uint32_t now);
+  void issue_(Step step, uint32_t now) {
+    this->step_ = step;
+    this->issue_(now);
+  }
+  void redo_page_();
   void command_ok_(uint32_t now);
   void command_failed_(Stm32Boot::Status st, uint32_t now);
   void next_page_(uint32_t now);
   void start_page_(uint32_t now);
   void leave_by_reset_(uint32_t now);
   void leave_by_go_(uint32_t now);
-  void fail_(uint32_t now, const char *why);
-  void finish_failed_();
+  void fail_(uint32_t now, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
   void save_pending_(bool pending);
-  uint32_t block_address_() const { return g030::FLASH_BASE + this->page_ * g030::PAGE_SIZE + this->block_ * Stm32Boot::BLOCK; }
+  // The block's offset in the image, and its address in the MCU's flash.
+  uint32_t block_offset_() const {
+    return uint32_t(this->page_) * g030::PAGE_SIZE + uint32_t(this->block_) * Stm32Boot::BLOCK;
+  }
+  uint32_t block_address_() const { return g030::FLASH_BASE + this->block_offset_(); }
   uint16_t block_len_() const;
   void block_bytes_(uint8_t *out) const;
   uint16_t pages_() const { return uint16_t((this->size_ + g030::PAGE_SIZE - 1) / g030::PAGE_SIZE); }
@@ -151,7 +159,7 @@ class McuUpdate : public McuUpdater {
   uint8_t entries_{0};
   uint8_t tries_{0};
   uint8_t reentries_{0};
-  bool redo_page_{false};  // after a re-entry: erase the current page again, then write it from its start
+  bool page_again_{false};  // erase the current page again, then write it from its start
   bool touched_{false};    // something was erased or written: the old firmware is gone
   bool failing_{false};    // leaving towards FAILED (the old firmware restarted)
   bool reset_tried_{false};  // CONFIRM: the reset pulse after a silent start was tried

@@ -4,20 +4,10 @@
 #include <cstdio>
 #include <cstring>
 
+#include "bytes.h"
+
 namespace esphome {
 namespace flamekeeper {
-
-namespace {
-uint32_t get_le32(const uint8_t *p) {
-  return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;
-}
-void put_le32(uint8_t *p, uint32_t v) {
-  p[0] = uint8_t(v);
-  p[1] = uint8_t(v >> 8);
-  p[2] = uint8_t(v >> 16);
-  p[3] = uint8_t(v >> 24);
-}
-}  // namespace
 
 void McuUpdate::set_text_(const char *fmt, ...) {
   va_list args;
@@ -44,8 +34,8 @@ Outcome McuUpdate::check_image() const {
   if (this->size_ > uint32_t(g030::APP_PAGES) * g030::PAGE_SIZE)
     return Outcome::refuse(Result::TOO_BIG, "the safety MCU firmware would overwrite its saved data");
   // The vector table: a stack in RAM and a reset handler (Thumb) inside the image.
-  const uint32_t sp = this->size_ >= 8 ? get_le32(this->image_) : 0;
-  const uint32_t pc = this->size_ >= 8 ? get_le32(this->image_ + 4) : 0;
+  const uint32_t sp = this->size_ >= 8 ? get_u32(this->image_) : 0;
+  const uint32_t pc = this->size_ >= 8 ? get_u32(this->image_ + 4) : 0;
   if (sp <= g030::RAM_BASE || sp > g030::RAM_END || !(pc & 1u) || pc < g030::FLASH_BASE + 8 ||
       pc >= g030::FLASH_BASE + this->size_)
     return Outcome::refuse(Result::BAD_IMAGE, "the safety MCU firmware has no valid vector table");
@@ -104,7 +94,7 @@ Outcome McuUpdate::begin(McuJob job, bool prepare, uint32_t now) {
   this->now_ = now;
   this->step_ = Step::GET;
   this->entries_ = this->tries_ = this->reentries_ = 0;
-  this->redo_page_ = this->touched_ = this->failing_ = this->reset_tried_ = false;
+  this->page_again_ = this->touched_ = this->failing_ = this->reset_tried_ = false;
   this->blocks_done_ = 0;
   if (prepare) {
     this->phase_ = Phase::PREPARE;
@@ -148,10 +138,8 @@ void McuUpdate::on_link(bool up, const uint8_t version[3]) {
     }
     this->save_pending_(false);  // a firmware runs
     if (std::memcmp(version, this->version_, 3) != 0) {
-      char why[64];
-      snprintf(why, sizeof(why), "the heater runs %u.%u.%u after the update, not %u.%u.%u", version[0], version[1],
-               version[2], this->version_[0], this->version_[1], this->version_[2]);
-      this->fail_(this->now_, why);
+      this->fail_(this->now_, "the heater runs %u.%u.%u after the update, not %u.%u.%u", version[0], version[1],
+                  version[2], this->version_[0], this->version_[1], this->version_[2]);
       return;
     }
     this->phase_ = Phase::DONE;
@@ -165,7 +153,12 @@ void McuUpdate::on_link(bool up, const uint8_t version[3]) {
   }
 }
 
-void McuUpdate::fail_(uint32_t now, const char *why) {
+void McuUpdate::fail_(uint32_t now, const char *fmt, ...) {
+  char why[sizeof(this->text_)];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(why, sizeof(why), fmt, args);
+  va_end(args);
   if (this->phase_ == Phase::PREPARE || this->phase_ == Phase::CONFIRM || !this->owns_uart()) {
     this->set_text_("Failed: %s", why);
     this->phase_ = Phase::FAILED;
@@ -187,11 +180,6 @@ void McuUpdate::fail_(uint32_t now, const char *why) {
   this->phase_ = Phase::FAILED;
 }
 
-void McuUpdate::finish_failed_() {
-  this->failing_ = false;
-  this->phase_ = Phase::FAILED;
-}
-
 void McuUpdate::enter_(uint32_t now) {
   if (this->step_ == Step::GET)
     this->set_text_("Starting the heater's bootloader");
@@ -208,9 +196,8 @@ void McuUpdate::leave_by_reset_(uint32_t now) {
 }
 
 void McuUpdate::leave_by_go_(uint32_t now) {
-  this->step_ = Step::GO;
   this->tries_ = 0;
-  this->issue_(now);
+  this->issue_(Step::GO, now);
 }
 
 // ---------------------------------------------------------------- the loop
@@ -286,7 +273,8 @@ void McuUpdate::loop(uint32_t now) {
         this->port_->drive_reset(false);
         this->port_->bootloader_framing(false);
         if (this->failing_) {
-          this->finish_failed_();
+          this->failing_ = false;
+          this->phase_ = Phase::FAILED;
         } else {
           this->phase_ = Phase::CONFIRM;
           this->phase_ms_ = now;
@@ -311,15 +299,14 @@ void McuUpdate::loop(uint32_t now) {
 // ---------------------------------------------------------------- commands
 
 uint16_t McuUpdate::block_len_() const {
-  const uint32_t off = uint32_t(this->page_) * g030::PAGE_SIZE + uint32_t(this->block_) * Stm32Boot::BLOCK;
-  uint32_t n = this->size_ - off;
+  uint32_t n = this->size_ - this->block_offset_();
   if (n > Stm32Boot::BLOCK)
     n = Stm32Boot::BLOCK;
   return uint16_t((n + 7) & ~7u);  // whole double words, padded with erased bytes
 }
 
 void McuUpdate::block_bytes_(uint8_t *out) const {
-  const uint32_t off = uint32_t(this->page_) * g030::PAGE_SIZE + uint32_t(this->block_) * Stm32Boot::BLOCK;
+  const uint32_t off = this->block_offset_();
   const uint16_t len = this->block_len_();
   for (uint16_t i = 0; i < len; i++)
     out[i] = off + i < this->size_ ? this->image_[off + i] : 0xFF;
@@ -340,7 +327,7 @@ void McuUpdate::issue_(uint32_t now) {
       this->boot_.read(g030::OPTION_BASE, g030::OPTION_SIZE);
       break;
     case Step::ERASE: {
-      const uint16_t page = this->redo_page_ ? this->page_ : this->erase_index_;
+      const uint16_t page = this->page_again_ ? this->page_ : this->erase_index_;
       this->touched_ = true;
       ok = this->boot_.erase(&page, 1);
       break;
@@ -367,8 +354,16 @@ void McuUpdate::issue_(uint32_t now) {
 
 void McuUpdate::start_page_(uint32_t now) {
   this->block_ = 0;
-  this->step_ = Step::WRITE;
-  this->issue_(now);
+  this->issue_(Step::WRITE, now);
+}
+
+// The current page again from its start (the block may be half-written, or read back wrong): its
+// blocks no longer count, and it is erased first.
+void McuUpdate::redo_page_() {
+  if (!this->page_again_)
+    this->blocks_done_ -= this->block_;
+  this->page_again_ = true;
+  this->step_ = Step::ERASE;
 }
 
 // Pages 1, 2, ... then page 0, whose vector table makes the image runnable.
@@ -392,39 +387,32 @@ void McuUpdate::command_ok_(uint32_t now) {
       static const uint8_t NEEDED[] = {Stm32Boot::READ, Stm32Boot::GO, Stm32Boot::WRITE, Stm32Boot::EXT_ERASE};
       for (uint8_t c : NEEDED) {
         if (n < 2 || std::memchr(r + 1, c, n - 1) == nullptr) {
-          char why[64];
-          snprintf(why, sizeof(why), "the heater's bootloader lacks command 0x%02X", c);
-          this->fail_(now, why);
+          this->fail_(now, "the heater's bootloader lacks command 0x%02X", c);
           return;
         }
       }
-      this->step_ = Step::GET_ID;
-      this->issue_(now);
+      this->issue_(Step::GET_ID, now);
       return;
     }
     case Step::GET_ID: {
       this->chip_id_ = n >= 2 ? uint16_t(r[0] << 8 | r[1]) : 0;
       if (this->chip_id_ != g030::CHIP_ID) {
-        char why[64];
-        snprintf(why, sizeof(why), "the safety MCU is not an STM32G030 (chip id 0x%03X)", unsigned(this->chip_id_));
-        this->fail_(now, why);
+        this->fail_(now, "the safety MCU is not an STM32G030 (chip id 0x%03X)", unsigned(this->chip_id_));
         return;
       }
-      this->step_ = Step::READ_OPTIONS;
-      this->issue_(now);
+      this->issue_(Step::READ_OPTIONS, now);
       return;
     }
     case Step::READ_OPTIONS: {
       std::memcpy(this->options_, r, g030::OPTION_SIZE);
-      this->optr_ = get_le32(this->options_);
+      this->optr_ = get_u32(this->options_);
       this->optr_known_ = true;
       const bool as_required = g030::optr_required(this->optr_) == this->optr_;
       if (this->job_ == McuJob::UPDATE) {
         this->save_pending_(true);  // before the first erase
         this->erase_index_ = 0;
         this->set_text_("Erasing");
-        this->step_ = Step::ERASE;
-        this->issue_(now);
+        this->issue_(Step::ERASE, now);
         return;
       }
       if (this->job_ == McuJob::READ_OPTIONS) {
@@ -438,7 +426,7 @@ void McuUpdate::command_ok_(uint32_t now) {
         this->fail_(now, "the chip's read-out protection is on: option bytes not written");
         return;
       }
-      if (get_le32(this->options_ + 4) != ~this->optr_) {
+      if (get_u32(this->options_ + 4) != ~this->optr_) {
         this->fail_(now, "the option bytes do not read as value and complement: not written");
         return;
       }
@@ -448,16 +436,15 @@ void McuUpdate::command_ok_(uint32_t now) {
         this->leave_by_go_(now);
         return;
       }
-      put_le32(this->options_, this->optr_wanted_);
-      put_le32(this->options_ + 4, ~this->optr_wanted_);
+      put_u32(this->options_, this->optr_wanted_);
+      put_u32(this->options_ + 4, ~this->optr_wanted_);
       this->set_text_("Writing the option bytes");
-      this->step_ = Step::WRITE_OPTIONS;
-      this->issue_(now);
+      this->issue_(Step::WRITE_OPTIONS, now);
       return;
     }
     case Step::ERASE:
-      if (this->redo_page_) {
-        this->redo_page_ = false;
+      if (this->page_again_) {
+        this->page_again_ = false;
         this->start_page_(now);
         return;
       }
@@ -471,8 +458,7 @@ void McuUpdate::command_ok_(uint32_t now) {
       this->start_page_(now);
       return;
     case Step::WRITE:
-      this->step_ = Step::VERIFY;
-      this->issue_(now);
+      this->issue_(Step::VERIFY, now);
       return;
     case Step::VERIFY: {
       uint8_t block[Stm32Boot::BLOCK];
@@ -480,14 +466,10 @@ void McuUpdate::command_ok_(uint32_t now) {
       const uint16_t len = this->block_len_();
       if (n != len || std::memcmp(r, block, len) != 0) {
         if (++this->page_tries_ >= PAGE_TRIES) {
-          char why[80];
-          snprintf(why, sizeof(why), "the block at 0x%08X does not read back as written", unsigned(this->block_address_()));
-          this->fail_(now, why);
+          this->fail_(now, "the block at 0x%08X does not read back as written", unsigned(this->block_address_()));
           return;
         }
-        this->blocks_done_ -= this->block_;  // the page again from its start
-        this->redo_page_ = true;
-        this->step_ = Step::ERASE;
+        this->redo_page_();
         this->issue_(now);
         return;
       }
@@ -501,8 +483,7 @@ void McuUpdate::command_ok_(uint32_t now) {
         this->next_page_(now);
         return;
       }
-      this->step_ = Step::WRITE;
-      this->issue_(now);
+      this->issue_(Step::WRITE, now);
       return;
     }
     case Step::WRITE_OPTIONS:
@@ -512,12 +493,10 @@ void McuUpdate::command_ok_(uint32_t now) {
       this->phase_ms_ = now;
       return;
     case Step::CHECK_OPTIONS: {
-      this->optr_ = get_le32(r);
-      if (this->optr_ != this->optr_wanted_ || get_le32(r + 4) != ~this->optr_wanted_) {
-        char why[80];
-        snprintf(why, sizeof(why), "the option bytes read back 0x%08X, not 0x%08X", unsigned(this->optr_),
-                 unsigned(this->optr_wanted_));
-        this->fail_(now, why);
+      this->optr_ = get_u32(r);
+      if (this->optr_ != this->optr_wanted_ || get_u32(r + 4) != ~this->optr_wanted_) {
+        this->fail_(now, "the option bytes read back 0x%08X, not 0x%08X", unsigned(this->optr_),
+                    unsigned(this->optr_wanted_));
         return;
       }
       this->set_text_("Option bytes written and read back: 0x%08X", unsigned(this->optr_));
@@ -544,9 +523,7 @@ void McuUpdate::command_failed_(Stm32Boot::Status st, uint32_t now) {
       case Step::WRITE:
         // Refused every time (a double word not erased?): the page again from its start.
         if (++this->page_tries_ < PAGE_TRIES) {
-          this->blocks_done_ -= this->block_;
-          this->redo_page_ = true;
-          this->step_ = Step::ERASE;
+          this->redo_page_();
           this->issue_(now);
           return;
         }
@@ -572,12 +549,8 @@ void McuUpdate::command_failed_(Stm32Boot::Status st, uint32_t now) {
     return;
   }
   if (this->step_ == Step::WRITE || this->step_ == Step::VERIFY ||
-      (this->step_ == Step::ERASE && this->redo_page_)) {
-    // The block may be half-written: its page again from the start.
-    if (!this->redo_page_)
-      this->blocks_done_ -= this->block_;
-    this->redo_page_ = true;
-    this->step_ = Step::ERASE;
+      (this->step_ == Step::ERASE && this->page_again_)) {
+    this->redo_page_();  // the block may be half-written
   } else if (this->step_ == Step::WRITE_OPTIONS) {
     this->step_ = Step::CHECK_OPTIONS;  // it may have been written, and the MCU reset
   }

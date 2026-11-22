@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "../bytes.h"
 #include "../link_client.h"
 #include "../mcu_update.h"
 #include "../stm32_boot.h"
@@ -23,8 +24,8 @@ static std::vector<uint8_t> make_image(uint32_t size, uint8_t minor, uint32_t se
     x = x * 1103515245u + 12345u;
     b = uint8_t(x >> 16);
   }
-  SimStm32::put_le(v.data(), 0x20002000u);      // the initial stack pointer
-  SimStm32::put_le(v.data() + 4, 0x080000C1u);  // the reset handler (Thumb)
+  fk::put_u32(v.data(), 0x20002000u);      // the initial stack pointer
+  fk::put_u32(v.data() + 4, 0x080000C1u);  // the reset handler (Thumb)
   v[0x100] = 0;
   v[0x101] = minor;
   v[0x102] = 0;
@@ -140,7 +141,7 @@ static void test_commands() {
   CHECK(wait() == Boot::Status::OK);
   b.read(0x1FFF7800, 8);
   CHECK(wait() == Boot::Status::OK);
-  CHECK_EQ(SimStm32::get_le(b.reply()), CONFIGURED_OPTR);
+  CHECK_EQ(fk::get_u32(b.reply()), CONFIGURED_OPTR);
   b.read(0x40000000, 4);  // not memory
   CHECK(wait() == Boot::Status::NACK);
 
@@ -495,8 +496,8 @@ static void test_option_bytes() {
     CHECK_EQ(r.mcu.option_writes, 1);
     CHECK_EQ(r.mcu.optr, CONFIGURED_OPTR);
     CHECK(!r.mcu.optverr);
-    CHECK_EQ(SimStm32::get_le(r.mcu.opt + 4), ~CONFIGURED_OPTR);
-    CHECK_EQ(SimStm32::get_le(r.mcu.opt + 8), 0x000000FFu);  // the other words kept
+    CHECK_EQ(fk::get_u32(r.mcu.opt + 4), ~CONFIGURED_OPTR);
+    CHECK_EQ(fk::get_u32(r.mcu.opt + 8), 0x000000FFu);  // the other words kept
     CHECK(contains(r.text(), "DEFEE1AA"));
     CHECK_EQ(r.mcu.erases + r.mcu.writes, 0);
     CHECK(r.runs(1));

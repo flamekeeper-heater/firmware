@@ -24,11 +24,14 @@
 #include <utility>
 #include <vector>
 
+#include "../bytes.h"
 #include "../link.h"
 #include "../stm32_boot.h"
 
-struct SimStm32 : public esphome::flamekeeper::BootPort {
-  using Boot = esphome::flamekeeper::Stm32Boot;
+namespace fk = esphome::flamekeeper;
+
+struct SimStm32 : public fk::BootPort {
+  using Boot = fk::Stm32Boot;
   static const uint32_t FLASH_SIZE = 64 * 1024;
   static const uint32_t FLASH_BASE = 0x08000000;
   static const uint32_t PAGE = 2048;
@@ -89,11 +92,11 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
 
   void set_optr(uint32_t value) {
     std::memset(this->opt, 0xFF, sizeof(this->opt));
-    put_le(this->opt, value);
-    put_le(this->opt + 4, ~value);
+    fk::put_u32(this->opt, value);
+    fk::put_u32(this->opt + 4, ~value);
     for (uint32_t i = 8; i < OPT_SIZE; i += 8) {  // the other option words, at their reset values
-      put_le(this->opt + i, 0x000000FFu);
-      put_le(this->opt + i + 4, ~0x000000FFu);
+      fk::put_u32(this->opt + i, 0x000000FFu);
+      fk::put_u32(this->opt + i + 4, ~0x000000FFu);
     }
     this->option_load();
   }
@@ -185,22 +188,12 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
 
   // ---------------------------------------------------------------- the chip
 
-  static void put_le(uint8_t *p, uint32_t v) {
-    p[0] = uint8_t(v);
-    p[1] = uint8_t(v >> 8);
-    p[2] = uint8_t(v >> 16);
-    p[3] = uint8_t(v >> 24);
-  }
-  static uint32_t get_le(const uint8_t *p) {
-    return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;
-  }
-
   // WDG-7: a word whose complement does not match loads every USR bit as 1 and RDP as level 1.
   void option_load() {
-    uint32_t v = get_le(this->opt), c = get_le(this->opt + 4);
+    uint32_t v = fk::get_u32(this->opt), c = fk::get_u32(this->opt + 4);
     this->optverr = v != ~c;
     this->optr = this->optverr ? 0xFFFFFFFFu : v;
-    this->empty = get_le(this->flash) == 0xFFFFFFFFu;
+    this->empty = fk::get_u32(this->flash) == 0xFFFFFFFFu;
   }
   bool rdp_level0() const { return (this->optr & 0xFF) == 0xAA; }
 
@@ -228,7 +221,7 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
   }
   void start_app(uint32_t address) {
     uint32_t off = address - FLASH_BASE;
-    uint32_t sp = get_le(this->flash + off), pc = get_le(this->flash + off + 4);
+    uint32_t sp = fk::get_u32(this->flash + off), pc = fk::get_u32(this->flash + off + 4);
     bool ok = sp > 0x20000000u && sp <= 0x20002000u && (pc & 1) && pc > address && pc < FLASH_BASE + FLASH_SIZE;
     this->mode = ok ? APP : LOCKUP;
   }
