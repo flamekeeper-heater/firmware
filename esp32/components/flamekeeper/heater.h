@@ -1,0 +1,348 @@
+// The heater as the rest of the firmware sees it: what can be asked of it, what it reports, and its
+// parameters. Every backend (the Flamekeeper safety MCU, or another heater's) implements Heater;
+// nothing above this file may know which one is in use.
+//
+// Plain C++ with no ESPHome or ESP-IDF headers, so the controller and the BLE codec built on it run
+// as host tests (tests/).
+#pragma once
+
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+
+namespace esphome {
+namespace flamekeeper {
+
+// What is asked of the heater.
+enum class Mode : uint8_t { OFF = 0, HEAT = 1, FAN = 2, PRIME = 3 };
+enum class HeatMode : uint8_t { POWER = 0, TEMPERATURE = 1 };  // a fixed power, or the thermostat
+enum class RoomSource : uint8_t { PROBE = 0, HOME_ASSISTANT = 1, BLUETOOTH = 2 };
+
+// Who asked. A run's source decides whether the Home Assistant failsafe covers it.
+// PHONE: an app over Bluetooth; WIFI_APP: a phone app signed in over Wi-Fi; BROWSER: the web page (PROTOCOL.md).
+// FROST and TIMER: the board's own automatic starts; never a person.
+enum class Source : uint8_t {
+  NONE = 0,
+  HOME_ASSISTANT = 1,
+  PHONE = 2,
+  BOARD = 3,
+  WIFI_APP = 4,
+  FROST = 5,
+  TIMER = 6,
+  RELAY_APP = 7,  // a phone through the internet relay
+  BROWSER = 8,    // the board's web page, signed in with the web password
+};
+inline bool is_automatic(Source s) { return s == Source::FROST || s == Source::TIMER; }
+
+// The heater's own state, mapped by the backend (PROTOCOL.md).
+enum class HeaterState : uint8_t {
+  UNKNOWN = 0,
+  OFF = 1,
+  STARTING = 2,
+  HEATING = 3,
+  FAN_ONLY = 4,
+  STOPPING = 5,
+  COOLING = 6,
+  PRIMING = 7,
+  UPDATING = 8,
+};
+
+// What the controller is doing (PROTOCOL.md).
+enum class ControlStatus : uint8_t {
+  IDLE = 0,
+  STARTING = 1,
+  RUNNING = 2,
+  PRIMING = 3,
+  STOPPING = 4,
+  NO_REPLY = 5,
+  UPDATING = 6,
+};
+
+// Heater faults, mapped by the backend from the heater's own code (PROTOCOL.md).
+enum class Fault : uint8_t {
+  NONE = 0,
+  VOLTAGE = 1,
+  VOLTAGE_LOW = 2,
+  VOLTAGE_HIGH = 3,
+  GLOW_PLUG = 4,
+  PUMP = 5,
+  OVERHEAT = 6,
+  FAN = 7,
+  FLAME_OUT = 8,
+  TEMP_SENSOR = 9,
+  START_FAILURE = 10,
+  CO = 11,
+  INTAKE_SENSOR = 12,
+  COMMS = 13,
+  CO_SENSOR = 14,  // the CO sensor's reading is not plausible (open, unheated)
+  OTHER = 255,
+};
+
+// The outcome of a request. Codes are the BLE result codes (PROTOCOL.md).
+enum class Result : uint8_t {
+  OK = 0x00,
+  STORED = 0x01,  // accepted, takes effect later
+  UNKNOWN_OPCODE = 0x10,
+  BAD_LENGTH = 0x11,
+  OUT_OF_RANGE = 0x12,
+  NOT_SUPPORTED = 0x13,
+  NOT_OFF = 0x20,
+  NO_REPLY = 0x21,
+  BUSY = 0x22,
+  NOT_CONFIRMED = 0x23,
+  KEY_UNKNOWN = 0x24,      // Wi-Fi sign-in with a key the board does not have
+  WRONG_PASSWORD = 0x25,   // the web password (sign-in, or the current one when changing it)
+  LOCKED_OUT = 0x26,       // too many wrong web passwords; try again later
+  TABLE_FULL = 0x27,       // no room for another key
+  BLUETOOTH_ONLY = 0x28,   // a command only a bonded phone may send
+  NO_WEB_PASSWORD = 0x29,  // web sign-in with no web password set
+  TOO_BIG = 0x2A,          // a board firmware image larger than the update slot
+  HASH_MISMATCH = 0x2B,    // a board firmware image not as announced (SHA-256), or incomplete
+  BAD_IMAGE = 0x2C,        // a board firmware image not signed by a trusted key, or not valid
+  REFUSED = 0x2F,
+};
+
+struct Outcome {
+  Result result{Result::OK};
+  const char *reason{""};  // English, as shown in the log; static storage
+
+  static Outcome ok() { return {Result::OK, ""}; }
+  static Outcome stored(const char *why) { return {Result::STORED, why}; }
+  static Outcome refuse(Result r, const char *why) { return {r, why}; }
+  bool accepted() const { return result == Result::OK || result == Result::STORED; }
+};
+
+// Capability bits (PROTOCOL.md).
+namespace cap {
+static const uint32_t FAN_ONLY = 1u << 0;
+static const uint32_t TEMPERATURE = 1u << 1;
+static const uint32_t PRIME = 1u << 2;
+static const uint32_t PRIME_STOP = 1u << 3;
+static const uint32_t PARAMETERS = 1u << 4;
+static const uint32_t ROOM_SOURCE = 1u << 5;
+static const uint32_t FIRMWARE_UPDATE = 1u << 6;  // not in the BLE capability word (no BLE command)
+static const uint32_t BLUETOOTH_ROOM = 1u << 7;   // Bluetooth thermometers as a room source
+static const uint32_t HA_ROOM = 1u << 8;          // a Home Assistant room sensor is set up in this build
+}  // namespace cap
+
+// Everything the heater reports. NAN / 0xFF... = not reported by this heater.
+struct HeaterStatus {
+  // what is asked of it (held by the backend, which acts on it)
+  Mode mode{Mode::OFF};
+  HeatMode heat_mode{HeatMode::POWER};
+  uint8_t power{0};  // %, the fixed power demand (and the fan speed in fan-only mode)
+  float target_c{20.0f};
+
+  // what it and its controller are doing
+  bool answering{false};
+  bool update_running{false};
+  HeaterState state{HeaterState::UNKNOWN};
+  ControlStatus control{ControlStatus::NO_REPLY};
+  Fault fault{Fault::NONE};
+  uint8_t panel_fault{0};  // the E-number the heater's own panel would show
+  uint16_t prime_left_s{0};
+  uint8_t params_pending{0};
+  float update_progress{NAN};  // %, heater firmware update
+
+  // measurements
+  float heat_exchanger_c{NAN};
+  float supply_v{NAN};
+  float fan_rpm{NAN};
+  float pump_hz{NAN};
+  float glow_w{NAN};
+  float glow_v{NAN};
+  float fan_v{NAN};  // the fan drive voltage
+  float glow_a{NAN};
+  float power_pct{NAN};
+  float co_ppm{NAN};
+  float altitude_m{NAN};
+  float pressure_hpa{NAN};  // barometric pressure (a board sensor)
+  uint8_t co_state{0};      // CoState: the CO sensor as the safety MCU judges it
+  float run_time_s{NAN};  // lifetime running time
+};
+
+// One parameter in the heater's table (PROTOCOL.md).
+namespace pflag {
+static const uint8_t NEEDS_OFF = 1u << 0;
+static const uint8_t BOARD = 1u << 1;  // a board setting: applied at once, no Apply needed
+static const uint8_t READ_ONLY = 1u << 2;
+}  // namespace pflag
+
+// The settings menu a parameter belongs in (PROTOCOL.md). Codes are stable; the order
+// here is the menu order, with OTHER last.
+enum class ParamGroup : uint8_t {
+  OTHER = 0,
+  THERMOSTAT = 1,
+  FUEL_PUMP = 2,
+  FAN = 3,
+  START_UP = 4,
+  GLOW_PLUG = 5,
+  SHUT_DOWN = 6,
+  ALTITUDE = 7,
+  FUEL_USE = 8,
+  FROST = 9,
+  ROOM = 10,
+  BATTERY = 11,
+  MAINTENANCE = 12,
+};
+static const ParamGroup PARAM_GROUP_ORDER[] = {
+    ParamGroup::THERMOSTAT, ParamGroup::FROST,     ParamGroup::ROOM,     ParamGroup::FUEL_USE,
+    ParamGroup::BATTERY,    ParamGroup::FUEL_PUMP, ParamGroup::FAN,      ParamGroup::START_UP,
+    ParamGroup::GLOW_PLUG,  ParamGroup::SHUT_DOWN, ParamGroup::ALTITUDE, ParamGroup::MAINTENANCE,
+    ParamGroup::OTHER};
+
+// The CO sensor as the safety MCU judges it (PROTOCOL.md).
+enum class CoState : uint8_t {
+  NOT_FITTED = 0,
+  WARMING_UP = 1,
+  LEARNING = 2,
+  OK = 3,
+  ALARM = 4,
+  SENSOR_FAULT = 5,
+  TOO_COLD = 6,
+};
+// Who should see it: everyone, those who open Advanced, or only with Expert mode on.
+enum class ParamLevel : uint8_t { BASIC = 0, ADVANCED = 1, EXPERT = 2 };
+// What a parameter does, as the app shows it: one or two sentences, at most this many bytes (a
+// PARAM_HELP result must fit one Bluetooth indication at the minimum MTU).
+static const size_t PARAM_HELP_MAX = 120;
+enum class Unit : uint8_t {
+  UNITLESS = 0,
+  SECONDS = 1,
+  PERCENT = 2,
+  HERTZ = 3,
+  RPM = 4,
+  CELSIUS = 5,
+  WATTS = 6,
+  METRES = 7,
+  MINUTES = 8,
+  ON_OFF = 9,
+  CELSIUS_DIFFERENCE = 10,  // a temperature difference (a band, an offset): x1.8 in F, no +32
+  LITRES = 11,              // a volume (the app may show US gallons)
+  MILLILITRES = 12,
+  VOLTS = 13,
+  HOURS = 14,
+};  // long names: HZ and friends are macros on some toolchains
+
+struct ParamInfo {
+  uint16_t id{0};
+  uint8_t flags{0};
+  Unit unit{Unit::UNITLESS};
+  uint8_t decimals{0};  // shown value = raw / 10^decimals
+  int32_t min{0};
+  int32_t max{0};
+  int32_t step{1};
+  const char *name{""};
+  ParamGroup group{ParamGroup::OTHER};
+  ParamLevel level{ParamLevel::BASIC};
+};
+
+struct ParamValue {
+  bool known{false};
+  bool staged{false};
+  int32_t value{0};
+  int32_t staged_value{0};
+};
+
+// Things a backend reports as they happen.
+enum class Event : uint8_t {
+  PARAMS_APPLIED = 0x01,
+  PARAMS_SAVED = 0x02,
+  PARAM_CHANGED = 0x03,
+  FAILSAFE_STOP = 0x04,
+  // 0x05 is the app protocol's Wi-Fi event (ble_protocol.h).
+  FAULT_RESET = 0x06,      // the heater's answer to "Reset heater fault"
+  PARAMS_DEFAULTS = 0x07,  // the heater's answer to "parameters back to defaults" (factory reset)
+  ALERT = 0x08,            // an alert came on (id = the alert bit)
+};
+
+class HeaterListener {
+ public:
+  virtual ~HeaterListener() = default;
+  virtual void on_heater_event(Event event, Result result, uint16_t id, const char *text) = 0;
+};
+
+// The interface every backend implements. Calls come only from the Controller, which applies the
+// checks common to every source; the backend applies its own (wire, state) and says why it refuses.
+class Heater {
+ public:
+  virtual ~Heater() = default;
+
+  virtual uint32_t capabilities() const = 0;
+  virtual void read_status(HeaterStatus &out) const = 0;
+  // A short description of the heater's firmware ("Extension 0.1 (protocol 1)", ...).
+  virtual const char *firmware_text() const { return ""; }
+  virtual float min_target() const { return 5.0f; }
+  virtual float max_target() const { return 35.0f; }
+
+  virtual Outcome set_mode(Mode mode) = 0;  // PRIME starts priming
+  virtual Outcome set_heat_mode(HeatMode mode) = 0;
+  virtual Outcome set_power_demand(uint8_t percent) = 0;  // 0..100
+  virtual Outcome set_target(float celsius) = 0;
+  virtual Outcome stop_prime() { return Outcome::refuse(Result::NOT_SUPPORTED, "stop priming is not supported"); }
+  virtual Outcome start_firmware_update() {
+    return Outcome::refuse(Result::NOT_SUPPORTED, "this heater has no firmware update");
+  }
+  virtual const char *firmware_update_text() const { return ""; }
+  // Factory reset: the heater's parameters back to their defaults where the board stores them (the
+  // Flamekeeper safety MCU). Heaters that keep their own do nothing.
+  virtual Outcome reset_parameters() { return Outcome::ok(); }
+
+  // Inputs from the board: NAN when unknown.
+  virtual void set_room_temperature(float celsius) = 0;
+  virtual void set_altitude(float metres) { (void) metres; }
+  // The fuel trim (%, the altitude trim included) and fan trim (rpm) the controller wants applied.
+  virtual void set_trims(int fuel_pct, int fan_rpm) {
+    (void) fuel_pct;
+    (void) fan_rpm;
+  }
+  // Clears a latched fault that needs a user reset, if its cause is gone.
+  virtual Outcome reset_fault() { return Outcome::refuse(Result::NOT_SUPPORTED, "this heater has no fault reset"); }
+
+  // Parameters: an empty table by default.
+  virtual size_t param_count() const { return 0; }
+  virtual bool param_info(size_t index, ParamInfo &out) const {
+    (void) index;
+    (void) out;
+    return false;
+  }
+  virtual bool param_get(uint16_t id, ParamValue &out) const {
+    (void) id;
+    (void) out;
+    return false;
+  }
+  virtual Outcome param_set(uint16_t id, int32_t value) {
+    (void) id;
+    (void) value;
+    return Outcome::refuse(Result::NOT_SUPPORTED, "this heater has no parameters");
+  }
+  virtual Outcome param_apply(bool save) {
+    (void) save;
+    return Outcome::refuse(Result::NOT_SUPPORTED, "this heater has no parameters");
+  }
+  virtual Outcome param_discard() { return Outcome::refuse(Result::NOT_SUPPORTED, "this heater has no parameters"); }
+  // What the parameter does (PARAM_HELP_MAX bytes at most), "" if not known (yet).
+  virtual const char *param_help(uint16_t id) const {
+    (void) id;
+    return "";
+  }
+  // A text for the parameter state ("Saved in the heater", "2 change(s) not sent yet", ...).
+  virtual const char *param_status_text() const { return ""; }
+
+  void set_listener(HeaterListener *listener) { this->listener_ = listener; }
+
+ protected:
+  void emit_(Event event, Result result, uint16_t id, const char *text) {
+    if (this->listener_ != nullptr)
+      this->listener_->on_heater_event(event, result, id, text);
+  }
+  HeaterListener *listener_{nullptr};
+};
+
+const char *heater_state_name(HeaterState s);
+const char *control_status_name(ControlStatus s);
+const char *fault_name(Fault f);
+const char *param_group_name(ParamGroup g);
+
+}  // namespace flamekeeper
+}  // namespace esphome

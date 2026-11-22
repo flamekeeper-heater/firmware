@@ -1,0 +1,107 @@
+# Flamekeeper board, rev A2: ESP32-C6-MINI-1-H8 (8 MB) next to the STM32G030 safety MCU.
+#
+# COMPILE ONLY for now: no board exists yet. The heater backend (safety_link) speaks the link
+# protocol (DESIGN.md) to the safety MCU on UART1; until an STM32 answers, the heater shows
+# "no reply" and every start is refused. The Home Assistant entities and the BLE service are the
+# shared ones (packages/flamekeeper.yaml).
+#
+# Board rules this file keeps:
+# * STM_NRST (IO23) and STM_BOOT (IO14) are not configured: only the safety-MCU updater may drive
+#   them.
+# * Logs go to the USB Serial/JTAG port; UART0 stays free for the debug header.
+# * The buzzer stays silent unless the safety MCU reports VIN present not
+#   configured until the link exists.
+#
+# No secrets in this file: Home Assistant sets the API encryption key when it adopts the board, and
+# Wi-Fi is set up from the phone app over Bluetooth (PROTOCOL.md).
+
+substitutions:
+  board_model: Flamekeeper rev A2
+  board_id: flamekeeper_rev_a2
+
+esphome:
+  name: flamekeeper
+  friendly_name: Diesel heater
+  name_add_mac_suffix: true
+
+esp32:
+  variant: esp32c6
+  board: esp32-c6-devkitc-1
+  flash_size: 4MB  # the board has 8 MB (-H8); a 4 MB layout also runs on the -N4 fallback (same footprint)
+  framework:
+    type: esp-idf
+    advanced:
+      # Every update, from the app or from ESPHome on a computer, must be signed with the project's
+      # release key (PROTOCOL.md): ECDSA P-256, Secure Boot V2 format. The
+      # key a new image must match is the one in the running image's own signature block, so the
+      # first image (USB) must be signed too: tools/release.sh.
+      signed_ota_verification:
+        signing_scheme: ecdsa256
+
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [flamekeeper, flamekeeper_ble, flamekeeper_net, flamekeeper_thermo, safety_link]
+
+packages:
+  flamekeeper: !include packages/flamekeeper.yaml
+
+logger:
+  hardware_uart: USB_SERIAL_JTAG
+
+api:
+  encryption: {}   # the key comes from Home Assistant at adoption
+
+# No OTA password (none can be compiled in without a secret): every image must carry the release
+# key's signature instead (signed_ota_verification above).
+ota:
+  - platform: esphome
+
+# No access point, captive portal or Improv: Wi-Fi is set up from the app (PROTOCOL.md). ESPHome
+# insists on a network here; this one is never joined. The radio stays off (enable_on_boot: false)
+# until the app sets a network, which is saved on the board and replaces this one.
+wifi:
+  ssid: flamekeeper-not-set-up
+  enable_on_boot: false
+  reboot_timeout: 0s
+
+# The safety MCU link: UART1 through the GPIO matrix. LINK_TX (the STM32's transmit) is IO20.
+uart:
+  id: link_uart
+  rx_pin: GPIO20
+  tx_pin: GPIO19
+  baud_rate: 115200
+
+safety_link:
+  id: heater_bus
+  uart_id: link_uart
+
+flamekeeper:
+  # The label PIN comes from the board key production burns into eFuse key block 5 (purpose
+  # HMAC_UP; blocks 0-4 stay free for flash encryption and secure boot). PROTOCOL.md.
+  pin_efuse_key: 5
+  # Off until the app switches it on.
+  home_assistant: from_app
+
+# BOOT (IO9, 10 k pull-up, pressed = low). A short press opens the Bluetooth pairing window; held
+# 10 s it is the factory reset: every setting and every paired app is forgotten, the PIN is the
+# label's again, Wi-Fi and Home Assistant are off (PROTOCOL.md). (Held at reset it
+# is the ROM's download mode, as always.)
+binary_sensor:
+  - platform: gpio
+    id: boot_button
+    internal: true
+    pin:
+      number: GPIO9
+      inverted: true
+      ignore_strapping_warning: true
+    on_click:
+      - min_length: 50ms
+        max_length: 2s
+        then:
+          - lambda: id(ble).open_pairing_window();
+      - min_length: 10s
+        max_length: 30s
+        then:
+          - lambda: id(heater).board().factory_reset();

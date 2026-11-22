@@ -1,0 +1,503 @@
+# Shared by every board profile: the Flamekeeper hub, the BLE service, the Wi-Fi transport and EVERY
+# Home Assistant entity. A board profile adds only hardware (UART, the heater backend with id
+# `heater_bus`, board sensors), the hub's board-specific keys (pin / pin_efuse_key, home_assistant)
+# and these substitutions:
+#   board_model   Device Information "Model Number" over BLE, e.g. "Flamekeeper rev A2"
+#   board_id      Info byte 2: flamekeeper_rev_a2, or a board code 1-255
+# and, from the release script (tools/release.sh), firmware_version: the "major.minor.patch" Info
+# reports and the update manifests compare (0.1.0 for builds made by hand).
+# Every entity is declared here, so the entity list is the same on every board. Values a heater
+# does not report stay "unknown"; commands it cannot do are refused with a reason in the log.
+
+substitutions:
+  firmware_version: "0.1.0"
+
+esphome:
+  project:
+    name: flamekeeper.${board_id}
+    version: ${firmware_version}
+
+api:
+  reboot_timeout: 0s   # never reboot when HA is away; the hub's failsafe stops HA-started runs instead
+  actions:
+    # A heater parameter by id (the phone app lists them with names; ids and ranges in the
+    # backend's table). Staged: sent with "Apply settings" / "Save settings to heater". Board
+    # settings (thermostat, altitude trim) apply at once.
+    - action: set_parameter
+      variables:
+        parameter: int
+        value: int
+      then:
+        - lambda: |-
+            if (parameter < 0 || parameter > 65535) return;
+            id(heater).controller().param_set((uint16_t) parameter, value,
+                                              flamekeeper::Source::HOME_ASSISTANT);
+
+flamekeeper:
+  id: heater
+  board: ${board_id}
+  heater_id: heater_bus
+  room_home_assistant: room_ha
+  failsafe_timeout: 15min   # only runs started from Home Assistant
+  time_id: flamekeeper_time  # the board's clock (timers, fuel meters), next to the apps'
+
+# Home Assistant's time while it is connected; the apps set the clock too (CLOCK_SET).
+time:
+  - platform: homeassistant
+    id: flamekeeper_time
+
+esp32_ble:
+  max_connections: 3
+
+esp32_ble_server:
+  manufacturer: Flamekeeper
+  model: ${board_model}
+  max_clients: 3
+
+flamekeeper_ble:
+  id: ble
+
+# Bluetooth thermometers as a room temperature source (BTHome, Xiaomi, Govee, SwitchBot, RuuviTag,
+# Qingping: flamekeeper/ble_thermo.h). Passive listening, about 9 % of the radio's time next to
+# Wi-Fi: each advert has about a 1 in 10 chance of being heard, so a thermometer that advertises
+# every few seconds can take a long scan to show up.
+esp32_ble_tracker:
+  scan_parameters:
+    active: false
+    interval: 320ms
+    window: 30ms
+
+flamekeeper_thermo:
+
+# The apps over Wi-Fi: the web page and the encrypted WebSocket (PROTOCOL.md).
+flamekeeper_net:
+
+# ------------------------------------------------------------------ controls
+
+climate:
+  - platform: flamekeeper
+    id: heater_climate
+    name: Heater
+
+switch:
+  # The board's own on/off settings (thermostat cycling, altitude fuel trim).
+  - platform: flamekeeper
+    type: parameter
+    name: Thermostat cycling
+    parameter: 0x116
+    icon: mdi:autorenew
+  - platform: flamekeeper
+    type: parameter
+    name: Altitude fuel trim
+    parameter: 0x120
+    icon: mdi:image-filter-hdr
+  - platform: flamekeeper
+    type: parameter
+    name: Frost protection
+    parameter: 0x140
+    icon: mdi:snowflake-thermometer
+
+select:
+  - platform: flamekeeper
+    type: heat_mode
+    name: Heat mode
+  - platform: flamekeeper
+    type: room_source
+    name: Room temperature source
+
+number:
+  # Fuel tank and frost protection (the apps show every board setting).
+  - platform: flamekeeper
+    type: parameter
+    name: Fuel tank size
+    parameter: 0x131
+    multiply: 10
+    min_value: 0
+    max_value: 200
+    step: 0.1
+    unit_of_measurement: "L"
+    mode: box
+    icon: mdi:barrel
+  - platform: flamekeeper
+    type: parameter
+    name: Low fuel alert
+    parameter: 0x132
+    min_value: 0
+    max_value: 50
+    step: 1
+    unit_of_measurement: "%"
+    mode: box
+    icon: mdi:gauge-low
+  - platform: flamekeeper
+    type: parameter
+    name: Stop at fuel left
+    parameter: 0x133
+    min_value: 0
+    max_value: 50
+    step: 1
+    unit_of_measurement: "%"
+    mode: box
+    icon: mdi:gauge-empty
+  - platform: flamekeeper
+    type: parameter
+    name: Low battery cut-off
+    parameter: 0x160
+    multiply: 10
+    min_value: 0
+    max_value: 28
+    step: 0.1
+    unit_of_measurement: "V"
+    mode: box
+    icon: mdi:car-battery
+  - platform: flamekeeper
+    type: parameter
+    name: Frost protection temperature
+    parameter: 0x141
+    multiply: 10
+    min_value: 1
+    max_value: 15
+    step: 0.5
+    unit_of_measurement: "°C"
+    mode: box
+    icon: mdi:snowflake-thermometer
+  - platform: flamekeeper
+    id: power_number
+    name: Power
+    mode: box
+  # The board's own settings (flamekeeper/tuning.*, ids 0x100-0x126): the same on every board, applied
+  # at once. Keep the names: Home Assistant derives entity ids from them.
+  - platform: flamekeeper
+    type: parameter
+    name: Fuel trim
+    parameter: 0x100
+    min_value: -30
+    max_value: 30
+    step: 1
+    unit_of_measurement: "%"
+    mode: box
+    icon: mdi:water-percent
+  - platform: flamekeeper
+    type: parameter
+    name: Fan trim
+    parameter: 0x101
+    min_value: -1000
+    max_value: 1000
+    step: 50
+    unit_of_measurement: "rpm"
+    mode: box
+    icon: mdi:fan-plus
+  - platform: flamekeeper
+    type: parameter
+    name: Thermostat band
+    parameter: 0x110
+    multiply: 10
+    min_value: 0.5
+    max_value: 10
+    step: 0.5
+    unit_of_measurement: "°C"
+    mode: box
+    icon: mdi:arrow-expand-horizontal
+  - platform: flamekeeper
+    type: parameter
+    name: Thermostat integral time
+    parameter: 0x111
+    min_value: 0
+    max_value: 120
+    step: 1
+    unit_of_measurement: "min"
+    mode: box
+    icon: mdi:sigma
+  - platform: flamekeeper
+    type: parameter
+    name: Thermostat min power
+    parameter: 0x112
+    min_value: 0
+    max_value: 100
+    step: 1
+    unit_of_measurement: "%"
+    mode: box
+    icon: mdi:arrow-collapse-down
+  - platform: flamekeeper
+    type: parameter
+    name: Thermostat max power
+    parameter: 0x113
+    min_value: 0
+    max_value: 100
+    step: 1
+    unit_of_measurement: "%"
+    mode: box
+    icon: mdi:arrow-collapse-up
+  - platform: flamekeeper
+    type: parameter
+    name: Thermostat ramp up
+    parameter: 0x114
+    min_value: 0
+    max_value: 200
+    step: 1
+    unit_of_measurement: "%/min"
+    mode: box
+    icon: mdi:trending-up
+  - platform: flamekeeper
+    type: parameter
+    name: Thermostat ramp down
+    parameter: 0x115
+    min_value: 0
+    max_value: 200
+    step: 1
+    unit_of_measurement: "%/min"
+    mode: box
+    icon: mdi:trending-down
+  - platform: flamekeeper
+    type: parameter
+    name: Thermostat stop above target
+    parameter: 0x117
+    multiply: 10
+    min_value: 0
+    max_value: 5
+    step: 0.1
+    unit_of_measurement: "°C"
+    mode: box
+    icon: mdi:thermometer-chevron-up
+  - platform: flamekeeper
+    type: parameter
+    name: Thermostat start below target
+    parameter: 0x118
+    multiply: 10
+    min_value: 0
+    max_value: 5
+    step: 0.1
+    unit_of_measurement: "°C"
+    mode: box
+    icon: mdi:thermometer-chevron-down
+  - platform: flamekeeper
+    type: parameter
+    name: Thermostat min run time
+    parameter: 0x119
+    min_value: 0
+    max_value: 120
+    step: 1
+    unit_of_measurement: "min"
+    mode: box
+    icon: mdi:timer-play-outline
+  - platform: flamekeeper
+    type: parameter
+    name: Thermostat min off time
+    parameter: 0x11A
+    min_value: 0
+    max_value: 120
+    step: 1
+    unit_of_measurement: "min"
+    mode: box
+    icon: mdi:timer-stop-outline
+  - platform: flamekeeper
+    type: parameter
+    name: Thermostat power without room temperature
+    parameter: 0x11B
+    min_value: 0
+    max_value: 100
+    step: 1
+    unit_of_measurement: "%"
+    mode: box
+    icon: mdi:thermometer-off
+  - platform: flamekeeper
+    type: parameter
+    name: Altitude offset   # was "Altitude reference": a new entity in Home Assistant
+    parameter: 0x121
+    min_value: -2000
+    max_value: 2000
+    step: 10
+    unit_of_measurement: "m"
+    mode: box
+    icon: mdi:image-filter-hdr
+  - platform: flamekeeper
+    type: parameter
+    name: Altitude fuel reduction per 1000 m
+    parameter: 0x122
+    multiply: 10
+    min_value: 0
+    max_value: 30
+    step: 0.5
+    unit_of_measurement: "%"
+    mode: box
+    icon: mdi:water-minus
+  - platform: flamekeeper
+    type: parameter
+    name: Altitude max fuel reduction
+    parameter: 0x123
+    min_value: 0
+    max_value: 30
+    step: 1
+    unit_of_measurement: "%"
+    mode: box
+    icon: mdi:arrow-collapse-down
+  - platform: flamekeeper
+    type: parameter
+    name: Altitude max fuel increase
+    parameter: 0x124
+    min_value: 0
+    max_value: 30
+    step: 1
+    unit_of_measurement: "%"
+    mode: box
+    icon: mdi:arrow-collapse-up
+  - platform: flamekeeper
+    type: parameter
+    name: Altitude smoothing time
+    parameter: 0x125
+    min_value: 0
+    max_value: 3600
+    step: 10
+    unit_of_measurement: "s"
+    mode: box
+    icon: mdi:sine-wave
+  - platform: flamekeeper
+    type: parameter
+    name: Altitude trim deadband
+    parameter: 0x126
+    multiply: 10
+    min_value: 0.5
+    max_value: 5
+    step: 0.5
+    unit_of_measurement: "%"
+    mode: box
+    icon: mdi:arrow-expand-horizontal
+
+button:
+  # Fuel priming with the heater off. Use it only when you are at the heater.
+  - platform: flamekeeper
+    type: prime
+    name: Prime fuel pump
+  - platform: flamekeeper
+    type: stop_prime
+    name: Stop priming
+  - platform: flamekeeper
+    type: apply_settings
+    name: Apply settings
+  - platform: flamekeeper
+    type: save_settings
+    name: Save settings to heater
+  - platform: flamekeeper
+    type: discard_settings
+    name: Discard setting changes
+  - platform: flamekeeper
+    type: firmware_update
+    name: Update heater firmware
+  - platform: flamekeeper
+    type: reset_fault
+    name: Reset heater fault
+  - platform: flamekeeper
+    type: tank_filled
+    name: Fuel tank filled
+  - platform: flamekeeper
+    type: rearm_automatic
+    name: Re-arm frost protection and timers
+  - platform: flamekeeper
+    type: clear_alerts
+    name: Clear alerts
+  - platform: flamekeeper
+    type: carbon_burnoff
+    name: Carbon burn-off
+  - platform: flamekeeper
+    type: glow_new_plug
+    name: New glow plug fitted
+  - platform: flamekeeper_ble
+    type: allow_pairing
+    name: Allow Bluetooth pairing
+
+# ------------------------------------------------------------------ status
+
+sensor:
+  - platform: flamekeeper
+    room_temperature:
+      name: Room temperature
+    fuel_left:
+      name: Fuel left
+    fuel_used:
+      name: Fuel used
+    burner_hours:
+      name: Burner hours
+    glow_plug_hours:
+      name: Glow plug hours
+    heat_exchanger_temperature:
+      name: Heat exchanger temperature
+    supply_voltage:
+      name: Supply voltage
+    fan_speed:
+      name: Fan speed
+    pump_frequency:
+      name: Fuel pump frequency
+    glow_plug_power:
+      name: Glow plug power
+    glow_plug_voltage:
+      name: Glow plug voltage
+    glow_plug_current:
+      name: Glow plug current
+    fan_voltage:
+      name: Fan voltage
+    power_demand:
+      name: Power demand
+    altitude:
+      name: Altitude
+    running_time:
+      name: Running time
+    priming_time_left:
+      name: Priming time left
+    intake_temperature:
+      name: Intake air temperature
+    carbon_monoxide:
+      name: Carbon monoxide
+    settings_pending:
+      name: Setting changes pending
+    firmware_update_progress:
+      name: Heater firmware update progress
+    failsafe_time_left:
+      name: Failsafe time left
+  - platform: flamekeeper_ble
+    paired_phones:
+      name: Bluetooth devices
+    pairing_time_left:
+      name: Bluetooth pairing time left
+  # The "Interior" sensor on the Climate Control dashboard: a room temperature source.
+  - platform: homeassistant
+    id: room_ha
+    entity_id: sensor.mobius_air_quality_monitor_temperature
+    internal: true
+  - platform: wifi_signal
+    name: WiFi signal
+    update_interval: 60s
+  - platform: uptime
+    name: Uptime
+    update_interval: 60s
+
+text_sensor:
+  - platform: flamekeeper
+    run_state:
+      name: Run state
+    controller_status:
+      name: Controller status
+    error:
+      name: Error
+    run_started_by:
+      name: Run started by
+    alerts:
+      name: Alerts
+    heater_firmware:
+      name: Heater firmware
+    settings_status:
+      name: Settings status
+    firmware_update_status:
+      name: Heater firmware update status
+    relay:
+      name: Relay
+  - platform: debug
+    reset_reason:
+      name: Last reset reason
+
+binary_sensor:
+  - platform: flamekeeper_ble
+    pairing_open:
+      id: ble_pairing_open
+      name: Bluetooth pairing open
+
+debug:
+  update_interval: 60s
