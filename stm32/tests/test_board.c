@@ -1,6 +1,7 @@
 /* The board layer against a fake chip: the conversions, the schedule (1 / 5 / 10 ms), the watchdog
  * and heartbeat only from a completed loop pass, the power-up self-test through the real interlock
- * lines, the link over the UART, and flash writes only with the heater off. */
+ * lines, the link over the UART, flash writes only with the heater off, and the CO alarm: its
+ * heater pin, its reading a second, its faults into the sequencer and the link, and R0 in flash. */
 #include <stdio.h>
 #include <string.h>
 
@@ -37,9 +38,13 @@ static struct {
   size_t rx_len, rx_pos;
   uint8_t tx[256];
   size_t tx_len;
-  uint8_t flash[2][256];
-  size_t flash_len[2];
-  uint32_t flash_writes;
+  uint8_t flash[2][HAL_FLASH_PAGE_SIZE]; /* NOR: erased 0xFF, programmed only where erased */
+  uint32_t flash_writes, flash_programs, flash_bad_programs;
+  /* The CO sensor: R0 300 k, the air as Rs / R0 (x 1000), 5 x higher unheated; co_adc >= 0 holds
+   * the pin there (open, or no sensor). */
+  uint8_t co_heater;
+  uint32_t co_ratio;
+  int co_adc;
 } chip;
 
 static int hb_ok(void) {
@@ -57,7 +62,12 @@ void hal_adc_scan(uint16_t raw[HAL_ADC_COUNT]) {
   raw[HAL_ADC_BOARD] = chip.board_raw;
   raw[HAL_ADC_VIN] = counts(chip.vin * 6.8 / 106.8);
   raw[HAL_ADC_VREF] = counts(VREFINT);
-  raw[HAL_ADC_CO] = counts(1.0);
+  if (chip.co_adc >= 0) {
+    raw[HAL_ADC_CO] = (uint16_t) chip.co_adc;
+  } else {
+    uint64_t rs = 300000ull * chip.co_ratio / 1000u * (chip.co_heater ? 1u : 5u);
+    raw[HAL_ADC_CO] = (uint16_t) (4095ull * 47000u / (47000u + rs));
+  }
 }
 uint16_t hal_vrefint_cal(void) { return (uint16_t) (VREFINT / 3.0 * 4095.0 + 0.5); }
 uint16_t hal_glow_pulse_raw(void) { return 0; }
@@ -86,7 +96,7 @@ void hal_latch_reset(uint8_t level) {
     chip.latch_armed = 1; /* a rising edge re-arms it while the heat exchanger is cool */
   chip.latch_level = level;
 }
-void hal_co_heater(uint8_t on) { (void) on; }
+void hal_co_heater(uint8_t on) { chip.co_heater = on; }
 int hal_uart_getc(void) { return chip.rx_pos < chip.rx_len ? chip.rx[chip.rx_pos++] : -1; }
 void hal_uart_write(const uint8_t *d, size_t n) {
   if (chip.tx_len + n <= sizeof(chip.tx)) {
@@ -96,14 +106,29 @@ void hal_uart_write(const uint8_t *d, size_t n) {
 }
 void hal_iwdg_refresh(void) { chip.iwdg_refreshes++; }
 size_t hal_flash_read(uint8_t page, uint8_t *out, size_t cap) {
-  size_t n = chip.flash_len[page] < cap ? chip.flash_len[page] : cap;
+  size_t n = cap < 256u ? cap : 256u;
   memcpy(out, chip.flash[page], n);
   return n;
 }
 int hal_flash_write(uint8_t page, const uint8_t *d, size_t n) {
+  if (n > 256u)
+    return -1;
+  memset(chip.flash[page], 0xFF, HAL_FLASH_PAGE_SIZE);
   memcpy(chip.flash[page], d, n);
-  chip.flash_len[page] = n;
   chip.flash_writes++;
+  return 0;
+}
+const uint8_t *hal_flash_page(uint8_t page) { return chip.flash[page]; }
+int hal_flash_program(uint8_t page, uint16_t offset, const uint8_t *d, size_t n) {
+  if ((offset & 7u) || (n & 7u) || offset + n > HAL_FLASH_PAGE_SIZE)
+    return -1;
+  for (size_t i = 0; i < n; i++)
+    if (chip.flash[page][offset + i] != 0xFF) {
+      chip.flash_bad_programs++;
+      return -1;
+    }
+  memcpy(chip.flash[page] + offset, d, n);
+  chip.flash_programs++;
   return 0;
 }
 
@@ -112,6 +137,9 @@ static void chip_reset(void) {
   chip.vin = 12.6;
   chip.ntc_raw = 4057;   /* 25 C */
   chip.board_raw = 2048; /* 25 C */
+  memset(chip.flash, 0xFF, sizeof(chip.flash));
+  chip.co_ratio = 1000;
+  chip.co_adc = -1;
 }
 
 static void run(board *b, uint32_t ms) {
@@ -233,12 +261,182 @@ static void test_flash_only_when_off(void) {
   CHECK(memcmp(&b2.s.burn.p, &b.s.params.live, sizeof(burn_params)) == 0);
 }
 
+/* ---------------------------------------------------------------- the CO alarm */
+
+/* The DETAIL record over the UART, as the ESP32 would read it. */
+static link_detail read_detail(board *b) {
+  link_detail d;
+  memset(&d, 0, sizeof(d));
+  chip.rx_len = link_build_request(9, LINK_OP_DETAIL, NULL, 0, chip.rx);
+  chip.rx_pos = 0;
+  chip.tx_len = 0;
+  run(b, 2);
+  CHECK(link_decode_detail(link_reply_payload(chip.tx), link_reply_payload_len(chip.tx), &d));
+  return d;
+}
+
+static void test_co_heater_and_alarm(void) {
+  chip_reset();
+  board b;
+  board_init(&b, chip.now, LINK_RESET_POWER_ON, 0);
+  CHECK(chip.co_heater == 1); /* CO-5: heated from power-up */
+  /* Warm-up (CO-5): a high reading in the first 3 minutes is ignored. */
+  chip.co_ratio = 8;
+  run(&b, 170000);
+  CHECK(b.s.co.state == CO_WARMING_UP && !b.s.co.alarm);
+  CHECK(b.s.burn.fault == BURN_FAULT_NONE);
+  chip.co_ratio = 1000;
+  /* The heater check (CO-4): CO_HEAT_EN off for about 5 s once the warm-up is over, then on. */
+  uint32_t off_ms = 0, first_off = 0;
+  for (int i = 0; i < 30000; i++) {
+    run(&b, 1);
+    if (!chip.co_heater) {
+      off_ms++;
+      if (first_off == 0)
+        first_off = chip.now;
+    }
+  }
+  CHECK(first_off >= 180000 && first_off <= 181100);
+  CHECK(off_ms >= 4900 && off_ms <= 6100);
+  CHECK(chip.co_heater == 1 && b.s.co.checked && !b.s.co.fault);
+  link_detail d = read_detail(&b);
+  CHECK(d.co_state == CO_LEARNING);
+  run(&b, 10 * 60000);
+  d = read_detail(&b);
+  CHECK(d.co_state == CO_OK && d.co_ppm == 0);
+  /* About 1200 ppm for 11 s: the alarm, into the sequencer's latched CO fault and the link. */
+  chip.co_ratio = 8;
+  run(&b, 11000);
+  CHECK(b.s.burn.fault == BURN_FAULT_CO && b.s.burn.fault_latched);
+  d = read_detail(&b);
+  CHECK(d.co_state == CO_ALARM && d.co_ppm >= 1000 && d.co_ppm != LINK_UNKNOWN_U16);
+}
+
+static void test_co_sensor_fault(void) {
+  chip_reset();
+  board b;
+  board_init(&b, chip.now, LINK_RESET_POWER_ON, 0);
+  run(&b, 190000);
+  CHECK(b.s.co.checked && b.s.burn.fault == BURN_FAULT_NONE);
+  chip.co_adc = 10; /* open (CO-3) */
+  run(&b, 7000);
+  CHECK(b.s.burn.fault == BURN_FAULT_CO_SENSOR && b.s.burn.fault_latched);
+  link_detail d = read_detail(&b);
+  CHECK(d.co_state == CO_SENSOR_FAULT && d.co_ppm == LINK_UNKNOWN_U16);
+}
+
+static void test_co_not_fitted(void) {
+  /* CO-1: a saved table with "CO sensor fitted" 0. No sensor on the board: no fault, no heater. */
+  chip_reset();
+  params ps;
+  params_init(&ps);
+  params_set(&ps, 0x52, 0);
+  CHECK(params_apply(&ps, 1, 1) == LINK_OK);
+  uint8_t img[PARAMS_IMAGE_MAX];
+  size_t n = params_pack(&ps, img, sizeof(img));
+  CHECK(hal_flash_write(HAL_PAGE_PARAMS, img, n) == 0);
+  chip.co_adc = 0;
+  board b;
+  board_init(&b, chip.now, LINK_RESET_POWER_ON, 0);
+  CHECK(chip.co_heater == 0);
+  run(&b, 200000);
+  CHECK(chip.co_heater == 0 && b.s.co.state == CO_NOT_FITTED);
+  CHECK(b.s.burn.fault == BURN_FAULT_NONE);
+  CHECK(read_detail(&b).co_state == CO_NOT_FITTED);
+
+  /* The same board with the default table: fitted, so it is a sensor fault, never "absent". */
+  chip_reset();
+  chip.co_adc = 0;
+  board_init(&b, chip.now, LINK_RESET_POWER_ON, 0);
+  CHECK(chip.co_heater == 1);
+  run(&b, 200000);
+  CHECK(b.s.burn.fault == BURN_FAULT_CO_SENSOR);
+}
+
+/* The R0 log's slots in use. */
+static unsigned log_slots_used(void) {
+  unsigned used = 0;
+  for (unsigned i = 0; i < BOARD_CO_LOG_SLOTS; i++)
+    if (chip.flash[HAL_PAGE_PLUG][BOARD_CO_LOG_START + i * BOARD_CO_LOG_SLOT] != 0xFF)
+      used++;
+  return used;
+}
+
+static void test_co_r0_in_flash(void) {
+  chip_reset();
+  board b;
+  board_init(&b, chip.now, LINK_RESET_POWER_ON, 0);
+  /* Learnt in clean air (CO-7), written at once: one double word, no erase. */
+  run(&b, 13 * 60000);
+  CHECK(b.s.co.state == CO_LEARNING && chip.flash_programs == 0);
+  run(&b, 60000);
+  CHECK(b.s.co.state == CO_OK);
+  CHECK(chip.flash_programs == 1 && chip.flash_writes == 0 && log_slots_used() == 1);
+  uint32_t r0 = b.s.co_r0_saved;
+  CHECK(r0 > 290000 && r0 < 310000 && r0 == b.s.co.r0);
+  /* A changed R0 an hour on waits while the heater runs. */
+  b.s.co_r0_saved = r0 / 2;
+  b.s.co_r0_saved_ms = chip.now - 2u * 3600000u;
+  b.s.burn.step = BURN_STEP_RUNNING;
+  run(&b, 100);
+  CHECK(chip.flash_programs == 1);
+  b.s.burn.step = BURN_STEP_OFF;
+  run(&b, 20);
+  CHECK(chip.flash_programs == 2 && log_slots_used() == 2 && b.s.co_r0_saved == r0);
+
+  /* A reset: R0 comes back, so the alarm is OK straight after warm-up and check, no learning. */
+  board b2;
+  board_init(&b2, chip.now, LINK_RESET_POWER_ON, 0);
+  CHECK(b2.s.co_r0_saved == r0 && b2.s.co.r0 == r0);
+  run(&b2, 3 * 60000 + 8000);
+  CHECK(b2.s.co.state == CO_OK);
+
+  /* The plug record is rewritten: the page is erased, R0 goes back in. */
+  b2.s.plug.rec.verified_type = 12;
+  b2.s.plug.rec.verified_setting = 12;
+  b2.s.plug.save_pending = 1;
+  run(&b2, 20);
+  CHECK(chip.flash_writes == 1 && log_slots_used() == 1 && chip.flash_bad_programs == 0);
+  board b3;
+  board_init(&b3, chip.now, LINK_RESET_POWER_ON, 0);
+  CHECK(b3.s.co_r0_saved == r0 && b3.s.plug.rec.verified_type == 12);
+
+  /* A full log: the next R0 erases the page, keeping the plug record, and starts the log again. */
+  uint8_t e[BOARD_CO_LOG_SLOT];
+  memcpy(e, chip.flash[HAL_PAGE_PLUG] + BOARD_CO_LOG_START, sizeof(e));
+  for (unsigned i = 1; i < BOARD_CO_LOG_SLOTS; i++)
+    CHECK(hal_flash_program(HAL_PAGE_PLUG, (uint16_t) (BOARD_CO_LOG_START + i * BOARD_CO_LOG_SLOT), e,
+                            sizeof(e)) == 0);
+  board b4;
+  board_init(&b4, chip.now, LINK_RESET_POWER_ON, 0);
+  CHECK(b4.co_log_next == BOARD_CO_LOG_SLOTS && b4.s.co_r0_saved == r0);
+  uint32_t writes = chip.flash_writes;
+  safety_co_r0_saved(&b4.s, 0); /* as if nothing were saved: the next learnt R0 is written */
+  run(&b4, 3 * 60000 + 8000);
+  CHECK(b4.s.co.state == CO_OK);
+  run(&b4, 20);
+  CHECK(chip.flash_writes == writes + 1 && log_slots_used() == 1 && chip.flash_bad_programs == 0);
+  board b5;
+  board_init(&b5, chip.now, LINK_RESET_POWER_ON, 0);
+  CHECK(b5.s.co_r0_saved == b4.s.co.r0 && b5.s.plug.rec.verified_type == 12 && b5.co_log_next == 1);
+
+  /* A torn slot (power lost while writing) is skipped. */
+  chip.flash[HAL_PAGE_PLUG][BOARD_CO_LOG_START + BOARD_CO_LOG_SLOT] = 0x00;
+  board b6;
+  board_init(&b6, chip.now, LINK_RESET_POWER_ON, 0);
+  CHECK(b6.s.co_r0_saved == b4.s.co.r0 && b6.co_log_next == 2);
+}
+
 int main(void) {
   test_conversions();
   test_schedule_and_watchdog();
   test_link();
   test_heartbeat_needs_the_loop();
   test_flash_only_when_off();
+  test_co_heater_and_alarm();
+  test_co_sensor_fault();
+  test_co_not_fitted();
+  test_co_r0_in_flash();
   printf("board: %d checks, %d failures\n", n_checks, failures);
   return failures ? 1 : 0;
 }

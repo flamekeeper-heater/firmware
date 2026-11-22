@@ -8,8 +8,12 @@
  * programming, and the timer outputs on a scope.
  *
  * Not done yet: the pump overcurrent watchdog (PMP-7: the ADC's analog watchdog on PUMP_ISENSE
- * during strokes; the pump high side's own over-current latch is the backstop meanwhile), and the
- * CO sensor. */
+ * during strokes; the pump high side's own over-current latch is the backstop meanwhile).
+ *
+ * The CO sensor (CO-9) is CO_ADC on PA11 / IN15, last in the scan, and CO_HEAT_EN on PC6 as a plain
+ * output (CFG-10: no hardware PWM; the MiCS-5524's heater is steady on). C_CO_ADC (100 nF) holds
+ * the 47 k divider up for the short sample time. UNVERIFIED: PA11 is not remapped to PA9
+ * (SYSCFG_CFGR1.PA11_RMP stays 0), and PA9, sharing the pin, stays analog. */
 #include "../board/hal.h"
 
 #include <string.h>
@@ -346,6 +350,31 @@ int hal_flash_write(uint8_t page, const uint8_t *d, size_t n) {
   for (size_t i = 0; i < n; i += 8) {
     uint32_t w[2] = {0xFFFFFFFFu, 0xFFFFFFFFu};
     memcpy(w, d + i, n - i < 8 ? n - i : 8);
+    REG(a + i) = w[0];
+    REG(a + i + 4) = w[1];
+    while (FLASH_SR & (1u << 16)) {
+    }
+  }
+  FLASH_CR = 1u << 31; /* lock */
+  return (FLASH_SR & 0xC3FAu) ? -1 : 0;
+}
+
+const uint8_t *hal_flash_page(uint8_t page) { return (const uint8_t *) page_addr(page); }
+
+/* Double words into an erased part of the page, no erase (the CO sensor's R0 log). */
+int hal_flash_program(uint8_t page, uint16_t offset, const uint8_t *d, size_t n) {
+  if ((offset & 7u) || (n & 7u) || offset + n > 2048u)
+    return -1;
+  while (FLASH_SR & (1u << 16)) {
+  }
+  FLASH_KEYR = 0x45670123u;
+  FLASH_KEYR = 0xCDEF89ABu;
+  FLASH_SR = 0xFFFFu;
+  FLASH_CR = 1u; /* program */
+  uint32_t a = page_addr(page) + offset;
+  for (size_t i = 0; i < n; i += 8) {
+    uint32_t w[2];
+    memcpy(w, d + i, 8);
     REG(a + i) = w[0];
     REG(a + i + 4) = w[1];
     while (FLASH_SR & (1u << 16)) {
