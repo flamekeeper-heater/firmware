@@ -163,11 +163,12 @@ static uint16_t step(fan *f, uint32_t now_ms, uint16_t target_rpm, uint16_t open
   }
 
   /* No integral wind-up while the ramp, a limit or zero holds the duty away from what the loop
-   * wants, nor upwards while the fan turns below half its command (spinning up, or blocked): the
-   * feed-forward carries it there, and a fan freed from a block would overshoot on the wind-up. */
-  int below_half = (uint32_t) m->rpm * 2u < target_rpm;
+   * wants, nor upwards while the fan turns more than a quarter below its command (spinning up,
+   * slowed or blocked): the feed-forward carries it there, and a fan freed from a block would
+   * overshoot on the wind-up. */
+  int far_below = err > 0 && (uint32_t) err * 4u > target_rpm;
   if (open_permille == 0 && !(err > 0 && want < free_want) && !(err < 0 && want > free_want) &&
-      !(err > 0 && below_half && integ > f->integ))
+      !(far_below && integ > f->integ))
     f->integ = integ;
   return set(f, (uint16_t) want);
 }

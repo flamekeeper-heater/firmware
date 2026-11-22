@@ -149,7 +149,8 @@ current read in the last pulse scaled by the supply since:
 `stm32/core/fan.*` drives the fan's low-side switch (25 kHz) from the speed the sequencer wants:
 
 - A speed loop on the Hall reading, at most 10 V average at the motor whatever the supply. Its
-  integral does not wind up while the fan turns below half its command (spinning up or blocked).
+  integral does not grow while the fan turns more than a quarter below its command (spinning up,
+  slowed or blocked).
 - The start limit: the duty rises from 0 over at least 1 s, and while the fan turns below half its
   command the motor current (the shunt's average switch current divided by the duty) is held at or
   below 6 A, so a frozen fan never reaches the fan's one-time 8 A fuse. Below 10 % duty the
