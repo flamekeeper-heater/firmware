@@ -17,7 +17,9 @@ static void on_info(void *ctx, link_info *out) {
   out->text[LINK_TEXT_MAX] = 0;
 }
 
-static int starts_refused(const safety *s) { return s->no_starts || s->esp_updating || s->checks != 0; }
+static int starts_refused(const safety *s) {
+  return s->no_starts || s->esp_updating || s->checks != 0 || !s->chk.power_up_done;
+}
 
 static void fill_status(safety *s, link_status *o) {
   const burn *b = &s->burn;
@@ -110,7 +112,8 @@ static int on_update_prepare(void *ctx, uint8_t *method) {
 }
 
 void safety_init(safety *s, const burn_params *p, const glow_params *gp, const fan_params *fp,
-                 uint32_t now, const burn_inputs *in, uint8_t reset_reason, uint8_t checks) {
+                 const checks_params *cp, uint32_t now, const burn_inputs *in, uint8_t reset_reason,
+                 uint8_t checks) {
   memset(s, 0, sizeof(*s));
   s->now = now;
   s->in = *in;
@@ -119,6 +122,7 @@ void safety_init(safety *s, const burn_params *p, const glow_params *gp, const f
   burn_init(&s->burn, p, now, in);
   glow_init(&s->glow, gp, now);
   fan_init(&s->fan, fp, now);
+  checks_init(&s->chk, cp, now);
   link_parser_init(&s->parser, LINK_REQUEST);
   link_start_gate_init(&s->gate);
   link_deadman_init(&s->deadman);
@@ -147,6 +151,7 @@ void safety_step(safety *s, uint32_t now, const burn_inputs *in) {
   s->in = *in;
   s->in.glow_fault = (uint8_t) (in->glow_fault || s->glow.fault != GLOW_FAULT_NONE);
   s->in.fan_fault = in->fan_fault ? in->fan_fault : s->fan.fault;
+  s->in.precheck = s->precheck_result;
   if (burn_fuel_steps(&s->burn) && s->burn.step != BURN_STEP_PRIMING) {
     s->run_ms += dt;
     s->run_time_s += s->run_ms / 1000u;
@@ -158,6 +163,56 @@ void safety_step(safety *s, uint32_t now, const burn_inputs *in) {
 }
 
 const burn_outputs *safety_outputs(const safety *s) { return &s->burn.out; }
+
+/* The heartbeat enables both high sides: it runs from the fan check before preheat (so the glow
+ * enable comes at least 20 ms after it, GLW-7) through burn-off, and while priming. */
+static int heartbeat_wanted(const burn *b) {
+  switch (b->step) {
+    case BURN_STEP_SELF_TEST:
+    case BURN_STEP_PREHEAT:
+    case BURN_STEP_IGNITION:
+    case BURN_STEP_PURGE:
+    case BURN_STEP_WARM_UP:
+    case BURN_STEP_RUNNING:
+    case BURN_STEP_BURN_OFF:
+    case BURN_STEP_PRIMING:
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+checks_out safety_ms(safety *s, uint32_t now, const checks_obs *o) {
+  checks *c = &s->chk;
+  if (!s->power_up_started) {
+    s->power_up_started = 1;
+    checks_begin_power_up(c, now, o);
+  }
+  /* A new start waiting for its pre-start test. */
+  if (s->burn.step == BURN_STEP_PRE_CHECK && !s->precheck_started && !checks_busy(c)) {
+    s->precheck_started = 1;
+    s->precheck_result = BURN_PRECHECK_RUNNING;
+    checks_begin_pre_start(c, now);
+  }
+  if (s->burn.step != BURN_STEP_PRE_CHECK)
+    s->precheck_started = 0, s->precheck_result = BURN_PRECHECK_RUNNING;
+
+  int was_power_up = c->kind == CHECKS_POWER_UP, was_pre_start = c->kind == CHECKS_PRE_START;
+  checks_out out = checks_step(c, now, o);
+  if (was_power_up && !checks_busy(c)) {
+    s->power_up_failed = c->failed;
+    if (c->failed)
+      s->checks |= LINK_CHECK_SELF_TEST; /* no starts until the MCU resets */
+  }
+  if (was_pre_start && !checks_busy(c))
+    s->precheck_result = c->failed == 0                      ? BURN_PRECHECK_PASSED
+                         : (c->failed & CHECK_FAILS_PUMP) != 0 ? BURN_PRECHECK_FAILED_PUMP
+                         : (c->failed & CHECK_FAILS_GLOW) != 0 ? BURN_PRECHECK_FAILED_GLOW
+                                                               : BURN_PRECHECK_FAILED;
+  if (!checks_busy(c) && !was_power_up && !was_pre_start)
+    out.heartbeat = heartbeat_wanted(&s->burn) ? CHECKS_HB_RUNNING : CHECKS_HB_STOPPED;
+  return out;
+}
 
 uint16_t safety_fan_step(safety *s, uint32_t now, const fan_meas *m) {
   return fan_step(&s->fan, now, s->burn.out.fan_rpm, m);

@@ -12,10 +12,10 @@ extern "C" {
 #include "heater_model.h"
 }
 
-static int checks = 0, failures = 0;
+static int n_checks = 0, failures = 0;
 #define CHECK(c)                                                \
   do {                                                          \
-    checks++;                                                   \
+    n_checks++;                                                   \
     if (!(c)) {                                                 \
       failures++;                                               \
       std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c);  \
@@ -38,6 +38,12 @@ struct Bench : LinkTransport {
   // The glow plug: 0.2 Ohm cold to 1.0 Ohm hot, on a 12.6 V supply.
   double plug_heat = 0, last_i = 0, glow_w = 0;
   uint16_t fan_duty = 0;
+  // A healthy board's interlocks, for the self-tests: the heartbeat detector, the overheat latch.
+  int hb_running_ms = 0;
+  int latch_armed = 0;
+  uint16_t test_pulse = 0;
+  int glow_en = 0;
+  int max_heartbeat_gap_in_burn = 0;
   std::deque<uint8_t> to_esp;
   LinkClient client{this};
 
@@ -49,8 +55,10 @@ struct Bench : LinkTransport {
     glow_params_default(&gp);
     fan_params fp;
     fan_params_default(&fp);
+    checks_params cp;
+    checks_params_default(&cp);
     burn_inputs in = inputs();
-    safety_init(&s, &p, &gp, &fp, now, &in, LINK_RESET_POWER_ON, 0);
+    safety_init(&s, &p, &gp, &fp, &cp, now, &in, LINK_RESET_POWER_ON, 0);
   }
   burn_inputs inputs() const {
     burn_inputs in;
@@ -61,6 +69,7 @@ struct Bench : LinkTransport {
     in.co_alarm = 0;
     in.glow_fault = 0;
     in.fan_fault = 0;
+    in.precheck = 0;
     return in;
   }
   // ESP32 -> MCU: the MCU answers each complete request at once (well inside its 20 ms).
@@ -96,8 +105,33 @@ struct Bench : LinkTransport {
     glow_w = w;
     plug_heat += (w / 90.0 - plug_heat) * (5.0 / 8000.0);
   }
+  // One millisecond of the self-tests and the heartbeat.
+  void ms(uint32_t t) {
+    bool hb_ok = hb_running_ms >= 1;
+    bool pump_on = hb_ok && latch_armed;
+    checks_obs co;
+    co.vin_cv = 1260;
+    co.pump_v_cv = pump_on ? 1260 : 30;
+    co.glow_v_cv = (glow_en && hb_ok) ? 1260 : 0;  // the plug's + side follows its enable
+    co.glow_ca = 0;
+    co.pump_peak_ma = test_pulse ? (pump_on ? 400 : 3) : 0;
+    co.latch_armed = (uint8_t) latch_armed;
+    co.pump_hs_ok = 1;
+    co.hx_c10 = heater_model_hx(&m);
+    checks_out out = safety_ms(&s, t, &co);
+    hb_running_ms = out.heartbeat == CHECKS_HB_RUNNING ? hb_running_ms + 1 : 0;
+    if (out.latch_reset)
+      latch_armed = 1;
+    test_pulse = out.pump_pulse_us;
+    glow_en = out.glow_en;
+    // While fuel may flow the heartbeat must run (the pump's high side needs it).
+    if (s.burn.out.pump_cHz > 0 && out.heartbeat != CHECKS_HB_RUNNING)
+      max_heartbeat_gap_in_burn++;
+  }
   void tick() {
     const burn_outputs *o = safety_outputs(&s);
+    for (uint32_t i = 0; i < TICK; i++)
+      ms(now + i);
     glow_period(now);
     glow_period(now + 5);
     heater_model_step(&m, TICK, o->fan_rpm, o->pump_cHz, (uint16_t) (plug_heat > 0.5 ? 90 : 0));
@@ -162,6 +196,9 @@ static void test_heat_cycle() {
   b.run(1 * MIN);
   CHECK(b.client.raw_status().state == BURN_STATE_OFF);  // and it stays off
   CHECK(b.s.fan.fault == FAN_FAULT_NONE);  // no false fan fault through spin-up, changes, coasting
+  CHECK(b.s.power_up_failed == 0);
+  CHECK(b.latch_armed);
+  CHECK(b.max_heartbeat_gap_in_burn == 0);
   CHECK(b.s.glow.fault == GLOW_FAULT_NONE);
 }
 
@@ -201,8 +238,11 @@ static void test_mcu_reset_mid_run() {
   glow_params_default(&gp);
   fan_params fp;
   fan_params_default(&fp);
+  checks_params cp;
+  checks_params_default(&cp);
   burn_inputs in = b.inputs();
-  safety_init(&b.s, &p, &gp, &fp, b.now, &in, LINK_RESET_WATCHDOG, 0);
+  safety_init(&b.s, &p, &gp, &fp, &cp, b.now, &in, LINK_RESET_WATCHDOG, 0);
+  b.latch_armed = 0;  // a reset leaves the latch tripped until the power-up test re-arms it
   CHECK(b.s.burn.step == BURN_STEP_COOLDOWN);
   CHECK(b.run_until_state(BURN_STATE_COOLING, 5 * SEC));
   CHECK(b.run_until_state(BURN_STATE_OFF, 25 * MIN));
@@ -215,6 +255,6 @@ int main() {
   test_heat_cycle();
   test_dead_man();
   test_mcu_reset_mid_run();
-  std::printf("e2e: %d checks, %d failures\n", checks, failures);
+  std::printf("e2e: %d checks, %d failures\n", n_checks, failures);
   return failures ? 1 : 0;
 }

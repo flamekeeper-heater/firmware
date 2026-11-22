@@ -43,6 +43,7 @@ enum {
   BURN_STEP_COOLDOWN = 8,
   BURN_STEP_FAN_ONLY = 9,
   BURN_STEP_PRIMING = 10,
+  BURN_STEP_PRE_CHECK = 11, /* the interlock self-test before a start that may stroke or glow */
 };
 
 /* Faults: the app protocol's codes (link_status.fault). */
@@ -51,6 +52,7 @@ enum {
   BURN_FAULT_SUPPLY_LOW = 2,
   BURN_FAULT_SUPPLY_HIGH = 3,
   BURN_FAULT_GLOW = 4,
+  BURN_FAULT_PUMP = 5,
   BURN_FAULT_OVERHEAT = 6,
   BURN_FAULT_FAN = 7,
   BURN_FAULT_FLAME_OUT = 8,
@@ -77,6 +79,7 @@ enum {
   BURN_WHY_CO = 13,
   BURN_WHY_GLOW_STAGE = 14,     /* the glow planner stopped: stuck low side or repeated trips */
   BURN_WHY_FAN_STAGE = 15,      /* the fan's switch stuck on, or the fan turning against its command */
+  BURN_WHY_SELF_TEST = 16,      /* the pre-start self-test failed: the board needs looking at */
 };
 
 typedef struct {
@@ -119,6 +122,7 @@ typedef struct {
   int16_t hot_start_c10;       /* heat exchanger above this after a reset: cool down first */
   uint16_t supply_low_cv, supply_high_cv; /* 0.01 V */
   uint16_t supply_fault_ms;    /* outside the range this long: fault */
+  uint16_t precheck_max_ms;    /* the pre-start self-test must be done within this */
 } burn_params;
 
 void burn_params_default(burn_params *p);
@@ -132,7 +136,16 @@ typedef struct {
   uint8_t co_alarm;        /* 1: the CO alarm is on */
   uint8_t glow_fault;      /* 1: the glow stage failed (low side stuck on, repeated trips) */
   uint8_t fan_fault;       /* the fan stage's fault (fan.h FAN_FAULT_*), 0 none */
+  uint8_t precheck;        /* the pre-start self-test: BURN_PRECHECK_* */
 } burn_inputs;
+
+enum {
+  BURN_PRECHECK_RUNNING = 0,
+  BURN_PRECHECK_PASSED = 1,
+  BURN_PRECHECK_FAILED_PUMP = 2,
+  BURN_PRECHECK_FAILED_GLOW = 3,
+  BURN_PRECHECK_FAILED = 4, /* other (a timeout) */
+};
 
 /* What the power stages should do now. */
 typedef struct {

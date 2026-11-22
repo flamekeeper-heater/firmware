@@ -100,10 +100,10 @@ ignore. Either side refuses to run with a major it does not know.
 should do, one pass of the safety loop at a time:
 
 ```
-off -> self-test -> preheat -> ignition -> warm-up -> running -> burn-off -> cooldown -> off
-                      ^            | no flame
-                      +-- purge <--+  (one retry, then a start fault)
-off -> fan only -> off          off -> priming -> off
+off -> pre-check -> fan check -> preheat -> ignition -> warm-up -> running -> burn-off -> cooldown -> off
+                                   ^            | no flame
+                                   +-- purge <--+  (one retry, then a start fault)
+off -> fan only -> off          off -> pre-check -> priming -> off
 ```
 
 - The fan must turn before anything else: the glow plug only heats with measured airflow, and a
@@ -144,7 +144,22 @@ current read in the last pulse scaled by the supply since:
   on), and speed with no command or 20 % over it once the fan has had 30 s to slow down. A stall
   stops everything at once; the others stop the fuel and burn off.
 
-`stm32/core/safety.*` joins all three to the link: the start-number rule, the dead-man, the status and
+`stm32/core/checks.*` tests the interlocks themselves, in 1 ms steps the hardware layer carries
+out (heartbeat modes, the glow enable, single short pump pulses, the latch reset line):
+
+- After every reset: with the overheat latch still tripped, a pump pulse draws no current; the
+  latch is re-armed (only with a plausible, cool sensor, 500 ms after power-up) and confirmed; a
+  static heartbeat, high or low, does not pass for a running one; with everything right, a pump
+  pulse does draw current. Any failure refuses starts until the next reset.
+- Before every start that may stroke the pump or heat the plug (the pre-check): with the heartbeat
+  stopped, neither + side is on, and the glow enable alone does not switch the plug on; with the
+  heartbeat running, the pump's high side is up without a fault, and the plug's + side reads the
+  supply with no current flowing. A failure ends the start with a pump or glow fault.
+
+The heartbeat, which enables both high sides, otherwise runs from the fan check through burn-off
+and while priming.
+
+`stm32/core/safety.*` joins them all to the link: the start-number rule, the dead-man, the status and
 the update handshake.
 
 ## Firmware updates and signing

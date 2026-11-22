@@ -9,6 +9,7 @@
 
 #include "../../common/link/link.h"
 #include "burn.h"
+#include "checks.h"
 #include "fan.h"
 #include "glow.h"
 
@@ -32,6 +33,11 @@ typedef struct {
   burn burn;
   glow glow;
   fan fan;
+  checks chk;
+  uint8_t power_up_started;
+  uint8_t precheck_started; /* the pre-start test of the current start has begun */
+  uint8_t precheck_result;  /* BURN_PRECHECK_* for the sequencer */
+  uint16_t power_up_failed; /* CHECK_FAIL_* from the power-up test */
   link_mcu mcu;
   link_parser parser;
   link_start_gate gate;
@@ -51,7 +57,8 @@ typedef struct {
 
 /* reset_reason and checks come from the start-up code. */
 void safety_init(safety *s, const burn_params *p, const glow_params *gp, const fan_params *fp,
-                 uint32_t now, const burn_inputs *in, uint8_t reset_reason, uint8_t checks);
+                 const checks_params *cp, uint32_t now, const burn_inputs *in, uint8_t reset_reason,
+                 uint8_t checks);
 
 /* One received byte. When it completes a request, the reply is written to reply (LINK_FRAME_MAX
  * bytes) and its length returned; otherwise 0. */
@@ -69,6 +76,12 @@ glow_cmd safety_glow_period(safety *s, uint32_t now, glow_meas *m);
 /* One pass of the fan stage: the speed the sequencer wants, as a PWM duty (permille), from that
  * pass's fan readings. Call it every pass, after safety_step. */
 uint16_t safety_fan_step(safety *s, uint32_t now, const fan_meas *m);
+
+/* Every millisecond: the self-tests while one runs (the power-up test by itself after a reset,
+ * the pre-start test when the sequencer asks), else the heartbeat the burn needs. The hardware
+ * layer drives the heartbeat, LATCH_RESET and any test pump pulse from the result, and sets
+ * GLOW_EN when either this or the glow planner asks for it. */
+checks_out safety_ms(safety *s, uint32_t now, const checks_obs *o);
 
 /* A heat start waits while more than this share of the glow plug's heat budget is used (after any
  * reset it starts full and drains in 240 s). PROVISIONAL. */

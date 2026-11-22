@@ -45,6 +45,7 @@ void burn_params_default(burn_params *p) {
   p->supply_low_cv = 1050;
   p->supply_high_cv = 3000;
   p->supply_fault_ms = 5000;
+  p->precheck_max_ms = 2000;
 }
 
 static uint32_t since(uint32_t now, uint32_t then) { return (uint32_t) (now - then); }
@@ -163,12 +164,8 @@ int burn_start(burn *b, uint8_t mode, uint8_t power, uint32_t now, const burn_in
   b->supply_bad = 0;
   b->glow_attempt_ms = 0;
   b->fan_on_ms = now;
-  if (mode == MODE_HEAT)
-    enter(b, BURN_STEP_SELF_TEST, now);
-  else if (mode == MODE_FAN)
-    enter(b, BURN_STEP_FAN_ONLY, now);
-  else
-    enter(b, BURN_STEP_PRIMING, now);
+  /* Heat and priming may stroke the pump or heat the plug: the interlocks are tested first. */
+  enter(b, mode == MODE_FAN ? BURN_STEP_FAN_ONLY : BURN_STEP_PRE_CHECK, now);
   return R_OK;
 }
 
@@ -186,6 +183,7 @@ void burn_stop(burn *b, uint8_t why, uint32_t now) {
     return;
   }
   switch (b->step) {
+    case BURN_STEP_PRE_CHECK:
     case BURN_STEP_SELF_TEST:
     case BURN_STEP_PREHEAT:
     case BURN_STEP_FAN_ONLY:
@@ -224,6 +222,7 @@ int burn_fault_reset(burn *b, const burn_inputs *in) {
 
 uint8_t burn_state(const burn *b) {
   switch (b->step) {
+    case BURN_STEP_PRE_CHECK:
     case BURN_STEP_SELF_TEST:
     case BURN_STEP_PREHEAT:
     case BURN_STEP_IGNITION:
@@ -355,6 +354,19 @@ static void sequence(burn *b, uint32_t now, const burn_inputs *in) {
 
   switch (b->step) {
     case BURN_STEP_OFF:
+      break;
+
+    case BURN_STEP_PRE_CHECK: /* nothing runs while the interlocks are tested */
+      if (in->precheck == BURN_PRECHECK_PASSED) {
+        enter(b, b->mode == MODE_PRIME ? BURN_STEP_PRIMING : BURN_STEP_SELF_TEST, now);
+      } else if (in->precheck != BURN_PRECHECK_RUNNING || in_step >= p->precheck_max_ms) {
+        b->fault = in->precheck == BURN_PRECHECK_FAILED_PUMP   ? BURN_FAULT_PUMP
+                   : in->precheck == BURN_PRECHECK_FAILED_GLOW ? BURN_FAULT_GLOW
+                                                               : BURN_FAULT_START;
+        b->why = BURN_WHY_SELF_TEST;
+        b->fault_latched = 1;
+        enter(b, BURN_STEP_OFF, now);
+      }
       break;
 
     case BURN_STEP_SELF_TEST:

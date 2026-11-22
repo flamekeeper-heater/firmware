@@ -35,6 +35,7 @@ typedef struct {
   heater_model m;
   uint32_t now;
   uint8_t latch, co, glow_fault, fan_fault;
+  uint8_t precheck; /* what the pre-start self-test reports (passes by default) */
   /* What the run did. */
   uint32_t glow_ms, glow_no_air_ms, pump_ms, max_glow_attempt_ms;
   uint8_t max_step_seen;
@@ -49,6 +50,7 @@ static burn_inputs inputs(const rig *r) {
   in.co_alarm = r->co;
   in.glow_fault = r->glow_fault;
   in.fan_fault = r->fan_fault;
+  in.precheck = r->precheck;
   return in;
 }
 
@@ -56,6 +58,7 @@ static void rig_init(rig *r, uint32_t start, double ambient_c) {
   memset(r, 0, sizeof(*r));
   heater_model_init(&r->m, ambient_c);
   r->now = start;
+  r->precheck = BURN_PRECHECK_PASSED;
   burn_params p;
   burn_params_default(&p);
   burn_inputs in = inputs(r);
@@ -109,6 +112,8 @@ static void test_full_cycle(uint32_t t0) {
   CHECK_EQ(burn_state(&r.b), BURN_STATE_OFF);
   CHECK_EQ(start(&r, HEAT, 50), 0);
   CHECK_EQ(burn_state(&r.b), BURN_STATE_STARTING);
+  CHECK_EQ(r.b.step, BURN_STEP_PRE_CHECK);
+  run(&r, TICK);
   CHECK_EQ(r.b.step, BURN_STEP_SELF_TEST);
   CHECK(run_until_step(&r, BURN_STEP_PREHEAT, 10 * SEC));
   CHECK(run_until_step(&r, BURN_STEP_IGNITION, 40 * SEC));
@@ -303,6 +308,44 @@ static void test_fan_stage_faults(void) {
   CHECK_EQ(start(&r2, HEAT, 50), 0x2F);
 }
 
+static void test_precheck(void) {
+  /* Nothing runs until the self-test passes. */
+  rig r;
+  rig_init(&r, 0, 10);
+  r.precheck = BURN_PRECHECK_RUNNING;
+  CHECK_EQ(start(&r, HEAT, 50), 0);
+  run(&r, 1 * SEC);
+  CHECK_EQ(r.b.step, BURN_STEP_PRE_CHECK);
+  CHECK_EQ(r.b.out.fan_rpm, 0);
+  CHECK_EQ(r.b.out.pump_cHz, 0);
+  CHECK_EQ(r.b.out.glow_w, 0);
+  r.precheck = BURN_PRECHECK_PASSED;
+  run(&r, TICK);
+  CHECK_EQ(r.b.step, BURN_STEP_SELF_TEST);
+
+  /* A failed self-test: a pump fault, no restart until a reset. */
+  rig r2;
+  rig_init(&r2, 0, 10);
+  r2.precheck = BURN_PRECHECK_FAILED_PUMP;
+  CHECK_EQ(start(&r2, HEAT, 50), 0);
+  run(&r2, TICK);
+  CHECK_EQ(r2.b.step, BURN_STEP_OFF);
+  CHECK_EQ(r2.b.fault, BURN_FAULT_PUMP);
+  CHECK_EQ(r2.b.why, BURN_WHY_SELF_TEST);
+  CHECK_EQ(start(&r2, HEAT, 50), 0x2F);
+  CHECK_EQ(r2.pump_ms, 0);
+
+  /* One that never ends: a start fault after its time. */
+  rig r3;
+  rig_init(&r3, 0, 10);
+  r3.precheck = BURN_PRECHECK_RUNNING;
+  CHECK_EQ(start(&r3, PRIME, 0), 0);
+  run(&r3, 3 * SEC);
+  CHECK_EQ(r3.b.step, BURN_STEP_OFF);
+  CHECK_EQ(r3.b.fault, BURN_FAULT_START);
+  CHECK_EQ(r3.pump_ms, 0);
+}
+
 static void test_fan_stall(void) {
   rig r;
   rig_init(&r, 0, 10);
@@ -369,6 +412,8 @@ static void test_fan_only_and_priming(void) {
   CHECK_EQ(r.b.step, BURN_STEP_OFF);
 
   CHECK_EQ(start(&r, PRIME, 0), 0);
+  CHECK_EQ(r.b.step, BURN_STEP_PRE_CHECK); /* priming strokes the pump: the interlocks first */
+  run(&r, TICK);
   CHECK_EQ(burn_state(&r.b), BURN_STATE_PRIMING);
   run(&r, 10 * SEC);
   CHECK_EQ(burn_prime_left_s(&r.b, r.now), 50);
@@ -435,6 +480,7 @@ int main(void) {
   test_co_alarm();
   test_glow_stage_fault();
   test_fan_stage_faults();
+  test_precheck();
   test_fan_stall();
   test_sensor_open();
   test_reset_while_hot();

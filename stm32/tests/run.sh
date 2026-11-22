@@ -15,6 +15,9 @@ cc $strict $san -c "$core/glow.c" -o "$out/glow.o"
 cc -std=c99 -Wall -Wextra -Werror $san "$here/test_glow.c" "$out/glow.o" -lm -o "$out/test_glow"
 cc $strict $san -c "$core/fan.c" -o "$out/fan.o"
 cc -std=c99 -Wall -Wextra -Werror $san "$here/test_fan.c" "$out/fan.o" -lm -o "$out/test_fan"
+cc $strict $san -c "$core/checks.c" -o "$out/checks.o"
+cc -std=c99 -Wall -Wextra -Werror $san "$here/test_checks.c" "$out/checks.o" -o "$out/test_checks"
+"$out/test_checks"
 "$out/test_fan"
 "$out/test_glow"
 "$out/test_burn"
@@ -26,6 +29,6 @@ cc $strict $san -c "$core/safety.c" -o "$out/safety.o"
 cc $strict $san -c "$link/link.c" -o "$out/link.o"
 cc -std=c99 -Wall -Wextra -Werror $san -c "$here/heater_model.c" -o "$out/heater_model.o"
 c++ -std=c++17 -Wall -Wextra -Werror $san "$here/test_e2e.cpp" "$fk/link_client.cpp" "$fk/controller.cpp" \
-  "$fk/tuning.cpp" "$fk/thermostat.cpp" "$out/safety.o" "$out/burn.o" "$out/glow.o" "$out/fan.o" "$out/link.o" "$out/heater_model.o" \
+  "$fk/tuning.cpp" "$fk/thermostat.cpp" "$out/safety.o" "$out/burn.o" "$out/glow.o" "$out/fan.o" "$out/checks.o" "$out/link.o" "$out/heater_model.o" \
   -o "$out/test_e2e"
 "$out/test_e2e"
