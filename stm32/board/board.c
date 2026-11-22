@@ -128,7 +128,7 @@ static void fill_detail(board *b) {
 /* Saved parameters, the plug record and R0 go to flash only with the heater off: erasing stalls
  * the CPU for longer than a heartbeat burst lasts. */
 static void save(board *b) {
-  if (b->s.burn.step != BURN_STEP_OFF)
+  if (!burn_is_off(&b->s.burn))
     return;
   uint8_t buf[PARAMS_IMAGE_MAX];
   if (safety_params_save_pending(&b->s)) {

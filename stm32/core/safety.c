@@ -182,7 +182,7 @@ static int on_param_set(void *ctx, uint16_t id, int32_t value) {
 }
 
 /* The sequencer takes new parameters only while the heater is off. */
-static int heater_off(const safety *s) { return s->burn.step == BURN_STEP_OFF; }
+static int heater_off(const safety *s) { return burn_is_off(&s->burn); }
 
 /* The staged changes would mark a fitted CO sensor as not fitted. */
 static int co_unfit_staged(const safety *s) {
@@ -285,7 +285,7 @@ static int on_update_prepare(void *ctx, uint8_t *method) {
   safety *s = (safety *) ctx;
   const burn *b = &s->burn;
   /* Only with the heater off and cold (DESIGN.md): the MCU then refuses starts until it resets. */
-  if (b->step != BURN_STEP_OFF)
+  if (!burn_is_off(b))
     return LINK_NOT_OFF;
   if (s->in.hx_c10 == BURN_UNKNOWN_TEMP || s->in.hx_c10 >= b->p.hot_start_c10)
     return LINK_NOT_OFF;
@@ -358,7 +358,7 @@ void safety_step(safety *s, uint32_t now, const burn_inputs *in) {
   s->in.plug_refused = s->plug_refused;
   s->in.co_alarm = (uint8_t) (in->co_alarm || s->co.alarm);
   s->in.co_fault = (uint8_t) (in->co_fault || s->co.fault);
-  if (burn_fuel_steps(&s->burn) && s->burn.step != BURN_STEP_PRIMING) {
+  if (burn_burning(&s->burn)) {
     s->run_ms += dt;
     s->run_time_s += s->run_ms / 1000u;
     s->run_ms %= 1000u;
@@ -369,24 +369,6 @@ void safety_step(safety *s, uint32_t now, const burn_inputs *in) {
 }
 
 const burn_outputs *safety_outputs(const safety *s) { return &s->burn.out; }
-
-/* The heartbeat enables both high sides: it runs from the fan check before preheat (so the glow
- * enable comes at least 20 ms after it, GLW-7) through burn-off, and while priming. */
-static int heartbeat_wanted(const burn *b) {
-  switch (b->step) {
-    case BURN_STEP_SELF_TEST:
-    case BURN_STEP_PREHEAT:
-    case BURN_STEP_IGNITION:
-    case BURN_STEP_PURGE:
-    case BURN_STEP_WARM_UP:
-    case BURN_STEP_RUNNING:
-    case BURN_STEP_BURN_OFF:
-    case BURN_STEP_PRIMING:
-      return 1;
-    default:
-      return 0;
-  }
-}
 
 safety_io safety_ms(safety *s, uint32_t now, const checks_obs *o, pump_meas *pm) {
   checks *c = &s->chk;
@@ -420,7 +402,7 @@ safety_io safety_ms(safety *s, uint32_t now, const checks_obs *o, pump_meas *pm)
     /* The pump strokes, and the heartbeat the burn needs unless the pump holds it off. */
     pm->hb_running_ms = s->hb_running_ms;
     uint16_t rate = s->burn.out.pump_cHz;
-    int hb = heartbeat_wanted(&s->burn);
+    int hb = burn_heartbeat_wanted(&s->burn); /* it enables both high sides */
 #ifdef SAFETY_BENCH
     if (s->burn.step == BURN_STEP_OFF) {
       rate = s->bench.pump_cHz;

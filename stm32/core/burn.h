@@ -205,8 +205,7 @@ typedef struct {
   uint32_t supply_bad_ms;
   uint8_t supply_bad;
   int16_t start_c10, peak_c10;
-  uint8_t flame;
-  uint32_t flame_ms;
+  uint32_t flame_ms;       /* when the flame was seen */
   /* Glow on-time: this attempt's, and the last 10 minutes' in one-minute buckets (ms): the
    * current minute and the ten before it. */
   uint32_t glow_attempt_ms;
@@ -222,7 +221,6 @@ typedef struct {
   uint8_t air_ok;          /* self-test: the fan has reached the glow's speed ... */
   uint32_t air_ok_ms;      /* ... since then */
   uint32_t last_ms;
-  uint32_t dt_ms;          /* this pass's step */
   uint8_t glow_on;
   uint32_t fuel_mp, air_mp; /* running: the pump's and the fan's power, milli-percent */
   uint8_t board_hot;
@@ -252,8 +250,13 @@ uint16_t burn_prime_left_s(const burn *b, uint32_t now);
 uint16_t burn_glow_window_s(const burn *b);
 /* 1 from a start until the stop is asked: the dead-man stops an active run. */
 int burn_active(const burn *b);
-/* 1 while fuel may be in the chamber (ignition to burn-off): the pump interlock's business. */
-int burn_fuel_steps(const burn *b);
+/* 1 from ignition until the stop: fuel has gone in (the run time counts). */
+int burn_burning(const burn *b);
+/* 1 while the high sides' heartbeat should run: from the fan check before preheat (so the glow
+ * enable comes at least 20 ms after it, GLW-7) through burn-off, and while priming. */
+int burn_heartbeat_wanted(const burn *b);
+/* Off: no run, no cooldown (parameters apply, flash is written, an update may begin). */
+static inline int burn_is_off(const burn *b) { return b->step == BURN_STEP_OFF; }
 
 #ifdef __cplusplus
 }
