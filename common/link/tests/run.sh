@@ -10,3 +10,7 @@ cc -std=c99 -pedantic -Wall -Wextra -Werror -Wconversion -Wno-sign-conversion \
   -fsanitize=address,undefined -fno-sanitize-recover=undefined -g \
   "$here/test_link.c" "$here/../link.c" -o "$out/test_link"
 "$out/test_link"
+cc -std=c99 -pedantic -Wall -Wextra -Werror -Wconversion -Wno-sign-conversion \
+  -fsanitize=address,undefined -fno-sanitize-recover=undefined -g \
+  "$here/test_parser_resync.c" "$here/../link.c" -o "$out/test_parser_resync"
+"$out/test_parser_resync"

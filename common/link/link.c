@@ -81,9 +81,15 @@ static int check(link_parser *p) {
 }
 
 int link_parser_feed(link_parser *p, uint8_t byte) {
-  /* A frame handed out last time is consumed now. */
-  if (p->count >= 2 && p->buf[0] == p->header && p->count == (size_t) p->buf[1] + 2 && check(p) == 1)
-    p->count = 0;
+  /* A frame handed out last time is consumed now (a buffer that starts with a complete valid frame
+   * always was). After a resync it may have bytes behind it: they stay, from their first header. */
+  if (check(p) == 1) {
+    uint8_t i = (uint8_t) link_frame_len(p->buf);
+    while (i < p->count && p->buf[i] != p->header)
+      i++;
+    memmove(p->buf, p->buf + i, p->count - i);
+    p->count = (uint8_t) (p->count - i);
+  }
   if (p->count == 0 && byte != p->header)
     return 0;
   if (p->count >= LINK_FRAME_MAX)
