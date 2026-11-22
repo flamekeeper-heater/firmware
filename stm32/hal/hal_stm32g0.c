@@ -150,7 +150,7 @@ static void timers_init(void) {
   TIM_CCR2(TIM3) = GLOW_PULSE_PICK_US;
   TIM_CCR3(TIM3) = GLOW_GAP_PICK_US;
   TIM_CCER(TIM3) = 1u << 0;
-  TIM_DIER(TIM3) = (1u << 2) | (1u << 3); /* CC2, CC3 interrupts */
+  TIM_DIER(TIM3) = TIM_DIER_CC2IE | TIM_DIER_CC3IE;
   TIM_EGR(TIM3) = 1;
   TIM_CR1(TIM3) = 1u | (1u << 7);
   NVIC_ISER = 1u << IRQ_TIM3;
@@ -269,12 +269,6 @@ static void adc_init(void) {
   }
 }
 
-#define ADC_CR_ADVREGEN (1u << 28)
-#define ADC_ISR_EOS (1u << 3)
-#define ADC_ISR_OVR (1u << 4)
-#define ADC_ISR_AWD1 (1u << 7)
-#define ADC_ISR_AWD2 (1u << 8)
-
 /* Waits for the end of one scan, a few times its length at most. */
 static void adc_wait_scan(void) {
   for (volatile int i = 0; i < 400 && !(ADC_ISR & ADC_ISR_EOS); i++) {
@@ -283,25 +277,24 @@ static void adc_wait_scan(void) {
 
 /* (Re)starts the scan from its first channel, adc_buf[0] onwards. */
 static void adc_start(void) {
-  if (ADC_CR & (1u << 2)) {
-    ADC_CR = ADC_CR_ADVREGEN | (1u << 4); /* ADSTP */
-    while (ADC_CR & (1u << 2)) {
+  if (ADC_CR & ADC_CR_ADSTART) {
+    ADC_CR = ADC_CR_ADVREGEN | ADC_CR_ADSTP;
+    while (ADC_CR & ADC_CR_ADSTART) {
     }
   }
   DMA_CCR2 = 0;
-  DMA_IFCR = 15u << 4; /* channel 2's flags */
-  DMA_CPAR2 = ADC + 0x40u;
+  DMA_IFCR = DMA_IFCR_CGIF2 | DMA_IFCR_CTCIF2 | DMA_IFCR_CHTIF2 | DMA_IFCR_CTEIF2;
+  DMA_CPAR2 = (uint32_t) &ADC_DR;
   DMA_CMAR2 = (uint32_t) adc_buf;
   DMA_CNDTR2 = HAL_ADC_COUNT;
   /* peripheral to memory, circular, memory increment, 16 bit both sides */
-  DMA_CCR2 = (1u << 5) | (1u << 7) | (1u << 8) | (1u << 10) | 1u;
+  DMA_CCR2 = DMA_CCR_CIRC | DMA_CCR_MINC | DMA_CCR_PSIZE_16 | DMA_CCR_MSIZE_16 | DMA_CCR_EN;
   ADC_ISR = ADC_ISR_OVR | ADC_ISR_EOS;
-  ADC_CR = ADC_CR_ADVREGEN | (1u << 2); /* ADSTART */
+  ADC_CR = ADC_CR_ADVREGEN | ADC_CR_ADSTART;
 }
 
 static void irq_priority(unsigned irq, uint32_t level) {
-  unsigned shift = 8u * (irq % 4u);
-  NVIC_IPR(irq / 4u) = (NVIC_IPR(irq / 4u) & ~(0xFFu << shift)) | (level << shift);
+  NVIC_IPR(irq / 4u) = (NVIC_IPR(irq / 4u) & ~(0xFFu << (8u * (irq % 4u)))) | (level << (8u * (irq % 4u)));
 }
 
 static void adc_schedule_init(void) {
@@ -311,15 +304,16 @@ static void adc_schedule_init(void) {
   for (int i = 0; i < HAL_ADC_COUNT; i++)
     mask |= 1u << ch[i];
   ADC_CHSELR = mask;
-  while (!(ADC_ISR & (1u << 13))) { /* CCRDY */
+  while (!(ADC_ISR & ADC_ISR_CCRDY)) {
   }
-  ADC_ISR = 1u << 13;
+  ADC_ISR = ADC_ISR_CCRDY;
   /* DMA in circular mode, continuous, the data kept on an overrun (the DMA then stops, so
    * adc_buf never shifts; hal_adc_scan restarts it), AWD1 on PUMP_ISENSE (IN6) alone. */
-  ADC_CFGR1 = 1u | (1u << 1) | (1u << 13) | (1u << 22) | (1u << 23) | (6u << 26);
-  ADC_AWD1TR = 0xFFFu << 16; /* nothing above full scale: quiet until armed */
-  ADC_AWD2TR = 0xFFFu << 16; /* nothing below 0 */
-  ADC_AWD2CR = 1u << 6;
+  ADC_CFGR1 = ADC_CFGR1_DMAEN | ADC_CFGR1_DMACFG | ADC_CFGR1_CONT | ADC_CFGR1_AWD1SGL |
+              ADC_CFGR1_AWD1EN | ADC_CFGR1_AWD1CH(6);
+  ADC_AWD1TR = ADC_AWD1TR_HT1(0xFFFu); /* nothing above full scale: quiet until armed */
+  ADC_AWD2TR = ADC_AWD2TR_HT2(0xFFFu); /* nothing below 0 */
+  ADC_AWD2CR = ADC_AWD2CR_AWD2CH6;
   ADC_IER = 0;
   DMAMUX_C1CR = DMAMUX_REQ_ADC;
   /* Priorities: the overcurrent cut first (0, the reset value), then the glow picks, the link. */
@@ -333,7 +327,7 @@ static void adc_schedule_init(void) {
 void hal_adc_scan(uint16_t raw[HAL_ADC_COUNT]) {
   uint32_t isr = ADC_ISR;
   /* Stopped: an overrun, a DMA error, or no end of a scan since the last call. */
-  if ((isr & ADC_ISR_OVR) || (DMA_ISR & (1u << 7)) || !(isr & ADC_ISR_EOS) || !(ADC_CR & (1u << 2))) {
+  if ((isr & ADC_ISR_OVR) || (DMA_ISR & DMA_ISR_TEIF2) || !(isr & ADC_ISR_EOS) || !(ADC_CR & ADC_CR_ADSTART)) {
     adc_start();
     adc_wait_scan();
   }
@@ -351,14 +345,14 @@ static volatile uint8_t glow_fresh;
 static uint16_t gap_i, gap_vin; /* the last gap pick, for the next period's hand-over */
 
 void TIM3_IRQHandler(void) {
-  uint32_t sr = TIM_SR(TIM3) & ((1u << 2) | (1u << 3));
+  uint32_t sr = TIM_SR(TIM3) & (TIM_SR_CC2IF | TIM_SR_CC3IF);
   TIM_SR(TIM3) = ~sr;
   int pulse_on = pin_get(GPIOB, 4); /* GLOW_PWM */
-  if ((sr & (1u << 3)) && !pulse_on) { /* the end of the gap */
+  if ((sr & TIM_SR_CC3IF) && !pulse_on) { /* the end of the gap */
     gap_i = adc_buf[HAL_ADC_GLOW_I];
     gap_vin = adc_buf[HAL_ADC_VIN];
   }
-  if (sr & (1u << 2)) { /* inside the pulse */
+  if (sr & TIM_SR_CC2IF) { /* inside the pulse */
     glow_ready.pulse_i = pulse_on ? adc_buf[HAL_ADC_GLOW_I] : 0u;
     glow_ready.gap_i = gap_i;
     glow_ready.gap_vin = gap_vin;
@@ -413,8 +407,8 @@ static uint8_t pump_forced;        /* PUMP_CMD forced low since a cut */
 static uint16_t oc_threshold;
 
 static void oc_thresholds(uint16_t t) {
-  ADC_AWD1TR = (uint32_t) t << 16;           /* AWD1: above t */
-  ADC_AWD2TR = (0xFFFu << 16) | (t + 1u);    /* AWD2: below t + 1, at or below t */
+  ADC_AWD1TR = ADC_AWD1TR_HT1(t);                              /* AWD1: above t */
+  ADC_AWD2TR = ADC_AWD2TR_HT2(0xFFFu) | ADC_AWD2TR_LT2(t + 1u); /* AWD2: below t + 1, at or below t */
   oc_threshold = t;
 }
 
@@ -439,13 +433,13 @@ void ADC_IRQHandler(void) {
     ADC_IER = 0;
     return;
   }
-  int high = (isr & ADC_ISR_AWD1) && (ier & ADC_ISR_AWD1);
-  int low = (isr & ADC_ISR_AWD2) && (ier & ADC_ISR_AWD2);
+  int high = (isr & ADC_ISR_AWD1) && (ier & ADC_IER_AWD1IE);
+  int low = (isr & ADC_ISR_AWD2) && (ier & ADC_IER_AWD2IE);
   if (pump_oc_event(&oc, high, low)) {
     pump_cut();
     return;
   }
-  ADC_IER = ADC_ISR_AWD1 | (pump_oc_listening(&oc) ? ADC_ISR_AWD2 : 0u); /* IE bits match ISR's */
+  ADC_IER = ADC_IER_AWD1IE | (pump_oc_listening(&oc) ? ADC_IER_AWD2IE : 0u);
 }
 
 void hal_pump_oc_arm(uint8_t on, uint16_t threshold_raw, uint16_t hold_us) {
@@ -464,7 +458,7 @@ void hal_pump_oc_arm(uint8_t on, uint16_t threshold_raw, uint16_t hold_us) {
       pump_forced = 0;
     }
     ADC_ISR = ADC_ISR_AWD1 | ADC_ISR_AWD2;
-    ADC_IER = ADC_ISR_AWD1;
+    ADC_IER = ADC_IER_AWD1IE;
     oc_on = 1;
   } else if (oc_on && !oc.cut && threshold_raw != oc_threshold) {
     oc_thresholds(threshold_raw); /* VDDA moved: the same current */
@@ -551,7 +545,7 @@ void NMI_Handler(void) {
     for (;;) {
     }
   flash_unreadable |= (uint8_t) (1u << page);
-  FLASH_ECCR = (eccr & (1u << 24)) | (1u << 31); /* clear ECCD only, keep ECCCIE */
+  FLASH_ECCR = (eccr & FLASH_ECCR_ECCCIE) | FLASH_ECCR_ECCD; /* clear ECCD only, keep ECCCIE */
 }
 
 uint8_t hal_flash_unreadable(uint8_t page) { return (uint8_t) ((flash_unreadable >> page) & 1u); }
