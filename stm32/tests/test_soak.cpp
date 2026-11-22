@@ -260,9 +260,11 @@ struct Bench : LinkTransport {
       }
       to_esp.insert(to_esp.end(), reply, reply + n);
       if (op == LINK_OP_FAULT_RESET && result == LINK_OK)
-        reset_ok = true, st.fault_resets++, stall_retries = 0;  // the stall count goes with it
+        reset_ok = true, st.fault_resets++, stall_retries = 0, fan_stop_excused = false;  // the lockout goes too
     }
-    if (before_step == BURN_STEP_OFF && s.burn.step != BURN_STEP_OFF) {
+    if (before_step == BURN_STEP_OFF && s.burn.step == BURN_STEP_COOLDOWN && reset_ok) {
+      // A fault reset on a hot heater cools it down, as after an MCU reset: no fuel, no glow.
+    } else if (before_step == BURN_STEP_OFF && s.burn.step != BURN_STEP_OFF) {
       st.starts++;
       if (!token)
         return fail("no_self_start", "a start without a new start number");
@@ -460,8 +462,8 @@ struct Bench : LinkTransport {
     bool hot = in.hx_c10 != BURN_UNKNOWN_TEMP && in.hx_c10 >= p.hot_start_c10;
     if (step == BURN_STEP_OFF && !hot)
       fuel_went_in = false;
-    // A stall or a lockout stops the fan at once; it stays stopped until it is next asked to turn, a
-    // fault reset of the lockout included (the heater is then off: nothing resumes the cooldown).
+    // A stall or a lockout stops the fan at once; it stays stopped until it is next asked to turn or
+    // the lockout is reset (a reset that finds the heater hot cools it down).
     if (step == BURN_STEP_FAN_RETRY || (s.burn.fault_latched && s.burn.fault == BURN_FAULT_FAN) ||
         s.fan.fault != FAN_FAULT_NONE)
       fan_stop_excused = true;
@@ -763,6 +765,15 @@ void regression(const char *name, const std::vector<Ev> &ev, uint32_t end_ms) {
 }
 
 void regressions() {
+  // A fan that froze in a run locked out in the cooldown and stopped with the heater hot; the user
+  // freed it and reset the fault, and the heater stayed off and hot, nothing cooling it (seed 22,
+  // moved earlier, the fan freed before the reset).
+  regression("fault_reset_hot",
+             {{300 * SEC, U_HEAT, 0, 0},
+              {1200 * SEC, F_FAN_STALL, 1, 0},
+              {1225 * SEC, F_FAN_STALL, 0, 0},
+              {1230 * SEC, U_FAULT_RESET, 0, 0}},
+             1300 * SEC);
   // A stop from the link between two passes of the safety loop: the pump went on stroking (and the
   // glow pulsing) from the last pass's outputs for up to 10 ms, in burn-off (seed 12).
   regression("stop_between_passes", {{300053, U_HEAT, 0, 0}, {512996, U_POWER, 92, 0}, {829914, U_OFF, 0, 0}},

@@ -119,9 +119,10 @@ off -> fan only -> off          off -> pre-check -> priming -> off
   the count forgets after 10 minutes of normal turning.
 - Overheat (firmware limit or the hardware latch), CO, an open sensor or the supply out of range
   end the run with a fault. The latch and CO faults need a fault reset once their cause is gone.
-- After a reset with a hot heat exchanger, it cools down first; nothing restarts by itself. The
-  first heat start within 4 minutes of a reset runs the fan 30 s longer before the glow, so the
-  glow switches cool from a run the reset may have cut short (provisional).
+- After a reset with a hot heat exchanger, it cools down first; nothing restarts by itself. A fault
+  reset that finds it hot (after a fan lockout) cools it down too; a fan still jammed locks out
+  again. The first heat start within 4 minutes of a reset runs the fan 30 s longer before the
+  glow, so the glow switches cool from a run the reset may have cut short (provisional).
 - Fuel follows air: the pump falls at once and rises slowly, the fan rises at once and falls
   slowly, so the fuel never outruns the air.
 - A hot board (its thermistor above 85 C) holds the fan back: the allowed fan current falls with

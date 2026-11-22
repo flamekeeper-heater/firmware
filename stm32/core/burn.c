@@ -304,6 +304,12 @@ int burn_fault_reset(burn *b, const burn_inputs *in) {
   b->fault = BURN_FAULT_NONE;
   b->why = BURN_WHY_NONE;
   b->fan_stalls = 0;
+  /* Off with the heat exchanger still hot (a fan lockout stops everything at once): it cools down
+   * first, as after an MCU reset. A fan still jammed stalls again and locks out again. */
+  if (b->step == BURN_STEP_OFF && temp_known(in->hx_c10) && in->hx_c10 >= b->p.hot_start_c10) {
+    b->fan_on_ms = b->last_ms;
+    enter(b, BURN_STEP_COOLDOWN, b->last_ms);
+  }
   return R_OK;
 }
 
