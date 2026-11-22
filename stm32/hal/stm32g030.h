@@ -16,7 +16,7 @@
 #define RCC_AHBENR REG(RCC + 0x38)
 #define RCC_APBENR1 REG(RCC + 0x3C)
 #define RCC_APBENR2 REG(RCC + 0x40)
-#define RCC_CSR REG(RCC + 0x94)
+#define RCC_CSR REG(RCC + 0x60)
 
 /* FLASH */
 #define FLASH 0x40022000u
