@@ -55,8 +55,12 @@ static void on_poll(void *ctx, const link_desired *want, link_status *out) {
 
   if (link_start_gate_check(&s->gate, want->start, want->mode)) {
     /* A new start number: taken as acted on whatever happens, so a refusal is not retried. */
+    uint32_t free_a2s = s->glow.p.bucket_cap_a2s - glow_bucket_a2s(&s->glow);
     if (starts_refused(s))
       s->start_result = LINK_BUSY;
+    else if (want->mode == LINK_MODE_HEAT &&
+             free_a2s * 100u < s->glow.p.bucket_cap_a2s * SAFETY_GLOW_START_FREE_PERCENT)
+      s->start_result = LINK_BUSY; /* the glow plug's stage is still resting */
     else
       s->start_result = (uint8_t) burn_start(b, want->mode, want->power, s->now, &s->in);
   }
@@ -92,14 +96,15 @@ static int on_update_prepare(void *ctx, uint8_t *method) {
   return LINK_OK;
 }
 
-void safety_init(safety *s, const burn_params *p, uint32_t now, const burn_inputs *in,
-                 uint8_t reset_reason, uint8_t checks) {
+void safety_init(safety *s, const burn_params *p, const glow_params *gp, uint32_t now,
+                 const burn_inputs *in, uint8_t reset_reason, uint8_t checks) {
   memset(s, 0, sizeof(*s));
   s->now = now;
   s->in = *in;
   s->reset_reason = reset_reason;
   s->checks = checks;
   burn_init(&s->burn, p, now, in);
+  glow_init(&s->glow, gp, now);
   link_parser_init(&s->parser, LINK_REQUEST);
   link_start_gate_init(&s->gate);
   link_deadman_init(&s->deadman);
@@ -126,6 +131,7 @@ void safety_step(safety *s, uint32_t now, const burn_inputs *in) {
   uint32_t dt = (uint32_t) (now - s->now);
   s->now = now;
   s->in = *in;
+  s->in.glow_fault = (uint8_t) (in->glow_fault || s->glow.fault != GLOW_FAULT_NONE);
   if (burn_fuel_steps(&s->burn) && s->burn.step != BURN_STEP_PRIMING) {
     s->run_ms += dt;
     s->run_time_s += s->run_ms / 1000u;
@@ -133,7 +139,14 @@ void safety_step(safety *s, uint32_t now, const burn_inputs *in) {
   }
   if (link_deadman_expired(&s->deadman, now, burn_active(&s->burn)))
     burn_stop(&s->burn, BURN_WHY_DEADMAN, now); /* a full burn-off and cooldown, on its own */
-  burn_step(&s->burn, now, in);
+  burn_step(&s->burn, now, &s->in);
 }
 
 const burn_outputs *safety_outputs(const safety *s) { return &s->burn.out; }
+
+glow_cmd safety_glow_period(safety *s, uint32_t now, glow_meas *m) {
+  /* Airflow as the sequencer sees it too: both must agree (GLW-14). */
+  if (s->in.fan_rpm < s->burn.p.glow_min_fan_rpm)
+    m->airflow_ok = 0;
+  return glow_period(&s->glow, now, s->burn.out.glow_w, m);
+}

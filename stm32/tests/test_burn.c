@@ -34,7 +34,7 @@ typedef struct {
   burn b;
   heater_model m;
   uint32_t now;
-  uint8_t latch, co;
+  uint8_t latch, co, glow_fault;
   /* What the run did. */
   uint32_t glow_ms, glow_no_air_ms, pump_ms, max_glow_attempt_ms;
   uint8_t max_step_seen;
@@ -47,6 +47,7 @@ static burn_inputs inputs(const rig *r) {
   in.supply_cv = r->m.supply_cv;
   in.overheat_latch = r->latch;
   in.co_alarm = r->co;
+  in.glow_fault = r->glow_fault;
   return in;
 }
 
@@ -258,6 +259,21 @@ static void test_co_alarm(void) {
   CHECK_EQ(start(&r, HEAT, 50), 0x2F); /* latched until a user reset */
 }
 
+static void test_glow_stage_fault(void) {
+  rig r;
+  rig_init(&r, 0, 10);
+  CHECK_EQ(start(&r, HEAT, 50), 0);
+  CHECK(run_until_step(&r, BURN_STEP_IGNITION, 1 * MIN));
+  r.glow_fault = 1; /* e.g. current between pulses: the low side is stuck on */
+  run(&r, TICK);
+  CHECK_EQ(r.b.fault, BURN_FAULT_GLOW);
+  CHECK_EQ(r.b.step, BURN_STEP_BURN_OFF);
+  CHECK_EQ(r.b.out.pump_cHz, 0);
+  CHECK_EQ(r.b.out.glow_w, 0);
+  CHECK(run_until_step(&r, BURN_STEP_OFF, 25 * MIN));
+  CHECK_EQ(start(&r, HEAT, 50), 0x2F); /* no restart: the board needs looking at */
+}
+
 static void test_fan_stall(void) {
   rig r;
   rig_init(&r, 0, 10);
@@ -388,6 +404,7 @@ int main(void) {
   test_overheat_limit();
   test_overheat_latch();
   test_co_alarm();
+  test_glow_stage_fault();
   test_fan_stall();
   test_sensor_open();
   test_reset_while_hot();

@@ -212,7 +212,7 @@ void burn_set_power(burn *b, uint8_t power) { b->power = power > 100 ? 100 : pow
 int burn_fault_reset(burn *b, const burn_inputs *in) {
   if (!b->fault_latched)
     return R_REFUSED;
-  if (in->overheat_latch || in->co_alarm)
+  if (in->overheat_latch || in->co_alarm || in->glow_fault)
     return R_REFUSED; /* the cause is still there */
   b->fault_latched = 0;
   b->fault = BURN_FAULT_NONE;
@@ -269,6 +269,15 @@ static void checks(burn *b, uint32_t now, const burn_inputs *in) {
       b->fault = BURN_FAULT_OVERHEAT, b->why = BURN_WHY_OVERHEAT_LATCH;
     else
       fault_stop(b, BURN_FAULT_OVERHEAT, BURN_WHY_OVERHEAT_LATCH, now); /* OVH-4: fuel off, fan on */
+    return;
+  }
+  if (in->glow_fault && !(b->fault == BURN_FAULT_GLOW && b->fault_latched)) {
+    /* The board needs looking at: no restart until a reset (GLW-6, GLW-9). */
+    b->fault_latched = 1;
+    if (b->step == BURN_STEP_OFF)
+      b->fault = BURN_FAULT_GLOW, b->why = BURN_WHY_GLOW_STAGE;
+    else
+      fault_stop(b, BURN_FAULT_GLOW, BURN_WHY_GLOW_STAGE, now);
     return;
   }
   if (in->co_alarm && !(b->fault == BURN_FAULT_CO && b->fault_latched)) {

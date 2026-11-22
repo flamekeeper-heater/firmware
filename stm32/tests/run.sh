@@ -11,6 +11,9 @@ strict="-std=c99 -pedantic -Wall -Wextra -Werror -Wconversion -Wno-sign-conversi
 san="-fsanitize=address,undefined -fno-sanitize-recover=undefined -g"
 cc $strict $san -c "$core/burn.c" -o "$out/burn.o"
 cc -std=c99 -Wall -Wextra -Werror $san "$here/test_burn.c" "$here/heater_model.c" "$out/burn.o" -lm -o "$out/test_burn"
+cc $strict $san -c "$core/glow.c" -o "$out/glow.o"
+cc -std=c99 -Wall -Wextra -Werror $san "$here/test_glow.c" "$out/glow.o" -lm -o "$out/test_glow"
+"$out/test_glow"
 "$out/test_burn"
 
 # Safety core against the burn tests' model, and end to end against the ESP32's real link client.
@@ -20,6 +23,6 @@ cc $strict $san -c "$core/safety.c" -o "$out/safety.o"
 cc $strict $san -c "$link/link.c" -o "$out/link.o"
 cc -std=c99 -Wall -Wextra -Werror $san -c "$here/heater_model.c" -o "$out/heater_model.o"
 c++ -std=c++17 -Wall -Wextra -Werror $san "$here/test_e2e.cpp" "$fk/link_client.cpp" "$fk/controller.cpp" \
-  "$fk/tuning.cpp" "$fk/thermostat.cpp" "$out/safety.o" "$out/burn.o" "$out/link.o" "$out/heater_model.o" \
+  "$fk/tuning.cpp" "$fk/thermostat.cpp" "$out/safety.o" "$out/burn.o" "$out/glow.o" "$out/link.o" "$out/heater_model.o" \
   -o "$out/test_e2e"
 "$out/test_e2e"

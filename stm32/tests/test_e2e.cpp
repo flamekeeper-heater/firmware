@@ -35,6 +35,8 @@ struct Bench : LinkTransport {
   heater_model m;
   uint32_t now = 0;
   bool esp_alive = true;  // false: the ESP32 is hung (its loop stops)
+  // The glow plug: 0.2 Ohm cold to 1.0 Ohm hot, on a 12.6 V supply.
+  double plug_heat = 0, last_i = 0, glow_w = 0;
   std::deque<uint8_t> to_esp;
   LinkClient client{this};
 
@@ -42,8 +44,10 @@ struct Bench : LinkTransport {
     heater_model_init(&m, 10);
     burn_params p;
     burn_params_default(&p);
+    glow_params gp;
+    glow_params_default(&gp);
     burn_inputs in = inputs();
-    safety_init(&s, &p, now, &in, LINK_RESET_POWER_ON, 0);
+    safety_init(&s, &p, &gp, now, &in, LINK_RESET_POWER_ON, 0);
   }
   burn_inputs inputs() const {
     burn_inputs in;
@@ -52,6 +56,7 @@ struct Bench : LinkTransport {
     in.supply_cv = m.supply_cv;
     in.overheat_latch = 0;
     in.co_alarm = 0;
+    in.glow_fault = 0;
     return in;
   }
   // ESP32 -> MCU: the MCU answers each complete request at once (well inside its 20 ms).
@@ -70,9 +75,28 @@ struct Bench : LinkTransport {
     to_esp.pop_front();
     return b;
   }
+  // One 5 ms glow period: the planner's pulse into the plug model.
+  void glow_period(uint32_t t) {
+    double r = 0.2 + 0.8 * plug_heat;
+    double i = 12.6 / (r + 0.02);
+    glow_meas gm;
+    gm.vin_cv = 1260;
+    gm.pulse_ca = (uint16_t) (last_i * 100 + 0.5);
+    gm.gap_ca = 0;
+    gm.airflow_ok = 1;
+    gm.board_c10 = 250;
+    gm.high_side_trip = 0;
+    glow_cmd c = safety_glow_period(&s, t, &gm);
+    last_i = c.width_us ? i : 0;
+    double w = i * i * r * c.width_us / 5000.0;
+    glow_w = w;
+    plug_heat += (w / 90.0 - plug_heat) * (5.0 / 8000.0);
+  }
   void tick() {
     const burn_outputs *o = safety_outputs(&s);
-    heater_model_step(&m, TICK, o->fan_rpm, o->pump_cHz, o->glow_w);
+    glow_period(now);
+    glow_period(now + 5);
+    heater_model_step(&m, TICK, o->fan_rpm, o->pump_cHz, (uint16_t) (plug_heat > 0.5 ? 90 : 0));
     now += TICK;
     burn_inputs in = inputs();
     safety_step(&s, now, &in);
@@ -93,9 +117,21 @@ struct Bench : LinkTransport {
   }
 };
 
-static void test_heat_cycle() {
+static void test_glow_rests_after_reset() {
   Bench b;
   b.run(2 * SEC);
+  // After power-on the glow stage's heat budget starts full: a heat start waits until half of it
+  // has drained (two minutes).
+  b.client.set_power_demand(60);
+  b.client.set_mode(Mode::HEAT);
+  b.run(1 * SEC);
+  CHECK(b.client.raw_status().state == BURN_STATE_OFF);
+  CHECK(b.client.raw_status().start_result == LINK_BUSY);
+}
+
+static void test_heat_cycle() {
+  Bench b;
+  b.run(125 * SEC);
   CHECK(b.client.up());
   CHECK(b.client.info().kind == LINK_KIND_STM32);
   CHECK(b.client.raw_status().state == BURN_STATE_OFF);
@@ -118,7 +154,7 @@ static void test_heat_cycle() {
 
 static void test_dead_man() {
   Bench b;
-  b.run(2 * SEC);
+  b.run(125 * SEC);
   b.client.set_power_demand(50);
   CHECK(b.client.set_mode(Mode::HEAT).accepted());
   CHECK(b.run_until_state(BURN_STATE_HEATING, 5 * MIN));
@@ -140,7 +176,7 @@ static void test_dead_man() {
 
 static void test_mcu_reset_mid_run() {
   Bench b;
-  b.run(2 * SEC);
+  b.run(125 * SEC);
   b.client.set_power_demand(100);
   CHECK(b.client.set_mode(Mode::HEAT).accepted());
   CHECK(b.run_until_state(BURN_STATE_HEATING, 5 * MIN));
@@ -148,8 +184,10 @@ static void test_mcu_reset_mid_run() {
   // The safety MCU resets (watchdog): hot heat exchanger, the ESP32 still asking for heat.
   burn_params p;
   burn_params_default(&p);
+  glow_params gp;
+  glow_params_default(&gp);
   burn_inputs in = b.inputs();
-  safety_init(&b.s, &p, b.now, &in, LINK_RESET_WATCHDOG, 0);
+  safety_init(&b.s, &p, &gp, b.now, &in, LINK_RESET_WATCHDOG, 0);
   CHECK(b.s.burn.step == BURN_STEP_COOLDOWN);
   CHECK(b.run_until_state(BURN_STATE_COOLING, 5 * SEC));
   CHECK(b.run_until_state(BURN_STATE_OFF, 25 * MIN));
@@ -158,6 +196,7 @@ static void test_mcu_reset_mid_run() {
 }
 
 int main() {
+  test_glow_rests_after_reset();
   test_heat_cycle();
   test_dead_man();
   test_mcu_reset_mid_run();

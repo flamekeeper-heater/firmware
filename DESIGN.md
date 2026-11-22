@@ -120,7 +120,20 @@ off -> fan only -> off          off -> priming -> off
 Every timing and limit is a named parameter (`burn_params`). The defaults are provisional until
 they are tuned on a real heater.
 
-`stm32/core/safety.*` joins it to the link: the start-number rule, the dead-man, the status and
+`stm32/core/glow.*` turns the sequencer's glow request into pulses, once per 5 ms PWM period. The
+plug is switched straight from the supply, so every pulse width is fixed before it starts, from the
+current read in the last pulse scaled by the supply since:
+
+- A 150 us probe first, and again after any gap over 50 ms.
+- Per pulse: short pulses at high current (0.3 ms above 100 A, 1.5 ms above 22 A), 15 A rms, at
+  most 99 % duty. Duties too low for a readable pulse become 150 us pulses at a lower rate.
+- The power asked (90 W, 75 W on a low supply), reached by a gentle start from about 2.5 V.
+- A heat budget for the switching transistors (I² x t, drained only while the plug is off; full
+  after a reset, so a heat start waits until half of it has drained).
+- Current between pulses (the low side stuck on) or repeated high-side trips: glow off at once
+  and a fault that needs a reset. No airflow or a hot board: no glow.
+
+`stm32/core/safety.*` joins both to the link: the start-number rule, the dead-man, the status and
 the update handshake.
 
 ## Firmware updates and signing
