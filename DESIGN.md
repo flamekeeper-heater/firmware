@@ -94,6 +94,35 @@ down on its own, then stays off until a new start number arrives.
 **Versioning.** HELLO carries the link major and minor. A minor only adds what the other side can
 ignore. Either side refuses to run with a major it does not know.
 
+## Burn sequence (safety MCU)
+
+`stm32/core/burn.*` runs the heater from measurements and says what the fan, pump and glow stages
+should do, one pass of the safety loop at a time:
+
+```
+off -> self-test -> preheat -> ignition -> warm-up -> running -> burn-off -> cooldown -> off
+                      ^            | no flame
+                      +-- purge <--+  (one retry, then a start fault)
+off -> fan only -> off          off -> priming -> off
+```
+
+- The fan must turn before anything else: the glow plug only heats with measured airflow, and a
+  fan that does not reach its speed ends the start.
+- Glow on-time is capped per attempt and per 10 minutes, so a start that would exceed the cap
+  waits.
+- Flame is seen as a rise of the heat exchanger temperature; a fall from the run's peak is a
+  flame-out. Every stop after fuel has gone in burns off and cools down; a fan stall stops
+  everything at once.
+- Overheat (firmware limit or the hardware latch), CO, an open sensor or the supply out of range
+  end the run with a fault. The latch and CO faults need a fault reset once their cause is gone.
+- After a reset with a hot heat exchanger, it cools down first; nothing restarts by itself.
+
+Every timing and limit is a named parameter (`burn_params`). The defaults are provisional until
+they are tuned on a real heater.
+
+`stm32/core/safety.*` joins it to the link: the start-number rule, the dead-man, the status and
+the update handshake.
+
 ## Firmware updates and signing
 
 The C6 build verifies every update against the key in its running image's signature block
@@ -116,6 +145,9 @@ and refuses starts. It is not a certified CO alarm.
 
 - `esp32/components/flamekeeper/tests/run.sh`: the core on the host, with sanitizers, against a
   simulated heater and a simulated safety MCU.
+- `stm32/tests/run.sh`: the safety core (`stm32/core/`): the burn sequencer against a heater model
+  (whole cycles, every way a run ends, the glow caps and the airflow rule), and end to end with the
+  ESP32's real link client over a byte wire (dead-man, an MCU reset mid-run).
 - `common/*/tests/run.sh`: the link codec and the CO alarm.
 - `esp32/tools/boot_test.sh`: boots a compiled image in Espressif's QEMU and fails on a crash or a
   restart. A C6 build checks its own signature at start-up, so pass the signed app with `--app`.

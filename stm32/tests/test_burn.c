@@ -1,0 +1,400 @@
+/* The burn sequencer against the heater model: whole cycles, every way a run can end, and the
+ * board's rules (glow only with airflow, glow on-time caps, nothing restarts by itself). */
+#include <stdio.h>
+#include <string.h>
+
+#include "../core/burn.h"
+#include "heater_model.h"
+
+static int checks = 0, failures = 0;
+#define CHECK(c)                                                  \
+  do {                                                            \
+    checks++;                                                     \
+    if (!(c)) {                                                   \
+      failures++;                                                 \
+      printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c);         \
+    }                                                             \
+  } while (0)
+#define CHECK_EQ(a, b)                                                                              \
+  do {                                                                                              \
+    checks++;                                                                                       \
+    long long va_ = (long long) (a), vb_ = (long long) (b);                                         \
+    if (va_ != vb_) {                                                                               \
+      failures++;                                                                                   \
+      printf("FAIL %s:%d: %s == %s (%lld != %lld)\n", __FILE__, __LINE__, #a, #b, va_, vb_);         \
+    }                                                                                               \
+  } while (0)
+
+enum { HEAT = 1, FAN = 2, PRIME = 3 };
+#define SEC 1000u
+#define MIN (60u * SEC)
+#define TICK 100u
+
+typedef struct {
+  burn b;
+  heater_model m;
+  uint32_t now;
+  uint8_t latch, co;
+  /* What the run did. */
+  uint32_t glow_ms, glow_no_air_ms, pump_ms, max_glow_attempt_ms;
+  uint8_t max_step_seen;
+} rig;
+
+static burn_inputs inputs(const rig *r) {
+  burn_inputs in;
+  in.hx_c10 = heater_model_hx(&r->m);
+  in.fan_rpm = (uint16_t) (r->m.fan_rpm + 0.5);
+  in.supply_cv = r->m.supply_cv;
+  in.overheat_latch = r->latch;
+  in.co_alarm = r->co;
+  return in;
+}
+
+static void rig_init(rig *r, uint32_t start, double ambient_c) {
+  memset(r, 0, sizeof(*r));
+  heater_model_init(&r->m, ambient_c);
+  r->now = start;
+  burn_params p;
+  burn_params_default(&p);
+  burn_inputs in = inputs(r);
+  burn_init(&r->b, &p, r->now, &in);
+}
+
+static void tick(rig *r) {
+  const burn_outputs *o = &r->b.out;
+  if (o->glow_w > 0) {
+    r->glow_ms += TICK;
+    if (r->m.fan_rpm < r->b.p.glow_min_fan_rpm)
+      r->glow_no_air_ms += TICK;
+  }
+  if (o->pump_cHz > 0)
+    r->pump_ms += TICK;
+  if (r->b.glow_attempt_ms > r->max_glow_attempt_ms)
+    r->max_glow_attempt_ms = r->b.glow_attempt_ms;
+  heater_model_step(&r->m, TICK, o->fan_rpm, o->pump_cHz, o->glow_w);
+  r->now += TICK;
+  burn_inputs in = inputs(r);
+  burn_step(&r->b, r->now, &in);
+  if (r->b.step > r->max_step_seen)
+    r->max_step_seen = r->b.step;
+}
+
+static void run(rig *r, uint32_t ms) {
+  for (uint32_t t = 0; t < ms; t += TICK)
+    tick(r);
+}
+
+/* Run until the step is `step` (1) or ms passes (0). */
+static int run_until_step(rig *r, uint8_t step, uint32_t ms) {
+  for (uint32_t t = 0; t < ms; t += TICK) {
+    if (r->b.step == step)
+      return 1;
+    tick(r);
+  }
+  return r->b.step == step;
+}
+
+static int start(rig *r, uint8_t mode, uint8_t power) {
+  burn_inputs in = inputs(r);
+  return burn_start(&r->b, mode, power, r->now, &in);
+}
+
+/* ---------------------------------------------------------------- tests */
+
+static void test_full_cycle(uint32_t t0) {
+  rig r;
+  rig_init(&r, t0, 5);
+  CHECK_EQ(burn_state(&r.b), BURN_STATE_OFF);
+  CHECK_EQ(start(&r, HEAT, 50), 0);
+  CHECK_EQ(burn_state(&r.b), BURN_STATE_STARTING);
+  CHECK_EQ(r.b.step, BURN_STEP_SELF_TEST);
+  CHECK(run_until_step(&r, BURN_STEP_PREHEAT, 10 * SEC));
+  CHECK(run_until_step(&r, BURN_STEP_IGNITION, 40 * SEC));
+  CHECK(run_until_step(&r, BURN_STEP_WARM_UP, 100 * SEC));
+  CHECK(r.m.lit);
+  CHECK(run_until_step(&r, BURN_STEP_RUNNING, 70 * SEC));
+  CHECK_EQ(burn_state(&r.b), BURN_STATE_HEATING);
+  run(&r, 10 * MIN);
+  CHECK_EQ(r.b.step, BURN_STEP_RUNNING);
+  CHECK_EQ(r.b.fault, BURN_FAULT_NONE);
+  CHECK_EQ(r.b.out.glow_w, 0);
+  CHECK(r.glow_ms <= 120 * SEC);   /* GLW-1: one attempt */
+  CHECK_EQ(r.glow_no_air_ms, 0);   /* GLW-14 */
+  CHECK_EQ(r.b.running_power, 50);
+  CHECK(r.m.hx_c10 > 900 && r.m.hx_c10 < 2400);
+
+  /* Power changes follow at once. */
+  burn_set_power(&r.b, 100);
+  run(&r, 1 * SEC);
+  CHECK_EQ(r.b.out.pump_cHz, r.b.p.pump_max_cHz);
+  CHECK_EQ(r.b.out.fan_rpm, r.b.p.fan_max_rpm);
+
+  /* A second start while it runs is not a start. */
+  CHECK_EQ(start(&r, HEAT, 30), 0x20);
+
+  burn_stop(&r.b, BURN_WHY_ASKED, r.now);
+  CHECK_EQ(burn_state(&r.b), BURN_STATE_STOPPING);
+  run(&r, TICK);
+  CHECK_EQ(r.b.out.pump_cHz, 0);
+  CHECK(r.b.out.fan_rpm > 0);
+  CHECK(run_until_step(&r, BURN_STEP_COOLDOWN, 40 * SEC));
+  CHECK_EQ(burn_state(&r.b), BURN_STATE_COOLING);
+  CHECK(run_until_step(&r, BURN_STEP_OFF, 20 * MIN));
+  CHECK(r.m.hx_c10 < r.b.p.cool_c10);
+  CHECK_EQ(r.b.fault, BURN_FAULT_NONE);
+  run(&r, TICK);
+  CHECK_EQ(r.b.out.fan_rpm, 0);
+
+  /* Off stays off: nothing starts by itself. */
+  run(&r, 5 * MIN);
+  CHECK_EQ(r.b.step, BURN_STEP_OFF);
+  CHECK_EQ(r.b.out.pump_cHz, 0);
+}
+
+static void test_glow_needs_airflow(void) {
+  rig r;
+  rig_init(&r, 0, 10);
+  r.m.fan_max_rpm = 800; /* below the glow's minimum speed */
+  CHECK_EQ(start(&r, HEAT, 50), 0);
+  CHECK(run_until_step(&r, BURN_STEP_OFF, 30 * SEC));
+  CHECK_EQ(r.b.fault, BURN_FAULT_FAN);
+  CHECK_EQ(r.b.why, BURN_WHY_FAN_SPIN_UP);
+  CHECK_EQ(r.glow_ms, 0);
+  CHECK_EQ(r.pump_ms, 0);
+}
+
+static void test_no_ignition(void) {
+  rig r;
+  rig_init(&r, 0, 10);
+  r.m.no_ignition = 1;
+  CHECK_EQ(start(&r, HEAT, 50), 0);
+  CHECK(run_until_step(&r, BURN_STEP_PURGE, 3 * MIN));
+  CHECK_EQ(r.b.out.pump_cHz, 0);
+  CHECK_EQ(r.b.out.glow_w, 0);
+  CHECK(run_until_step(&r, BURN_STEP_PREHEAT, 2 * MIN));
+  CHECK_EQ(r.b.attempt, 2);
+  CHECK(run_until_step(&r, BURN_STEP_BURN_OFF, 3 * MIN));
+  CHECK_EQ(r.b.fault, BURN_FAULT_START);
+  CHECK_EQ(r.b.why, BURN_WHY_NO_FLAME);
+  CHECK(r.max_glow_attempt_ms <= 120 * SEC);
+  CHECK(r.glow_ms <= 240 * SEC);
+  CHECK(run_until_step(&r, BURN_STEP_OFF, 5 * MIN));
+  CHECK_EQ(r.b.fault, BURN_FAULT_START); /* reported until the next start */
+
+  /* The plug has used its 10-minute allowance: a new start waits. */
+  CHECK_EQ(start(&r, HEAT, 50), 0x2F);
+  run(&r, 10 * MIN);
+  CHECK_EQ(start(&r, HEAT, 50), 0);
+  CHECK_EQ(r.b.fault, BURN_FAULT_NONE);
+}
+
+static void test_flame_out(void) {
+  rig r;
+  rig_init(&r, 0, 10);
+  CHECK_EQ(start(&r, HEAT, 80), 0);
+  CHECK(run_until_step(&r, BURN_STEP_RUNNING, 5 * MIN));
+  run(&r, 5 * MIN);
+  r.m.kill_flame = 1;
+  CHECK(run_until_step(&r, BURN_STEP_BURN_OFF, 3 * MIN));
+  CHECK_EQ(r.b.fault, BURN_FAULT_FLAME_OUT);
+  CHECK_EQ(r.b.out.pump_cHz, 0);
+  CHECK(run_until_step(&r, BURN_STEP_OFF, 20 * MIN));
+  CHECK_EQ(r.b.fault, BURN_FAULT_FLAME_OUT);
+}
+
+static void test_overheat_limit(void) {
+  rig r;
+  rig_init(&r, 0, 30);
+  r.m.heat_gain = 0.06; /* a heater that runs far too hot */
+  CHECK_EQ(start(&r, HEAT, 100), 0);
+  CHECK(run_until_step(&r, BURN_STEP_RUNNING, 5 * MIN));
+  int derated = 0;
+  for (int i = 0; i < 6000 && r.b.step == BURN_STEP_RUNNING; i++) {
+    tick(&r);
+    if (r.m.hx_c10 >= 2450 && r.b.step == BURN_STEP_RUNNING && r.b.out.pump_cHz == r.b.p.pump_min_cHz)
+      derated = 1;
+  }
+  CHECK(derated);
+  CHECK_EQ(r.b.step, BURN_STEP_BURN_OFF);
+  CHECK_EQ(r.b.fault, BURN_FAULT_OVERHEAT);
+  CHECK_EQ(r.b.why, BURN_WHY_OVERHEAT_LIMIT);
+  CHECK(r.m.hx_c10 < 2700); /* stopped well before the hardware latch */
+}
+
+static void test_overheat_latch(void) {
+  rig r;
+  rig_init(&r, 0, 10);
+  CHECK_EQ(start(&r, HEAT, 50), 0);
+  CHECK(run_until_step(&r, BURN_STEP_RUNNING, 5 * MIN));
+  r.latch = 1;
+  run(&r, TICK);
+  /* OVH-4: fuel off at once, the fan keeps going to cool it. */
+  CHECK_EQ(r.b.out.pump_cHz, 0);
+  CHECK(r.b.out.fan_rpm > 0);
+  CHECK_EQ(r.b.fault, BURN_FAULT_OVERHEAT);
+  CHECK(r.b.fault_latched);
+  CHECK(run_until_step(&r, BURN_STEP_OFF, 25 * MIN));
+  CHECK_EQ(start(&r, HEAT, 50), 0x2F);
+  burn_inputs in = inputs(&r);
+  CHECK_EQ(burn_fault_reset(&r.b, &in), 0x2F); /* still tripped */
+  r.latch = 0;
+  in = inputs(&r);
+  CHECK_EQ(burn_fault_reset(&r.b, &in), 0);
+  CHECK_EQ(start(&r, HEAT, 50), 0);
+}
+
+static void test_co_alarm(void) {
+  rig r;
+  rig_init(&r, 0, 10);
+  CHECK_EQ(start(&r, HEAT, 50), 0);
+  CHECK(run_until_step(&r, BURN_STEP_RUNNING, 5 * MIN));
+  r.co = 1;
+  run(&r, TICK);
+  CHECK_EQ(r.b.fault, BURN_FAULT_CO);
+  CHECK_EQ(r.b.step, BURN_STEP_BURN_OFF);
+  CHECK_EQ(r.b.out.pump_cHz, 0);
+  r.co = 0;
+  CHECK(run_until_step(&r, BURN_STEP_OFF, 25 * MIN));
+  CHECK_EQ(start(&r, HEAT, 50), 0x2F); /* latched until a user reset */
+}
+
+static void test_fan_stall(void) {
+  rig r;
+  rig_init(&r, 0, 10);
+  CHECK_EQ(start(&r, HEAT, 50), 0);
+  CHECK(run_until_step(&r, BURN_STEP_RUNNING, 5 * MIN));
+  r.m.fan_stalled = 1;
+  uint32_t t = r.now;
+  CHECK(run_until_step(&r, BURN_STEP_OFF, 10 * SEC));
+  CHECK((uint32_t) (r.now - t) <= 6 * SEC); /* fan slows (inertia), then 1 s below the stall speed */
+  CHECK_EQ(r.b.fault, BURN_FAULT_FAN);
+  CHECK_EQ(r.b.why, BURN_WHY_FAN_STALL);
+  run(&r, TICK);
+  CHECK_EQ(r.b.out.pump_cHz, 0);
+  CHECK_EQ(r.b.out.glow_w, 0);
+}
+
+static void test_sensor_open(void) {
+  rig r;
+  rig_init(&r, 0, 10);
+  r.m.sensor_open = 1;
+  CHECK_EQ(start(&r, HEAT, 50), 0x2F);
+  CHECK_EQ(r.b.fault, BURN_FAULT_SENSOR);
+  r.m.sensor_open = 0;
+  CHECK_EQ(start(&r, HEAT, 50), 0);
+  CHECK(run_until_step(&r, BURN_STEP_RUNNING, 5 * MIN));
+  r.m.sensor_open = 1;
+  run(&r, TICK);
+  CHECK_EQ(r.b.step, BURN_STEP_BURN_OFF);
+  CHECK_EQ(r.b.fault, BURN_FAULT_SENSOR);
+  /* Without a reading the cooldown runs its full length, then stops. */
+  CHECK(run_until_step(&r, BURN_STEP_OFF, 21 * MIN));
+}
+
+static void test_reset_while_hot(void) {
+  rig r;
+  rig_init(&r, 0, 10);
+  CHECK_EQ(start(&r, HEAT, 100), 0);
+  CHECK(run_until_step(&r, BURN_STEP_RUNNING, 5 * MIN));
+  run(&r, 5 * MIN);
+  /* The MCU resets: the heater is hot and nobody asked for anything. */
+  burn_params p;
+  burn_params_default(&p);
+  burn_inputs in = inputs(&r);
+  burn_init(&r.b, &p, r.now, &in);
+  CHECK_EQ(r.b.step, BURN_STEP_COOLDOWN);
+  CHECK_EQ(start(&r, HEAT, 50), 0x20);
+  run(&r, TICK);
+  CHECK_EQ(r.b.out.pump_cHz, 0);
+  CHECK(r.b.out.fan_rpm > 0);
+  CHECK(run_until_step(&r, BURN_STEP_OFF, 25 * MIN));
+  CHECK_EQ(r.pump_ms > 0, 1);
+}
+
+static void test_fan_only_and_priming(void) {
+  rig r;
+  rig_init(&r, 0, 10);
+  CHECK_EQ(start(&r, FAN, 40), 0);
+  CHECK_EQ(burn_state(&r.b), BURN_STATE_FAN_ONLY);
+  run(&r, 30 * SEC);
+  CHECK_EQ(r.b.out.fan_rpm, 1800 + (4500 - 1800) * 40 / 100);
+  CHECK_EQ(r.b.out.pump_cHz, 0);
+  CHECK_EQ(r.glow_ms, 0);
+  burn_stop(&r.b, BURN_WHY_ASKED, r.now);
+  CHECK_EQ(r.b.step, BURN_STEP_OFF);
+
+  CHECK_EQ(start(&r, PRIME, 0), 0);
+  CHECK_EQ(burn_state(&r.b), BURN_STATE_PRIMING);
+  run(&r, 10 * SEC);
+  CHECK_EQ(burn_prime_left_s(&r.b, r.now), 50);
+  CHECK_EQ(r.b.out.pump_cHz, r.b.p.pump_prime_cHz);
+  CHECK_EQ(r.b.out.fan_rpm, 0);
+  CHECK(run_until_step(&r, BURN_STEP_OFF, 60 * SEC));
+  CHECK_EQ(burn_prime_left_s(&r.b, r.now), 0);
+  CHECK_EQ(start(&r, 7, 0), 0x13);
+}
+
+static void test_supply(void) {
+  rig r;
+  rig_init(&r, 0, 10);
+  r.m.supply_cv = 1000;
+  CHECK_EQ(start(&r, HEAT, 50), 0x2F);
+  CHECK_EQ(r.b.fault, BURN_FAULT_SUPPLY_LOW);
+  r.m.supply_cv = 1260;
+  CHECK_EQ(start(&r, HEAT, 50), 0);
+  CHECK(run_until_step(&r, BURN_STEP_RUNNING, 5 * MIN));
+  r.m.supply_cv = 1000;
+  run(&r, 4 * SEC);
+  CHECK_EQ(r.b.step, BURN_STEP_RUNNING); /* a dip is tolerated */
+  r.m.supply_cv = 1260;
+  run(&r, 2 * SEC);
+  r.m.supply_cv = 3100;
+  CHECK(run_until_step(&r, BURN_STEP_BURN_OFF, 6 * SEC));
+  CHECK_EQ(r.b.fault, BURN_FAULT_SUPPLY_HIGH);
+}
+
+static void test_stop_before_fuel(void) {
+  rig r;
+  rig_init(&r, 0, 10);
+  CHECK_EQ(start(&r, HEAT, 50), 0);
+  CHECK(run_until_step(&r, BURN_STEP_PREHEAT, 10 * SEC));
+  run(&r, 5 * SEC);
+  burn_stop(&r.b, BURN_WHY_ASKED, r.now);
+  CHECK_EQ(r.b.step, BURN_STEP_OFF); /* no fuel went in: nothing to burn off */
+  run(&r, TICK);
+  CHECK_EQ(r.b.out.glow_w, 0);
+  CHECK_EQ(r.b.out.fan_rpm, 0);
+  CHECK_EQ(r.pump_ms, 0);
+}
+
+static void test_dead_man_stop(void) {
+  rig r;
+  rig_init(&r, 0, 10);
+  CHECK_EQ(start(&r, HEAT, 50), 0);
+  CHECK(run_until_step(&r, BURN_STEP_RUNNING, 5 * MIN));
+  CHECK(burn_active(&r.b));
+  burn_stop(&r.b, BURN_WHY_DEADMAN, r.now);
+  CHECK(!burn_active(&r.b));
+  CHECK_EQ(r.b.why, BURN_WHY_DEADMAN);
+  CHECK(run_until_step(&r, BURN_STEP_OFF, 25 * MIN)); /* a full burn-off and cooldown */
+}
+
+int main(void) {
+  test_full_cycle(0);
+  test_full_cycle(0xFFFF0000u); /* across the 49-day wrap of the millisecond clock */
+  test_glow_needs_airflow();
+  test_no_ignition();
+  test_flame_out();
+  test_overheat_limit();
+  test_overheat_latch();
+  test_co_alarm();
+  test_fan_stall();
+  test_sensor_open();
+  test_reset_while_hot();
+  test_fan_only_and_priming();
+  test_supply();
+  test_stop_before_fuel();
+  test_dead_man_stop();
+  printf("burn: %d checks, %d failures\n", checks, failures);
+  return failures ? 1 : 0;
+}
