@@ -12,10 +12,8 @@ static burn_inputs read_inputs(board *b) {
   in.hx_c10 = analog_hx_c10(b->raw[HAL_ADC_NTC]);
   in.fan_rpm = hal_hall_rpm();
   in.supply_cv = analog_vin_cv(b->raw[HAL_ADC_VIN], b->vdda_mv);
-  /* OVH-1: the latch reads tripped after every power-up until the self-test re-arms it; only a
-   * fall after that is a hardware overheat trip. */
-  in.overheat_latch = (uint8_t) (b->latch_was_armed && !hal_overheat_n());
-  /* co_alarm, co_fault: the core's own CO alarm (safety_co_step) */
+  /* overheat_latch: the core's, from the latch readings (OVH-1); co_alarm, co_fault: the core's
+   * own CO alarm (safety_co_step) */
   in.board_c10 = analog_board_c10(b->raw[HAL_ADC_BOARD]);
   return in;
 }
@@ -171,15 +169,10 @@ void board_ms(board *b, uint32_t now) {
   pump_meas pm;
   pm.vin_cv = vin;
   pm.i_ma = analog_pump_ma(b->raw[HAL_ADC_PUMP_I], v);
-  /* PMP-7: the watchdog's interrupt has already cut; the report stays until the core latches it. */
-  if (hal_pump_overcurrent())
-    b->pump_cut = 1;
-  pm.overcurrent = b->pump_cut;
+  pm.overcurrent = hal_pump_overcurrent(); /* PMP-7: the watchdog's interrupt has already cut */
   pm.hs_ok = o.pump_hs_ok;
   pm.hb_running_ms = 0;
   safety_io io = safety_ms(&b->s, now, &o, &pm);
-  if (b->s.pump.fault != PUMP_FAULT_NONE)
-    b->pump_cut = 0;
 
   /* A running heartbeat is re-armed by the loop pass below; a static level or a stop is at once.
    * Going from stopped to running, the first burst starts now (the last pass completed). */
@@ -240,8 +233,6 @@ void board_ms(board *b, uint32_t now) {
     fm.vin_cv = vin;
     fm.isense_ma = analog_fan_ma(b->raw[HAL_ADC_FAN_I], v);
     hal_fan_duty(safety_fan_step(&b->s, now, &fm));
-    if (b->s.chk.power_up_done && b->s.power_up_failed == 0 && hal_overheat_n())
-      b->latch_was_armed = 1;
     fill_detail(b);
     save(b);
     /* The pass completed: the next heartbeat burst (PMP-1) and the watchdog (WDG-16), here only. */

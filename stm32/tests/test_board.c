@@ -305,9 +305,14 @@ static void test_schedule_and_watchdog(void) {
   CHECK(chip.iwdg_refreshes == 100); /* WDG-16: from the loop pass only */
   CHECK(b.s.chk.power_up_done);
   CHECK(b.s.power_up_failed == 0);   /* through the real interlock lines of the fake chip */
-  CHECK(chip.latch_armed && b.latch_was_armed);
+  CHECK(chip.latch_armed && b.s.latch_was_armed);
   CHECK(b.s.burn.fault == BURN_FAULT_NONE);
   CHECK(chip.hb_mode == HAL_HB_STOPPED); /* off: no heartbeat */
+  /* OVH-1: a fall of the re-armed latch is a hardware overheat trip, latched. */
+  chip.latch_armed = 0;
+  run(&b, 20);
+  CHECK(b.s.in.overheat_latch && b.s.burn.fault == BURN_FAULT_OVERHEAT && b.s.burn.fault_latched);
+  CHECK(b.s.burn.why == BURN_WHY_OVERHEAT_LATCH);
 }
 
 static void test_link(void) {
@@ -387,6 +392,15 @@ static void test_pump_overcurrent(void) {
   esp32_polls(&b, 100);
   CHECK(chip.hb_mode == HAL_HB_STOPPED && chip.pump_duty == 0); /* latched */
   CHECK(b.s.pump.fault == PUMP_FAULT_OVERCURRENT);
+
+  /* A cut reported while a self-test runs (no stroke steps then): latched at once all the same. */
+  chip_reset();
+  board_init(&b, chip.now, LINK_RESET_POWER_ON, 0);
+  run(&b, 5);
+  CHECK(checks_busy(&b.s.chk) && b.s.pump.fault == PUMP_FAULT_NONE);
+  chip.oc_report = 1;
+  run(&b, 1);
+  CHECK(checks_busy(&b.s.chk) && b.s.pump.fault == PUMP_FAULT_OVERCURRENT);
 }
 
 /* GLW-6 through the board: the planner steps once per glow period, on the timer's readings; if

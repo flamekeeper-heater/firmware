@@ -31,10 +31,8 @@ typedef struct {
   uint32_t now;
   uint16_t raw[HAL_ADC_COUNT];
   uint16_t vdda_mv, vrefint_cal;
-  uint8_t latch_was_armed;   /* the overheat latch has been armed since the reset (OVH-1) */
   uint8_t want_burst;        /* the core wants the heartbeat running */
   uint8_t glow_en_test, glow_en_planner;
-  uint8_t pump_cut;          /* the overcurrent watchdog cut a stroke; kept until the core latched it */
   uint32_t last_glow_ms, last_loop_ms, last_co_ms;
   uint16_t co_log_next;      /* the R0 log's next free slot */
   uint32_t loops, bursts, refreshes; /* for the tests and the logs */

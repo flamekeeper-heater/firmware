@@ -366,6 +366,9 @@ void safety_step(safety *s, uint32_t now, const burn_inputs *in) {
   s->in.pump_fault = in->pump_fault ? in->pump_fault : s->pump.fault;
   s->in.plug_refused = s->plug_refused;
   s->in.co_alarm = (uint8_t) (in->co_alarm || s->co.alarm);
+  /* OVH-1: the latch reads tripped after every power-up until the self-test re-arms it; only a fall
+   * after that is a hardware overheat trip. */
+  s->in.overheat_latch = (uint8_t) (in->overheat_latch || (s->latch_was_armed && !s->latch_armed));
   s->in.co_fault = (uint8_t) (in->co_fault || s->co.fault);
   if (burn_burning(&s->burn)) {
     s->run_ms += dt;
@@ -381,6 +384,9 @@ const burn_outputs *safety_outputs(const safety *s) { return &s->burn.out; }
 
 safety_io safety_ms(safety *s, uint32_t now, const checks_obs *o, pump_meas *pm) {
   checks *c = &s->chk;
+  s->latch_armed = o->latch_armed;
+  if (pm->overcurrent)
+    pump_cut(&s->pump); /* the watchdog has cut already; whatever runs, the fault latches now */
   if (!s->power_up_started) {
     s->power_up_started = 1;
     checks_begin_power_up(c, now, o);
@@ -401,6 +407,8 @@ safety_io safety_ms(safety *s, uint32_t now, const checks_obs *o, pump_meas *pm)
     if (c->failed)
       s->checks |= LINK_CHECK_SELF_TEST; /* no starts until the MCU resets */
   }
+  if (c->power_up_done && s->power_up_failed == 0 && o->latch_armed)
+    s->latch_was_armed = 1;
   if (was_pre_start && !checks_busy(c))
     s->precheck_result = c->failed == 0                      ? BURN_PRECHECK_PASSED
                          : (c->failed & CHECK_FAILS_PUMP) != 0 ? BURN_PRECHECK_FAILED_PUMP

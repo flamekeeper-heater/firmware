@@ -44,6 +44,11 @@ static pump_out fault(pump *pu, uint8_t f) {
   return o;
 }
 
+void pump_cut(pump *pu) {
+  if (pu->fault == PUMP_FAULT_NONE)
+    (void) fault(pu, PUMP_FAULT_OVERCURRENT);
+}
+
 static pump_out step(pump *pu, uint32_t now, uint16_t rate_cHz, int priming, const pump_meas *m) {
   const pump_params *p = &pu->p;
   pump_out out = {0, 0, 0};
