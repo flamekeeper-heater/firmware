@@ -43,27 +43,16 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <deque>
 #include <string>
 #include <vector>
 
-#include "../../esp32/components/flamekeeper/link_client.h"
-
-extern "C" {
-#include "../core/safety.h"
-#include "co_sensor.h"
-#include "heater_model.h"
-}
+#include "core_rig.h"
 
 using esphome::flamekeeper::LinkClient;
-using esphome::flamekeeper::LinkTransport;
 using esphome::flamekeeper::Mode;
 
 namespace {
 
-const uint32_t TICK = 10;
-const uint32_t SEC = 1000;
-const uint32_t MIN = 60 * SEC;
 const uint32_t HOUR = 60 * MIN;
 
 struct Rng {
@@ -121,45 +110,25 @@ struct Stats {
   }
 };
 
-struct Bench : LinkTransport {
-  safety s;
-  heater_model m;
-  uint32_t now = 0;
-  LinkClient client{this};
-  std::deque<uint8_t> to_esp;
+// The heater bench (core_rig.h) with the schedule's events switching its faults, its flash, the
+// link's troubles, and the oracles.
+struct Bench : HeaterBench<Bench> {
   Stats st;
 
   // what "flash" keeps across MCU resets
   std::vector<uint8_t> params_flash, plug_flash;
+  uint32_t co_r0_flash = 0;    // the clean-air R0
 
-  // the board
-  int16_t board_c10 = 350;
-  double plug_heat = 0, last_glow_i = 0;
-  uint16_t fan_duty = 0;
-  int hb_running_ms = 0;
-  int latch_armed = 0;
-  uint16_t test_pulse = 0;
-  int glow_en = 0;
-  double pump_i = 0;
   uint8_t last_result = 0;
   bool pulsed = false, stroked = false;  // this pass
   bool fan_stop_excused = false;
   bool fan_stuck_seen = false;  // the fan switch was stuck on since the last reset of its fault
   uint32_t fan_slow_ms = 0, glow_wait_ms = 0, pump_wait_ms = 0;
-
-  // faults
-  bool fan_stuck_on = false, glow_trips = false, glow_ls = false, pump_open = false, pump_ls = false,
-       pump_hs = false, pump_oc = false, overheat_trip = false;
-  uint32_t co_ratio = 1000;    // the CO sensor: Rs / R0 in 1/1000
-  bool co_open = false, co_heater_dead = false;
-  uint32_t co_r0_flash = 0;    // the clean-air R0 kept in flash
-  uint8_t pump_cut = 0;        // the overcurrent cut, reported until the core latches it (board.c)
   bool co_shadow = false;      // the CO module had an alarm or fault last pass
   bool co_alarm_shadow = false, co_fault_shadow = false;
   uint32_t co_clean_ms = 0;  // the air clean since
 
   // the link
-  bool esp_alive = true;
   uint32_t silent_until = 0, drop_until = 0;
   uint32_t drop_permille = 0;
   Rng wire_rng{1};
@@ -184,7 +153,6 @@ struct Bench : LinkTransport {
   uint64_t budget_cap_a2us = 0;
 
   Bench() : glow_ring(10 * MIN / TICK, 0) {
-    heater_model_init(&m, 10);
     link_parser_init(&mirror, LINK_REQUEST);
     init_mcu(LINK_RESET_POWER_ON);
   }
@@ -200,31 +168,15 @@ struct Bench : LinkTransport {
     violation_ms = now;
   }
 
-  burn_inputs inputs() const {
-    burn_inputs in;
-    std::memset(&in, 0, sizeof(in));
-    in.hx_c10 = heater_model_hx(&m);
-    in.fan_rpm = uint16_t(m.fan_rpm + 0.5);
-    in.supply_cv = m.supply_cv;
-    in.overheat_latch = uint8_t(!latch_armed && overheat_trip);
-    in.co_alarm = 0;  // the core's own CO alarm (safety_co_step) is the path
-    in.board_c10 = board_c10;
-    return in;
-  }
-
   void init_mcu(uint8_t reason) {
-    burn_inputs in = inputs();
-    safety_init(&s, now, &in, reason, 0);
+    mcu_reset(reason);
     if (!params_flash.empty())
       safety_load_params(&s, params_flash.data(), params_flash.size());
     if (!plug_flash.empty())
       safety_load_plug(&s, plug_flash.data(), plug_flash.size());
     if (co_r0_flash)
       safety_load_co_r0(&s, co_r0_flash);
-    pump_cut = 0;
     co_shadow = co_alarm_shadow = co_fault_shadow = false;
-    latch_armed = 0;  // a reset leaves the latch tripped until the power-up test re-arms it
-    hb_running_ms = 0;
     link_parser_init(&mirror, LINK_REQUEST);
     oracle_seen = false;
     heard = false;
@@ -240,9 +192,9 @@ struct Bench : LinkTransport {
 
   // ---------------------------------------------------------------- the wire
 
-  bool lost() { return now < drop_until && wire_rng.below(1000) < drop_permille; }
+  bool lost() override { return now < drop_until && wire_rng.below(1000) < drop_permille; }
 
-  void to_mcu(uint8_t byte) {
+  void to_mcu(uint8_t byte) override {
     uint8_t before_step = s.burn.step;
     bool latched_before = s.burn.fault_latched;
     int framed = link_parser_feed(&mirror, byte);
@@ -297,44 +249,9 @@ struct Bench : LinkTransport {
     latched_shadow = s.burn.fault_latched;
   }
 
-  void send(const uint8_t *data, size_t len) override {
-    for (size_t i = 0; i < len; i++)
-      if (!lost())
-        to_mcu(data[i]);
-  }
-  int read() override {
-    while (!to_esp.empty()) {
-      int b = to_esp.front();
-      to_esp.pop_front();
-      if (!lost())
-        return b;
-    }
-    return -1;
-  }
+  // ---------------------------------------------------------------- the board's calls into the core
 
-  // ---------------------------------------------------------------- the board, a millisecond and a pass
-
-  void ms(uint32_t t) {
-    bool hb_ok = hb_running_ms >= 1;
-    bool pump_plus = hb_ok && latch_armed && !pump_hs;
-    double vin = m.supply_cv / 100.0;
-    checks_obs co_;
-    co_.vin_cv = m.supply_cv;
-    co_.pump_v_cv = pump_plus ? m.supply_cv : 30;
-    co_.glow_v_cv = (glow_en && hb_ok) ? m.supply_cv : 0;
-    co_.glow_ca = glow_ls && hb_ok ? 5000 : 0;
-    co_.pump_peak_ma = test_pulse ? (pump_plus && !pump_open ? 400 : 3) : 0;
-    co_.latch_armed = uint8_t(latch_armed);
-    co_.pump_hs_ok = !pump_hs;
-    co_.hx_c10 = heater_model_hx(&m);
-    pump_meas pm;
-    pm.vin_cv = m.supply_cv;
-    pm.i_ma = uint16_t(pump_i * 1000);
-    pm.overcurrent = pump_cut;  // PMP-7: reported until the core latches it (board.c)
-    pm.hs_ok = !pump_hs;
-    pm.hb_running_ms = 0;
-    uint8_t step_before = s.burn.step;
-    safety_io out = safety_ms(&s, t, &co_, &pm);
+  void ms_out(safety_io out, uint8_t step_before) {
     if (step_before == BURN_STEP_OFF && s.burn.step != BURN_STEP_OFF)
       fail("no_self_start", "the millisecond step left off");
     if (out.pump_duty && pump_cut)
@@ -343,12 +260,6 @@ struct Bench : LinkTransport {
       fail("pump_cut", "a stroke with a pump fault latched");
     if (out.pump_duty && !out.pump_oc_armed)
       fail("pump_cut", "a stroke the overcurrent watchdog does not guard");
-    if (s.pump.fault != PUMP_FAULT_NONE)
-      pump_cut = 0;
-    // A shorted coil: the watchdog cuts an armed stroke at once, and the coil gets no drive.
-    bool cut_now = pump_oc && pump_plus && out.pump_duty && out.pump_oc_armed;
-    if (cut_now && !pump_cut)
-      pump_cut = 1, st.pump_cuts++;
     if (out.pump_duty) {
       stroked = true;
       uint8_t st_ = s.burn.step;
@@ -359,30 +270,10 @@ struct Bench : LinkTransport {
       if (st_ != BURN_STEP_PRIMING)
         fuel_went_in = true;
     }
-    double v = (pump_plus && out.pump_duty && !pump_open && !pump_cut) ? out.pump_duty / 1000.0 * vin : 0;
-    if (pump_ls && pump_plus && !pump_open)
-      v = vin;  // the low side conducts: the coil is on whenever its + side is
-    pump_i += (v / 6.0 - pump_i) * 0.393;
-    hb_running_ms = out.heartbeat == CHECKS_HB_RUNNING ? hb_running_ms + 1 : 0;
-    if (out.latch_reset && !(overheat_trip && heater_model_hx(&m) > 2700))
-      latch_armed = 1, overheat_trip = false;
-    test_pulse = out.pump_pulse_us;
-    glow_en = out.glow_en;
+    HeaterBench::ms_out(out, step_before);
   }
 
-  void glow_period(uint32_t t) {
-    double vin = m.supply_cv / 100.0;
-    double r = 0.2 + 0.8 * plug_heat;
-    double i = vin / (r + 0.02);
-    glow_meas gm;
-    gm.vin_cv = m.supply_cv;
-    gm.pulse_ca = uint16_t(last_glow_i * 100 + 0.5);
-    gm.gap_ca = glow_ls && s.glow.on ? uint16_t(i * 100) : 0;
-    gm.airflow_ok = m.fan_rpm >= s.burn.p.glow_min_fan_rpm;
-    gm.board_c10 = board_c10;
-    gm.high_side_trip = glow_trips && s.glow.on;
-    uint8_t step_before = s.burn.step;
-    glow_cmd c = safety_glow_period(&s, t, &gm);
+  void glow_out(glow_cmd c, uint8_t step_before) {
     if (step_before == BURN_STEP_OFF && s.burn.step != BURN_STEP_OFF)
       fail("no_self_start", "the glow period left off");
     if (c.width_us > 0) {
@@ -394,39 +285,24 @@ struct Bench : LinkTransport {
     uint64_t probe = uint64_t(20000) * 20000 * s.glow.p.min_pulse_us / 10000u;
     if (s.glow.bucket_a2us > budget_cap_a2us + probe)
       fail("glow_budget", "the glow heat budget over its cap");
-    last_glow_i = c.width_us ? i : 0;
-    double w = i * i * r * c.width_us / 5000.0;
-    plug_heat += (w / 90.0 - plug_heat) * (5.0 / 8000.0);
+    HeaterBench::glow_out(c, step_before);
   }
 
-  void tick() {
-    const burn_outputs *o = safety_outputs(&s);
-    for (uint32_t i = 0; i < TICK; i++)
-      ms(now + i);
-    glow_period(now);
-    glow_period(now + 5);
-
-    // The fan: the motor follows its average voltage (10 V: 5000 rpm), with a stuck-on switch at
-    // the full supply; a frozen fan does not turn at all.
-    double vin = m.supply_cv / 100.0;
-    double vmotor = fan_stuck_on ? vin : fan_duty / 1000.0 * vin;
-    uint16_t fan_target = uint16_t(vmotor / 10.0 * 5000.0);
-    heater_model_step(&m, TICK, fan_target, o->pump_cHz, uint16_t(plug_heat > 0.5 ? 90 : 0));
-    now += TICK;
+  void plant() {
+    HeaterBench::plant();
     st.sim_ms += TICK;
+  }
 
-    burn_inputs in = inputs();
-    if (now % SEC == 0) {
-      safety_co_step(&s, now, co_reading(), board_c10);
-      uint32_t r0 = safety_co_r0_to_save(&s);
-      if (r0)
-        co_r0_flash = r0, safety_co_r0_saved(&s, r0);
-    }
-    uint8_t step_before = s.burn.step;
-    bool fuel_before = s.burn.step == BURN_STEP_IGNITION || s.burn.step == BURN_STEP_PURGE ||
-                       s.burn.step == BURN_STEP_WARM_UP || s.burn.step == BURN_STEP_RUNNING;
-    safety_step(&s, now, &in);
-    check_co(fuel_before);
+  void co_stepped() {
+    uint32_t r0 = safety_co_r0_to_save(&s);
+    if (r0)
+      co_r0_flash = r0, safety_co_r0_saved(&s, r0);
+  }
+
+  void step_out(const burn_inputs &in, uint8_t step_before) {
+    (void) in;
+    check_co(step_before == BURN_STEP_IGNITION || step_before == BURN_STEP_PURGE ||
+             step_before == BURN_STEP_WARM_UP || step_before == BURN_STEP_RUNNING);
     if (step_before == BURN_STEP_OFF && s.burn.step != BURN_STEP_OFF)
       fail("no_self_start", "a pass of the safety loop left off");
     if (latched_shadow && !s.burn.fault_latched)
@@ -434,17 +310,10 @@ struct Bench : LinkTransport {
     if (!latched_shadow && s.burn.fault_latched)
       st.latched++;
     latched_shadow = s.burn.fault_latched;
+  }
 
-    double emf = m.fan_rpm / 5000.0 * 9.0;
-    double i_motor = vmotor > emf ? (vmotor - emf) / 2.0 : 0;
-    fan_meas fm;
-    fm.rpm = in.fan_rpm;
-    fm.vin_cv = m.supply_cv;
-    fm.isense_ma = uint16_t(1000.0 * i_motor * (fan_stuck_on ? 1.0 : fan_duty / 1000.0));
-    fan_duty = safety_fan_step(&s, now, &fm);
-
+  void pass_out(const burn_inputs &in) {
     check_pass(in);
-
     if (safety_params_save_pending(&s)) {
       params_flash.assign(PARAMS_IMAGE_MAX, 0);
       size_t n = params_pack(&s.params, params_flash.data(), params_flash.size());
@@ -457,15 +326,7 @@ struct Bench : LinkTransport {
       safety_plug_saved(&s);
     }
     esp_alive = now >= silent_until;
-    if (esp_alive)
-      client.loop(now);
-  }
-
-  // The CO sensor (co_sensor.h), open, or with a dead heater: no change, so its check fails.
-  uint16_t co_reading() const {
-    if (co_open)
-      return 10;
-    return co_sensor_adc(co_ratio, safety_co_heater(&s) || co_heater_dead);
+    HeaterBench::pass_out(in);
   }
 
   // CO (CO-1, CO-2): an alarm or a sensor fault ends a run as any fault does, with a burn-off and
@@ -477,7 +338,7 @@ struct Bench : LinkTransport {
     // reading (the bench's own view of the air and the sensor, not the CO module's).
     if (co_alarm_shadow && !s.co.alarm && (co_ratio < s.co.cfg.clear_ratio || now - co_clean_ms < s.co.cfg.clear_ms))
       fail("co", "the CO alarm cleared without a minute of clean air");
-    if (co_fault_shadow && !s.co.fault && co_open && s.co.cfg.fitted)  // "not fitted" clears it (CO-1)
+    if (co_fault_shadow && !s.co.fault && co_adc >= 0 && s.co.cfg.fitted)  // "not fitted" clears it (CO-1)
       fail("co", "the CO sensor fault cleared with the sensor still open");
     st.co_alarms += s.co.alarm && !co_alarm_shadow;
     st.co_faults += s.co.fault && !co_fault_shadow;
@@ -704,7 +565,7 @@ struct Bench : LinkTransport {
           co_clean_ms = now;
         co_ratio = e.a;
         break;
-      case F_CO_OPEN: co_open = e.a != 0; break;
+      case F_CO_OPEN: co_adc = e.a ? 10 : -1; break;  // an open sensor reads 10
       case F_CO_HEATER: co_heater_dead = e.a != 0; break;
       case U_CO_FITTED:
         client.param_set(0x52, int32_t(e.a));
@@ -812,12 +673,13 @@ Outcome run(const std::vector<Ev> &ev, uint32_t end_ms) {
   while (b->now < end_ms && b->violation.empty()) {
     while (next < ev.size() && ev[next].t <= b->now)
       b->apply(ev[next++]);
-    b->tick();
+    b->pass();
   }
   Outcome o;
   o.violation = b->violation;
   o.at_ms = b->violation_ms;
   o.st = b->st;
+  o.st.pump_cuts = b->pump_cuts;
   o.st.bad_frames = b->s.parser.bad;
   delete b;
   return o;

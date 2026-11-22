@@ -24,11 +24,7 @@
 #include <string>
 #include <vector>
 
-#include "../../esp32/components/flamekeeper/link_client.h"
-
-extern "C" {
-#include "../core/safety.h"
-}
+#include "core_rig.h"
 
 using esphome::flamekeeper::LinkClient;
 using esphome::flamekeeper::LinkTransport;
@@ -420,9 +416,9 @@ void target_server(In &in) {
 
 // ---------------------------------------------------------------- target 1: the safety core
 
-struct Core {
-  safety s;
-  uint32_t now = 0;
+// The core on a healthy board whose readings the input sets (the fan at whatever speed is asked),
+// on the board's schedule (core_rig.h); no CO sensor is read.
+struct Core : CoreRig<Core> {
   int16_t hx = 200;
   uint16_t supply = 1260;
   int16_t board = 300;
@@ -444,46 +440,40 @@ struct Core {
     in.board_c10 = board;
     return in;
   }
-  // One 10 ms pass of a healthy board, the fan at whatever speed is asked.
-  void pass() {
-    for (uint32_t i = 0; i < 10; i++) {
-      checks_obs o;
-      std::memset(&o, 0, sizeof(o));
-      o.vin_cv = supply;
-      o.latch_armed = 1;
-      o.pump_hs_ok = 1;
-      o.hx_c10 = hx;
-      o.pump_v_cv = supply;
-      o.pump_peak_ma = 400;
-      pump_meas pm;
-      std::memset(&pm, 0, sizeof(pm));
-      pm.vin_cv = supply;
-      pm.hs_ok = 1;
-      pm.i_ma = 400;
-      safety_io io = safety_ms(&s, now + i, &o, &pm);
-      if (io.pump_duty)  // no stroke outside a fuel step, nor without the heartbeat
-        REQUIRE(io.heartbeat == CHECKS_HB_RUNNING && s.burn.out.pump_cHz > 0);
-    }
-    for (int k = 0; k < 2; k++) {
-      glow_meas gm;
-      std::memset(&gm, 0, sizeof(gm));
-      gm.vin_cv = supply;
-      gm.pulse_ca = 6000;
-      gm.airflow_ok = rpm >= 1000;
-      gm.board_c10 = board;
-      glow_cmd c = safety_glow_period(&s, now + uint32_t(5 * k), &gm);
-      if (c.width_us)
-        REQUIRE(s.in.fan_rpm >= s.burn.p.glow_min_fan_rpm);
-    }
-    now += 10;
-    burn_inputs in = inputs();
-    safety_step(&s, now, &in);
+  void ms_meas(checks_obs *o, pump_meas *pm) {
+    std::memset(o, 0, sizeof(*o));
+    o->vin_cv = supply;
+    o->latch_armed = 1;
+    o->pump_hs_ok = 1;
+    o->hx_c10 = hx;
+    o->pump_v_cv = supply;
+    o->pump_peak_ma = 400;
+    std::memset(pm, 0, sizeof(*pm));
+    pm->vin_cv = supply;
+    pm->hs_ok = 1;
+    pm->i_ma = 400;
+  }
+  void ms_out(safety_io io, uint8_t) {
+    if (io.pump_duty)  // no stroke outside a fuel step, nor without the heartbeat
+      REQUIRE(io.heartbeat == CHECKS_HB_RUNNING && s.burn.out.pump_cHz > 0);
+  }
+  void glow_meas_now(glow_meas *gm) {
+    std::memset(gm, 0, sizeof(*gm));
+    gm->vin_cv = supply;
+    gm->pulse_ca = 6000;
+    gm->airflow_ok = rpm >= 1000;
+    gm->board_c10 = board;
+  }
+  void glow_out(glow_cmd c, uint8_t) {
+    if (c.width_us)
+      REQUIRE(s.in.fan_rpm >= s.burn.p.glow_min_fan_rpm);
+  }
+  void step_out(const burn_inputs &in, uint8_t) {
     if (s.burn.out.glow_w)
       REQUIRE(in.fan_rpm >= s.burn.p.glow_min_fan_rpm);
-    fan_meas fm = {rpm, supply, 0};
-    safety_fan_step(&s, now, &fm);
-    rpm = s.burn.out.fan_rpm;
   }
+  fan_meas fan_meas_now(const burn_inputs &) { return fan_meas{rpm, supply, 0}; }
+  void fan_out(uint16_t) { rpm = s.burn.out.fan_rpm; }
 };
 
 // The safety core with the parts a received byte may always touch put back: the parser, the
@@ -767,12 +757,8 @@ struct Rng {
 // Seeds from a real exchange: the link client against the safety core, with the user starting,
 // changing and stopping the heater and its parameters. Requests become target 1 records (and
 // target 0's), replies target 2's.
-struct Capture : LinkTransport {
-  safety s;
-  uint32_t now = 0;
+struct Capture : Loopback {
   std::vector<std::vector<uint8_t>> requests, replies;
-  std::deque<uint8_t> to_esp;
-  std::vector<uint8_t> pending;
   Capture() {
     burn_inputs in;
     std::memset(&in, 0, sizeof(in));
@@ -781,21 +767,12 @@ struct Capture : LinkTransport {
   }
   void send(const uint8_t *data, size_t len) override {
     requests.emplace_back(data, data + len);
-    uint8_t reply[LINK_FRAME_MAX];
-    for (size_t i = 0; i < len; i++) {
-      size_t n = safety_receive(&s, data[i], now, reply);
-      if (n) {
-        replies.emplace_back(reply, reply + n);
-        to_esp.insert(to_esp.end(), reply, reply + n);
-      }
-    }
+    Loopback::send(data, len);
   }
-  int read() override {
-    if (to_esp.empty())
-      return -1;
-    int b = to_esp.front();
-    to_esp.pop_front();
-    return b;
+  void to_mcu(uint8_t byte) override {
+    Loopback::to_mcu(byte);
+    if (reply_len)
+      replies.emplace_back(reply, reply + reply_len);
   }
 };
 
