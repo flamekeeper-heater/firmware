@@ -271,7 +271,8 @@ and refuses starts. It is not a certified CO alarm.
 The safety core owns it and the board feeds it a reading a second, with the sensor's heater on from
 power-up (off a few seconds once per warm-up, to check it). Whether a sensor is fitted is the
 "CO sensor fitted" parameter alone, on by default; a sensor fault ends a run like the alarm, with
-its own fault code. Below -30 C the state reads "too cold" and the alarm still acts. The learnt
+its own fault code. Setting it to "not fitted" is refused while the alarm is on (a board without
+the sensor, showing a sensor fault, can still be set). Below -30 C the state reads "too cold" and the alarm still acts. The learnt
 clean-air resistance is kept in a small log in the plug record's flash page, so the page is rarely
 erased. DETAIL carries the state and a rough ppm reading.
 

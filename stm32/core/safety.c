@@ -191,8 +191,21 @@ static int on_param_set(void *ctx, uint16_t id, int32_t value) {
 /* The sequencer takes new parameters only while the heater is off. */
 static int heater_off(const safety *s) { return s->burn.step == BURN_STEP_OFF; }
 
+/* The staged changes would mark a fitted CO sensor as not fitted. */
+static int co_unfit_staged(const safety *s) {
+  for (size_t i = 0; i < PARAM_COUNT; i++)
+    if (PARAM_TABLE[i].offset == offsetof(burn_params, co_fitted))
+      return (s->params.staged_mask & (1u << i)) && s->params.staged[i] == 0 && s->burn.p.co_fitted;
+  return 0;
+}
+
 static int on_param_apply(void *ctx, uint8_t save) {
   safety *s = (safety *) ctx;
+  /* "Not fitted" starts the CO alarm afresh: never while it alarms, or a latched alarm would clear
+   * without its minute of clean air (it stays staged). A sensor fault may go this way: a board
+   * without the sensor shows one until it is set (CO-1). */
+  if (s->co.alarm && co_unfit_staged(s))
+    return LINK_REFUSED;
   int r = params_apply(&s->params, heater_off(s), save);
   if (r == LINK_OK) {
     s->burn.p = s->params.live;

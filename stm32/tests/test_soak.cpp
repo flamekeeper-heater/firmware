@@ -1,11 +1,12 @@
 // Randomised soak of the whole safety MCU: the core (stm32/core/) on the heater model, driven by the
 // ESP32's real link client over a byte wire, for hours of simulated time per seed. A seed draws a
 // schedule of events: the user (start heat, fan or priming, stop, power, parameter writes and
-// applies, fault resets, a new glow plug), the link (silence, lost bytes, noise in both directions),
-// MCU and ESP32 resets mid-run, and faults (a fan that stalls and frees, a fan switch stuck on, an open sensor,
-// supply sags and spikes, an overheat latch trip, glow high-side trips and a stuck low side, an open
-// pump coil, a pump low side stuck on, a pump high-side fault and overcurrent, a hot board, no
-// ignition, a flame-out, CO).
+// applies, CO fitted or not, fault resets, a new glow plug), the link (silence, lost bytes, noise in
+// both directions), MCU and ESP32 resets mid-run, and faults (a fan that stalls and frees, a fan
+// switch stuck on, an open sensor, supply sags and spikes, an overheat latch trip, glow high-side
+// trips and a stuck low side, an open pump coil, a pump low side stuck on, a pump high-side fault, a
+// shorted pump coil for the overcurrent cut, a hot board, no ignition, a flame-out, CO in the air,
+// an open CO sensor, a dead CO sensor heater).
 //
 // After every call into the core the bench checks (DESIGN.md, "Burn sequence"):
 //   airflow     no glow pulse, and no glow asked, without measured airflow
@@ -21,6 +22,11 @@
 //               does, or more leniently)
 //   latch       a latched fault clears only with a fault reset the MCU accepted (or an MCU reset)
 //   deadman     2 s without a valid frame: nothing still starting or running
+//   co          a CO alarm or sensor fault ends a run (a burn-off and cooldown once fuel went in) and
+//               latches; nothing starts while either is on; the alarm clears only after a minute
+//               of clean air, the sensor fault only with a plausible reading; not fitted, neither
+//   pump_cut    no stroke while the overcurrent cut is reported or a pump fault is latched, and
+//               every stroke guarded by the watchdog
 //   fan_false   no fan speed fault (overspeed, turning uncommanded) unless the fan switch is stuck on
 //   live        and the other way round: the fan turns when asked (and nothing stops it), the glow
 //               stage pulses when asked (with airflow, a cool board and room in its budget), the pump
@@ -482,7 +488,7 @@ struct Bench : LinkTransport {
     // reading (the bench's own view of the air and the sensor, not the CO module's).
     if (co_alarm_shadow && !s.co.alarm && (co_ratio < s.co.cfg.clear_ratio || now - co_clean_ms < s.co.cfg.clear_ms))
       fail("co", "the CO alarm cleared without a minute of clean air");
-    if (co_fault_shadow && !s.co.fault && co_open)
+    if (co_fault_shadow && !s.co.fault && co_open && s.co.cfg.fitted)  // "not fitted" clears it (CO-1)
       fail("co", "the CO sensor fault cleared with the sensor still open");
     st.co_alarms += s.co.alarm && !co_alarm_shadow;
     st.co_faults += s.co.fault && !co_fault_shadow;
@@ -871,6 +877,13 @@ void regression(const char *name, const std::vector<Ev> &ev, uint32_t end_ms) {
 }
 
 void regressions() {
+  // CO in the air during a run: the alarm stopped it and latched. A staged "CO sensor not fitted",
+  // applied once the heater was off, started the CO alarm afresh with no alarm, and a fault reset
+  // would then have cleared the latch without a minute of clean air (seed 1157, moved earlier).
+  regression("co_unfit_during_alarm",
+             {{606163, U_HEAT, 0, 0}, {1197273, U_CO_FITTED, 0, 0}, {1733928, F_CO, 6, 0}, {1971721, U_APPLY, 0, 0},
+              {1980 * SEC, U_FAULT_RESET, 0, 0}},
+             2000 * SEC);
   // A fan that froze for 3 s in ignition and freed before a stall was declared: the speed loop's
   // integral wound up while it slowed, the freed fan overshot past 1.2 x its command and the fan
   // stage latched an overspeed fault (a burn-off and a fault reset for nothing).
