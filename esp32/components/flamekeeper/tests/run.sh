@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds and runs the host tests of the shared core: the controller (checks, run source, Home
 # Assistant failsafe, room temperature), the protocol codec and command handler, the pairing
-# window and label PIN, the Wi-Fi key tables, and the Wi-Fi sign-in and frames.
+# window and label PIN, the Wi-Fi key tables, the Wi-Fi sign-in and frames, and the safety-MCU updater.
 #
 # The Wi-Fi tests use the mbedTLS sources ESP-IDF ships (the same library the board runs), built
 # once into a cache. Set MBEDTLS_DIR to another mbedTLS 3.6 source tree if ESPHome's ESP-IDF is not
@@ -34,6 +34,10 @@ $cxx "$here/test_web_files.cpp" -o "$out/test_web_files"
 # The link client against a simulated safety MCU (the shared C codec in ../../../../common/link/).
 cc -std=c99 -Wall -Wextra -Werror -fsanitize=address,undefined -g -c "$src/link.c" -o "$out/link.o"
 $cxx "$here/test_link_client.cpp" "$src/link_client.cpp" "$src/controller.cpp" "$src/tuning.cpp" "$src/thermostat.cpp" "$out/link.o" -o "$out/test_link_client"
+# The safety-MCU updater against a simulated STM32 ROM bootloader.
+$cxx "$here/test_mcu_update.cpp" "$src/mcu_update.cpp" "$src/stm32_boot.cpp" "$src/link_client.cpp" "$src/controller.cpp" \
+  "$src/tuning.cpp" "$src/thermostat.cpp" "$out/link.o" -o "$out/test_mcu_update"
+"$out/test_mcu_update"
 "$out/test_link_client"
 
 # mbedTLS for the Wi-Fi tests

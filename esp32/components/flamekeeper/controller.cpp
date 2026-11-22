@@ -205,6 +205,9 @@ Outcome Controller::stop_prime(Source source) {
 }
 
 Outcome Controller::start_firmware_update(Source source) {
+  if (this->board_updating_)
+    return this->finish_("heater firmware update", source,
+                         Outcome::refuse(Result::BUSY, "the board is installing a firmware update"));
   return this->finish_("heater firmware update", source, this->heater_->start_firmware_update());
 }
 
