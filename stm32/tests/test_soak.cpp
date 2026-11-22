@@ -51,6 +51,7 @@
 
 extern "C" {
 #include "../core/safety.h"
+#include "co_sensor.h"
 #include "heater_model.h"
 }
 
@@ -460,13 +461,11 @@ struct Bench : LinkTransport {
       client.loop(now);
   }
 
-  // The MiCS-5524 on its 47 k load: Rs from the gas, five times higher with its heater off (a dead
-  // heater: no change, so its check fails).
+  // The CO sensor (co_sensor.h), open, or with a dead heater: no change, so its check fails.
   uint16_t co_reading() const {
     if (co_open)
       return 10;
-    uint64_t rs = 300000ull * co_ratio / 1000u * (safety_co_heater(&s) || co_heater_dead ? 1u : 5u);
-    return uint16_t(uint64_t(CO_ADC_FULL) * CO_LOAD_OHM / (CO_LOAD_OHM + rs));
+    return co_sensor_adc(co_ratio, safety_co_heater(&s) || co_heater_dead);
   }
 
   // CO (CO-1, CO-2): an alarm or a sensor fault ends a run as any fault does, with a burn-off and

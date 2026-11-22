@@ -9,169 +9,51 @@
 #include "../board/board.h"
 #include "../board/pump_oc.h"
 #include "../hal/hal_stm32g0.h"
+#include "co_sensor.h"
+#include "fake_chip.h"
 #include "../../common/test/check.h"
 
-/* ---------------------------------------------------------------- the fake chip */
+/* ---------------------------------------------------------------- the fake chip's plant */
 
-static const double VDDA = 3.3, VREFINT = 1.212;
-static uint16_t counts(double volts) { return (uint16_t) (volts / VDDA * 4095.0 + 0.5); }
-
+/* What this test adds to the fake chip (fake_chip.h). */
 static struct {
-  uint32_t now;
-  double vin;
-  uint16_t ntc_raw, board_raw;
-  /* Outputs, as the pins last were. */
-  uint8_t hb_mode, glow_en, latch_level;
-  uint32_t burst_ms;  /* when the last burst was armed: it runs 25 ms by itself */
-  uint16_t fan_duty, pump_duty, glow_us, test_pulse_us;
-  /* Hardware state. */
-  uint8_t latch_armed;
-  uint32_t iwdg_refreshes;
-  uint8_t rx[256];
-  size_t rx_len, rx_pos;
-  uint8_t tx[256];
+  uint8_t tx[256]; /* what the board sent */
   size_t tx_len;
-  uint8_t flash[2][HAL_FLASH_PAGE_SIZE]; /* NOR: erased 0xFF, programmed only where erased */
-  uint32_t flash_writes, flash_programs, flash_bad_programs;
-  uint8_t ecc_bad[2];     /* a double ECC error somewhere in the page: reading it raises the NMI */
-  uint8_t unreadable;     /* what the NMI handler recorded, a bit per page */
-  /* The pump's overcurrent watchdog (PMP-7). */
-  uint8_t oc_armed, oc_report;
-  uint16_t oc_threshold, oc_hold_us;
-  uint32_t stroke_ms, stroke_ms_unguarded;
+  uint32_t stroke_ms, stroke_ms_unguarded; /* PUMP_CMD on, and on without the watchdog armed */
   /* The glow timer (TIM3): a period every 5 ms with its readings, while it runs. */
   uint8_t tim3_stopped;
-  uint32_t glow_next_ms, glow_cmds;
   double glow_pulse_a, glow_gap_a;
-  /* The CO sensor: R0 300 k, the air as Rs / R0 (x 1000), 5 x higher unheated; co_adc >= 0 holds
-   * the pin there (open, or no sensor). */
-  uint8_t co_heater;
+  /* The CO sensor (co_sensor.h): the air as Rs / R0 (x 1000); co_adc >= 0 holds the pin there
+   * (open, or no sensor). */
   uint32_t co_ratio;
   int co_adc;
-} chip;
+} sim;
 
-static int hb_ok(void) {
-  return chip.hb_mode == HAL_HB_BURST && (uint32_t) (chip.now - chip.burst_ms) < 25u;
+void fake_chip_adc(uint16_t raw[HAL_ADC_COUNT]) {
+  raw[HAL_ADC_PUMP_I] = counts(pump_powered() && chip.pump_duty ? 1.0 * 0.45 : 0); /* a 1 A stroke */
+  raw[HAL_ADC_CO] = sim.co_adc >= 0 ? (uint16_t) sim.co_adc : co_sensor_adc(sim.co_ratio, chip.co_heater);
 }
-
-void hal_adc_scan(uint16_t raw[HAL_ADC_COUNT]) {
-  int pump_on = hb_ok() && chip.latch_armed;
-  raw[HAL_ADC_GLOW_V] = counts(chip.glow_en && hb_ok() ? chip.vin / 19.0 : 0);
-  raw[HAL_ADC_GLOW_I] = 0;
-  raw[HAL_ADC_PUMP_V] = counts(pump_on ? chip.vin / 19.0 : 0.02);
-  raw[HAL_ADC_FAN_I] = 0;
-  raw[HAL_ADC_PUMP_I] = counts(pump_on && chip.pump_duty ? 1.0 * 0.45 : 0); /* a 1 A stroke */
-  raw[HAL_ADC_NTC] = chip.ntc_raw;
-  raw[HAL_ADC_BOARD] = chip.board_raw;
-  raw[HAL_ADC_VIN] = counts(chip.vin * 6.8 / 106.8);
-  raw[HAL_ADC_VREF] = counts(VREFINT);
-  if (chip.co_adc >= 0) {
-    raw[HAL_ADC_CO] = (uint16_t) chip.co_adc;
-  } else {
-    uint64_t rs = 300000ull * chip.co_ratio / 1000u * (chip.co_heater ? 1u : 5u);
-    raw[HAL_ADC_CO] = (uint16_t) (4095ull * 47000u / (47000u + rs));
-  }
-}
-uint16_t hal_vrefint_cal(void) { return (uint16_t) (VREFINT / 3.0 * 4095.0 + 0.5); }
 uint8_t hal_glow_period(hal_glow_sample *g) {
-  if (chip.tim3_stopped || (int32_t) (chip.now - chip.glow_next_ms) < 0)
+  if (sim.tim3_stopped || (int32_t) (chip.now - chip.glow_next_ms) < 0)
     return 0;
   chip.glow_next_ms += 5;
-  g->pulse_i = counts(chip.glow_pulse_a * 0.009);
-  g->gap_i = counts(chip.glow_gap_a * 0.009);
+  g->pulse_i = counts(sim.glow_pulse_a * 0.009);
+  g->gap_i = counts(sim.glow_gap_a * 0.009);
   g->gap_vin = counts(chip.vin * 6.8 / 106.8);
   return 1;
 }
-uint16_t hal_pump_peak_raw(void) {
-  uint16_t r = chip.test_pulse_us && hb_ok() && chip.latch_armed ? counts(0.4 * 0.45) : 0;
-  chip.test_pulse_us = 0;
-  return r;
-}
-uint8_t hal_pump_overcurrent(void) {
-  uint8_t r = chip.oc_report;
-  chip.oc_report = 0;
-  return r;
-}
-void hal_pump_oc_arm(uint8_t on, uint16_t threshold_raw, uint16_t hold_us) {
-  chip.oc_armed = on;
-  chip.oc_threshold = threshold_raw;
-  chip.oc_hold_us = hold_us;
-}
-uint16_t hal_hall_rpm(void) { return 0; }
-uint8_t hal_overheat_n(void) { return chip.latch_armed; }
-uint8_t hal_pump_hs_flt_n(void) { return 1; }
-uint8_t hal_pwr_flt_n(void) { return 1; }
-void hal_heartbeat(uint8_t mode) {
-  chip.hb_mode = mode;
-  if (mode == HAL_HB_BURST)
-    chip.burst_ms = chip.now;
-}
-void hal_glow_en(uint8_t on) { chip.glow_en = on; }
-void hal_glow_next_pulse_us(uint16_t us) {
-  chip.glow_us = us;
-  chip.glow_cmds++;
-}
-void hal_fan_duty(uint16_t p) { chip.fan_duty = p; }
-void hal_pump_duty(uint16_t p) { chip.pump_duty = p; }
-void hal_pump_test_pulse_us(uint16_t us) { chip.test_pulse_us = us; }
-void hal_latch_reset(uint8_t level) {
-  if (level && !chip.latch_level && chip.ntc_raw > 1000)
-    chip.latch_armed = 1; /* a rising edge re-arms it while the heat exchanger is cool */
-  chip.latch_level = level;
-}
-void hal_co_heater(uint8_t on) { chip.co_heater = on; }
-int hal_uart_getc(void) { return chip.rx_pos < chip.rx_len ? chip.rx[chip.rx_pos++] : -1; }
 void hal_uart_write(const uint8_t *d, size_t n) {
-  if (chip.tx_len + n <= sizeof(chip.tx)) {
-    memcpy(chip.tx + chip.tx_len, d, n);
-    chip.tx_len += n;
+  if (sim.tx_len + n <= sizeof(sim.tx)) {
+    memcpy(sim.tx + sim.tx_len, d, n);
+    sim.tx_len += n;
   }
-}
-void hal_iwdg_refresh(void) { chip.iwdg_refreshes++; }
-size_t hal_flash_read(uint8_t page, uint8_t *out, size_t cap) {
-  size_t n = cap < 256u ? cap : 256u;
-  if (chip.ecc_bad[page])
-    chip.unreadable |= (uint8_t) (1u << page); /* the NMI, then the load completes with garbage */
-  memcpy(out, chip.flash[page], n);
-  return n;
-}
-int hal_flash_write(uint8_t page, const uint8_t *d, size_t n) {
-  if (n > 256u)
-    return -1;
-  memset(chip.flash[page], 0xFF, HAL_FLASH_PAGE_SIZE);
-  memcpy(chip.flash[page], d, n);
-  chip.flash_writes++;
-  chip.ecc_bad[page] = 0;
-  chip.unreadable &= (uint8_t) ~(1u << page);
-  return 0;
-}
-const uint8_t *hal_flash_page(uint8_t page) {
-  if (chip.ecc_bad[page])
-    chip.unreadable |= (uint8_t) (1u << page);
-  return chip.flash[page];
-}
-uint8_t hal_flash_unreadable(uint8_t page) { return (uint8_t) ((chip.unreadable >> page) & 1u); }
-int hal_flash_program(uint8_t page, uint16_t offset, const uint8_t *d, size_t n) {
-  if ((offset & 7u) || (n & 7u) || offset + n > HAL_FLASH_PAGE_SIZE)
-    return -1;
-  for (size_t i = 0; i < n; i++)
-    if (chip.flash[page][offset + i] != 0xFF) {
-      chip.flash_bad_programs++;
-      return -1;
-    }
-  memcpy(chip.flash[page] + offset, d, n);
-  chip.flash_programs++;
-  return 0;
 }
 
 static void chip_reset(void) {
-  memset(&chip, 0, sizeof(chip));
-  chip.vin = 12.6;
-  chip.ntc_raw = 4057;   /* 25 C */
-  chip.board_raw = 2048; /* 25 C */
-  memset(chip.flash, 0xFF, sizeof(chip.flash));
-  chip.co_ratio = 1000;
-  chip.co_adc = -1;
+  fake_chip_reset(12.6);
+  memset(&sim, 0, sizeof(sim));
+  sim.co_ratio = 1000;
+  sim.co_adc = -1;
 }
 
 static void run(board *b, uint32_t ms) {
@@ -179,8 +61,8 @@ static void run(board *b, uint32_t ms) {
     chip.now++;
     board_ms(b, chip.now);
     if (chip.pump_duty > 0) {
-      chip.stroke_ms++;
-      chip.stroke_ms_unguarded += !chip.oc_armed;
+      sim.stroke_ms++;
+      sim.stroke_ms_unguarded += !chip.oc_armed;
     }
   }
 }
@@ -313,10 +195,10 @@ static void test_link(void) {
   const uint8_t hello[2] = {LINK_MAJOR, LINK_MINOR};
   chip.rx_len = link_build_request(5, LINK_OP_HELLO, hello, 2, chip.rx);
   run(&b, 2);
-  CHECK(chip.tx_len > 7);
-  CHECK(chip.tx[0] == LINK_REPLY && link_frame_seq(chip.tx) == 5 && link_frame_op(chip.tx) == LINK_OP_HELLO);
+  CHECK(sim.tx_len > 7);
+  CHECK(sim.tx[0] == LINK_REPLY && link_frame_seq(sim.tx) == 5 && link_frame_op(sim.tx) == LINK_OP_HELLO);
   link_info info;
-  CHECK(link_decode_info(link_reply_payload(chip.tx), link_reply_payload_len(chip.tx), &info));
+  CHECK(link_decode_info(link_reply_payload(sim.tx), link_reply_payload_len(sim.tx), &info));
   CHECK(info.kind == LINK_KIND_STM32 && info.reset_reason == LINK_RESET_POWER_ON);
 }
 
@@ -362,12 +244,12 @@ static void test_pump_overcurrent(void) {
   board b;
   board_init(&b, chip.now, LINK_RESET_POWER_ON, 0);
   esp32_polls(&b, 1000);
-  CHECK(!chip.oc_armed && chip.stroke_ms == 0);
+  CHECK(!chip.oc_armed && sim.stroke_ms == 0);
   b.s.burn.step = BURN_STEP_PRIMING; /* strokes at once, no start sequence */
   b.s.burn.step_ms = chip.now;
   esp32_polls(&b, 500);
-  CHECK(chip.stroke_ms >= 38);
-  CHECK(chip.stroke_ms_unguarded == 0);
+  CHECK(sim.stroke_ms >= 38);
+  CHECK(sim.stroke_ms_unguarded == 0);
   CHECK(chip.oc_threshold >= 1835 && chip.oc_threshold <= 1850); /* 3.3 A at 0.45 V/A, 3.3 V */
   CHECK(chip.oc_hold_us == 50);
   CHECK(b.s.pump.fault == PUMP_FAULT_NONE);
@@ -404,20 +286,20 @@ static void test_glow_periods(void) {
   uint32_t n = chip.glow_cmds;
   run(&b, 1000);
   CHECK(chip.glow_cmds - n == 200);
-  chip.tim3_stopped = 1;
+  sim.tim3_stopped = 1;
   n = chip.glow_cmds;
   run(&b, 1000);
   CHECK(chip.glow_cmds - n >= 99 && chip.glow_cmds - n <= 101);
-  chip.tim3_stopped = 0;
+  sim.tim3_stopped = 0;
   chip.glow_next_ms = chip.now + 1;
   run(&b, 10);
   /* The in-pulse reading reaches the planner for the pulse it planned. */
-  chip.glow_pulse_a = 40.0;
+  sim.glow_pulse_a = 40.0;
   b.s.glow.last_width_us = 150; /* as if a probe went out this period */
   run(&b, 5);
   CHECK(b.s.glow.i_ca >= 3950 && b.s.glow.i_ca <= 4050);
   /* Current in the gap with the high side on: the low side is stuck on (GLW-6). */
-  chip.glow_gap_a = 10.0;
+  sim.glow_gap_a = 10.0;
   b.s.glow.on = 1;
   run(&b, 5);
   CHECK(b.s.glow.fault == GLOW_FAULT_STUCK_LOW_SIDE);
@@ -449,9 +331,9 @@ static link_detail read_detail(board *b) {
   memset(&d, 0, sizeof(d));
   chip.rx_len = link_build_request(9, LINK_OP_DETAIL, NULL, 0, chip.rx);
   chip.rx_pos = 0;
-  chip.tx_len = 0;
+  sim.tx_len = 0;
   run(b, 2);
-  CHECK(link_decode_detail(link_reply_payload(chip.tx), link_reply_payload_len(chip.tx), &d));
+  CHECK(link_decode_detail(link_reply_payload(sim.tx), link_reply_payload_len(sim.tx), &d));
   return d;
 }
 
@@ -461,11 +343,11 @@ static void test_co_heater_and_alarm(void) {
   board_init(&b, chip.now, LINK_RESET_POWER_ON, 0);
   CHECK(chip.co_heater == 1); /* CO-5: heated from power-up */
   /* Warm-up (CO-5): a high reading in the first 3 minutes is ignored. */
-  chip.co_ratio = 8;
+  sim.co_ratio = 8;
   run(&b, 170000);
   CHECK(b.s.co.state == CO_WARMING_UP && !b.s.co.alarm);
   CHECK(b.s.burn.fault == BURN_FAULT_NONE);
-  chip.co_ratio = 1000;
+  sim.co_ratio = 1000;
   /* The heater check (CO-4): CO_HEAT_EN off for about 5 s once the warm-up is over, then on. */
   uint32_t off_ms = 0, first_off = 0;
   for (int i = 0; i < 30000; i++) {
@@ -485,7 +367,7 @@ static void test_co_heater_and_alarm(void) {
   d = read_detail(&b);
   CHECK(d.co_state == CO_OK && d.co_ppm == 0);
   /* About 1200 ppm for 11 s: the alarm, into the sequencer's latched CO fault and the link. */
-  chip.co_ratio = 8;
+  sim.co_ratio = 8;
   run(&b, 11000);
   CHECK(b.s.burn.fault == BURN_FAULT_CO && b.s.burn.fault_latched);
   d = read_detail(&b);
@@ -498,7 +380,7 @@ static void test_co_sensor_fault(void) {
   board_init(&b, chip.now, LINK_RESET_POWER_ON, 0);
   run(&b, 190000);
   CHECK(b.s.co.checked && b.s.burn.fault == BURN_FAULT_NONE);
-  chip.co_adc = 10; /* open (CO-3) */
+  sim.co_adc = 10; /* open (CO-3) */
   run(&b, 7000);
   CHECK(b.s.burn.fault == BURN_FAULT_CO_SENSOR && b.s.burn.fault_latched);
   link_detail d = read_detail(&b);
@@ -515,7 +397,7 @@ static void test_co_not_fitted(void) {
   uint8_t img[PARAMS_IMAGE_MAX];
   size_t n = params_pack(&ps, img, sizeof(img));
   CHECK(hal_flash_write(HAL_PAGE_PARAMS, img, n) == 0);
-  chip.co_adc = 0;
+  sim.co_adc = 0;
   board b;
   board_init(&b, chip.now, LINK_RESET_POWER_ON, 0);
   CHECK(chip.co_heater == 0);
@@ -526,7 +408,7 @@ static void test_co_not_fitted(void) {
 
   /* The same board with the default table: fitted, so it is a sensor fault, never "absent". */
   chip_reset();
-  chip.co_adc = 0;
+  sim.co_adc = 0;
   board_init(&b, chip.now, LINK_RESET_POWER_ON, 0);
   CHECK(chip.co_heater == 1);
   run(&b, 200000);

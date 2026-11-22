@@ -8,6 +8,7 @@
 
 #include "../board/analog.h"
 #include "../bringup/console.h"
+#include "fake_chip.h"
 
 #define TEXT_MAX (1u << 20)
 static char text[TEXT_MAX]; /* everything the console sent */
@@ -20,65 +21,39 @@ static void show_answer(void) {
 #define CHECK_ON_FAIL() show_answer()
 #include "../../common/test/check.h"
 
-/* ---------------------------------------------------------------- the fake chip */
+/* ---------------------------------------------------------------- the fake chip's plant */
 
-static const double VDDA = 3.3, VREFINT = 1.212;
-static uint16_t counts(double volts) {
-  double c = volts / VDDA * 4095.0 + 0.5;
-  return (uint16_t) (c > 4095 ? 4095 : c < 0 ? 0 : c);
-}
-
+/* What this test adds to the fake chip (fake_chip.h): a fan, a pump, a glow plug, and what they
+ * saw. */
 static struct {
-  uint32_t now;
-  double vin;
-  uint16_t ntc_raw, board_raw;
-  uint8_t hb_mode, glow_en, latch_level, latch_armed;
-  uint32_t burst_ms, hb_start_ms;
-  uint16_t fan_duty, pump_duty, glow_us, test_pulse_us;
-  uint32_t iwdg_refreshes, resets;
-  uint8_t rx[512];
-  size_t rx_len, rx_pos;
-  uint8_t link_tx[512];
+  uint8_t link_tx[512]; /* the last link reply the board sent */
   size_t link_len;
   size_t max_text_write;
+  uint32_t resets;
   /* models */
-  double rpm;
-  int fan_blocked, pump_open;
+  int fan_blocked;
   double plug_ohm;
   /* what happened */
-  uint16_t pending_glow_us;
-  uint32_t glow_next_ms;
-  /* the pump's overcurrent watchdog (PMP-7) */
-  uint8_t oc_armed, oc_report, pump_forced;
-  uint16_t oc_threshold;
   uint32_t oc_cuts;
-  uint8_t co_heater;
   uint32_t glow_pulses, glow_bad, glow_last_us;
   int pump_was_on;
   uint32_t strokes, stroke_start, stroke_len_min, stroke_len_max, stroke_gap_min, last_stroke_end;
   uint32_t pump_unpowered_ms; /* PUMP_CMD high outside a heartbeat that has run 20 ms */
   uint32_t last_pump_on_ms;
   uint16_t pump_duty_seen;
-} chip;
+} sim;
 
-static int hb_ok(void) { return chip.hb_mode == HAL_HB_BURST && (uint32_t) (chip.now - chip.burst_ms) < 25u; }
-static int pump_powered(void) { return hb_ok() && chip.latch_armed; }
 static double motor_v(void) { return chip.fan_duty / 1000.0 * chip.vin; }
-static double motor_i(void) { return chip.fan_blocked ? motor_v() / 1.5 : (chip.fan_duty ? 0.2 + 0.4 * motor_v() : 0); }
+static double motor_i(void) { return sim.fan_blocked ? motor_v() / 1.5 : (chip.fan_duty ? 0.2 + 0.4 * motor_v() : 0); }
+static uint16_t pump_i_raw(void) {
+  return counts(pump_powered() && chip.pump_duty && !chip.pump_forced && !chip.pump_open ? 1.2 * 0.45 : 0);
+}
 
-void hal_adc_scan(uint16_t raw[HAL_ADC_COUNT]) {
-  raw[HAL_ADC_GLOW_V] = counts(chip.glow_en && hb_ok() ? chip.vin / 19.0 : 0);
-  raw[HAL_ADC_GLOW_I] = 0;
-  raw[HAL_ADC_PUMP_V] = counts(pump_powered() ? chip.vin / 19.0 : 0.02);
+void fake_chip_adc(uint16_t raw[HAL_ADC_COUNT]) {
   raw[HAL_ADC_FAN_I] = counts(motor_i() * chip.fan_duty / 1000.0 * 0.015);
-  raw[HAL_ADC_PUMP_I] = counts(pump_powered() && chip.pump_duty && !chip.pump_forced && !chip.pump_open ? 1.2 * 0.45 : 0);
-  raw[HAL_ADC_NTC] = chip.ntc_raw;
-  raw[HAL_ADC_BOARD] = chip.board_raw;
-  raw[HAL_ADC_VIN] = counts(chip.vin * 6.8 / 106.8);
-  raw[HAL_ADC_VREF] = counts(VREFINT);
+  raw[HAL_ADC_PUMP_I] = pump_i_raw();
   raw[HAL_ADC_CO] = counts(1.0);
 }
-uint16_t hal_vrefint_cal(void) { return (uint16_t) (VREFINT / 3.0 * 4095.0 + 0.5); }
 /* The glow timer: a period every 5 ms; the pulse the planner set last goes out in it, with whatever
  * enable and heartbeat there are, and its reading comes with the period. */
 uint8_t bringup_chip_glow_period(hal_glow_sample *g) {
@@ -88,96 +63,32 @@ uint8_t bringup_chip_glow_period(hal_glow_sample *g) {
   g->pulse_i = 0;
   g->gap_i = 0;
   g->gap_vin = counts(chip.vin * 6.8 / 106.8);
-  if (chip.pending_glow_us) {
-    chip.glow_pulses++;
-    chip.glow_last_us = chip.pending_glow_us;
+  if (chip.glow_us) {
+    sim.glow_pulses++;
+    sim.glow_last_us = chip.glow_us;
     int on = chip.glow_en && hb_ok();
     if (!on || (uint32_t) (chip.now - chip.hb_start_ms) < 20u)
-      chip.glow_bad++;
-    g->pulse_i = on ? counts(chip.vin / chip.plug_ohm * 0.009) : 0;
-    chip.pending_glow_us = 0;
+      sim.glow_bad++;
+    g->pulse_i = on ? counts(chip.vin / sim.plug_ohm * 0.009) : 0;
+    chip.glow_us = 0;
   }
   return 1;
 }
-uint8_t hal_pump_overcurrent(void) {
-  uint8_t r = chip.oc_report;
-  chip.oc_report = 0;
-  return r;
-}
-void bringup_chip_pump_oc_arm(uint8_t on, uint16_t threshold_raw, uint16_t hold_us) {
-  (void) hold_us;
-  if (on && !chip.oc_armed && !chip.oc_report)
-    chip.pump_forced = 0; /* a new stroke: PUMP_CMD back to its PWM */
-  chip.oc_armed = on;
-  chip.oc_threshold = threshold_raw;
-}
-void bringup_chip_co_heater(uint8_t on) { chip.co_heater = on; }
-const uint8_t *hal_flash_page(uint8_t page) {
-  static uint8_t erased[HAL_FLASH_PAGE_SIZE];
-  (void) page;
-  memset(erased, 0xFF, sizeof(erased));
-  return erased;
-}
-int hal_flash_program(uint8_t page, uint16_t offset, const uint8_t *data, size_t len) {
-  (void) page, (void) offset, (void) data, (void) len;
-  return 0;
-}
-uint8_t hal_flash_unreadable(uint8_t page) {
-  (void) page;
-  return 0;
-}
-uint16_t hal_pump_peak_raw(void) {
-  uint16_t r = chip.test_pulse_us && pump_powered() && !chip.pump_open ? counts(0.4 * 0.45) : 0;
-  chip.test_pulse_us = 0;
-  return r;
-}
-uint16_t hal_hall_rpm(void) { return chip.rpm < 50 ? 0 : (uint16_t) chip.rpm; }
-uint8_t hal_overheat_n(void) { return chip.latch_armed; }
-uint8_t hal_pump_hs_flt_n(void) { return 1; }
-uint8_t hal_pwr_flt_n(void) { return 1; }
-void hal_heartbeat(uint8_t mode) {
-  if (mode == HAL_HB_BURST) {
-    if (!hb_ok())
-      chip.hb_start_ms = chip.now;
-    chip.burst_ms = chip.now;
-  }
-  chip.hb_mode = mode;
-}
-void hal_glow_en(uint8_t on) { chip.glow_en = on; }
-void hal_glow_next_pulse_us(uint16_t us) { chip.pending_glow_us = us; }
-void hal_fan_duty(uint16_t p) { chip.fan_duty = p; }
-void hal_pump_duty(uint16_t p) { chip.pump_duty = p; }
-void hal_pump_test_pulse_us(uint16_t us) { chip.test_pulse_us = us; }
-void hal_latch_reset(uint8_t level) {
-  if (level && !chip.latch_level && chip.ntc_raw > 1000)
-    chip.latch_armed = 1;
-  chip.latch_level = level;
-}
 void hal_uart_write(const uint8_t *d, size_t n) {
   if (n >= 7 && d[0] == LINK_REPLY) { /* a link reply, whole */
-    memcpy(chip.link_tx, d, n);
-    chip.link_len = n;
+    memcpy(sim.link_tx, d, n);
+    sim.link_len = n;
     return;
   }
-  if (n > chip.max_text_write)
-    chip.max_text_write = n;
+  if (n > sim.max_text_write)
+    sim.max_text_write = n;
   if (text_len + n < TEXT_MAX) {
     memcpy(text + text_len, d, n);
     text_len += n;
     text[text_len] = 0;
   }
 }
-size_t hal_flash_read(uint8_t page, uint8_t *out, size_t cap) {
-  (void) page, (void) out, (void) cap;
-  return 0;
-}
-int hal_flash_write(uint8_t page, const uint8_t *d, size_t n) {
-  (void) page, (void) d, (void) n;
-  return 0;
-}
-int bringup_chip_uart_getc(void) { return chip.rx_pos < chip.rx_len ? chip.rx[chip.rx_pos++] : -1; }
-void bringup_chip_iwdg_refresh(void) { chip.iwdg_refreshes++; }
-void bringup_sys_reset(void) { chip.resets++; }
+void bringup_sys_reset(void) { sim.resets++; }
 void bringup_sys_read(uint32_t addr, uint8_t *out, size_t n) {
   for (size_t i = 0; i < n; i++)
     out[i] = (uint8_t) ((addr + i) * 7u);
@@ -186,51 +97,49 @@ void bringup_sys_read(uint32_t addr, uint8_t *out, size_t n) {
 /* What the stages did in the millisecond that ended: the models and the rule checks. */
 static void model_ms(void) {
   /* The fan: towards 500 rpm per motor volt, about 0.3 s to settle. */
-  double target = chip.fan_blocked ? 0 : motor_v() * 500.0;
+  double target = sim.fan_blocked ? 0 : motor_v() * 500.0;
   chip.rpm += (target - chip.rpm) * 0.003;
-  if (chip.fan_blocked)
+  if (sim.fan_blocked)
     chip.rpm = 0;
   /* PMP-7: the armed watchdog cuts a stroke whose current is above its threshold: PUMP_CMD low
    * and the heartbeat stopped, by itself, then the report. */
-  uint16_t i_raw = counts(pump_powered() && chip.pump_duty && !chip.pump_forced && !chip.pump_open ? 1.2 * 0.45 : 0);
+  uint16_t i_raw = pump_i_raw();
   if (chip.oc_armed && !chip.pump_forced && i_raw > chip.oc_threshold) {
     chip.pump_forced = 1;
     chip.hb_mode = HAL_HB_STOPPED;
     chip.oc_report = 1;
-    chip.oc_cuts++;
+    sim.oc_cuts++;
   }
   /* The pump: strokes and their spacing; PUMP_CMD high only on an armed high side. */
   int on = chip.pump_duty > 0 && !chip.pump_forced;
   if (on) {
-    chip.pump_duty_seen = chip.pump_duty;
-    chip.last_pump_on_ms = chip.now;
+    sim.pump_duty_seen = chip.pump_duty;
+    sim.last_pump_on_ms = chip.now;
     if (!pump_powered() || (uint32_t) (chip.now - chip.hb_start_ms) < 20u)
-      chip.pump_unpowered_ms++;
+      sim.pump_unpowered_ms++;
   }
-  if (on && !chip.pump_was_on) {
-    if (chip.strokes && chip.now - chip.last_stroke_end < chip.stroke_gap_min)
-      chip.stroke_gap_min = chip.now - chip.last_stroke_end;
-    chip.strokes++;
-    chip.stroke_start = chip.now;
+  if (on && !sim.pump_was_on) {
+    if (sim.strokes && chip.now - sim.last_stroke_end < sim.stroke_gap_min)
+      sim.stroke_gap_min = chip.now - sim.last_stroke_end;
+    sim.strokes++;
+    sim.stroke_start = chip.now;
   }
-  if (!on && chip.pump_was_on) {
-    uint32_t len = chip.now - chip.stroke_start;
-    if (len < chip.stroke_len_min)
-      chip.stroke_len_min = len;
-    if (len > chip.stroke_len_max)
-      chip.stroke_len_max = len;
-    chip.last_stroke_end = chip.now;
+  if (!on && sim.pump_was_on) {
+    uint32_t len = chip.now - sim.stroke_start;
+    if (len < sim.stroke_len_min)
+      sim.stroke_len_min = len;
+    if (len > sim.stroke_len_max)
+      sim.stroke_len_max = len;
+    sim.last_stroke_end = chip.now;
   }
-  chip.pump_was_on = on;
+  sim.pump_was_on = on;
 }
 
 static void chip_reset(double vin) {
-  memset(&chip, 0, sizeof(chip));
-  chip.vin = vin;
-  chip.ntc_raw = 4057;   /* 25 C */
-  chip.board_raw = 2048; /* 25 C */
-  chip.plug_ohm = 0.5;
-  chip.stroke_len_min = chip.stroke_gap_min = 0xFFFFFFFFu;
+  fake_chip_reset(vin);
+  memset(&sim, 0, sizeof(sim));
+  sim.plug_ohm = 0.5;
+  sim.stroke_len_min = sim.stroke_gap_min = 0xFFFFFFFFu;
   text_len = text_mark = 0;
   text[0] = 0;
 }
@@ -331,11 +240,11 @@ static void test_parser(void) {
   const uint8_t hello[2] = {LINK_MAJOR, LINK_MINOR};
   chip.rx_len = link_build_request(9, LINK_OP_HELLO, hello, 2, chip.rx);
   chip.rx_pos = 0;
-  chip.link_len = 0;
+  sim.link_len = 0;
   run(20);
-  CHECK(chip.link_len > 7 && link_frame_op(chip.link_tx) == LINK_OP_HELLO && link_frame_seq(chip.link_tx) == 9);
+  CHECK(sim.link_len > 7 && link_frame_op(sim.link_tx) == LINK_OP_HELLO && link_frame_seq(sim.link_tx) == 9);
   link_info info;
-  CHECK(link_decode_info(link_reply_payload(chip.link_tx), link_reply_payload_len(chip.link_tx), &info) &&
+  CHECK(link_decode_info(link_reply_payload(sim.link_tx), link_reply_payload_len(sim.link_tx), &info) &&
         strstr(info.text, "bring-up")); /* the ESP32 can tell this image from the production one */
   CHECK(text_len == text_mark);
   /* A line with a control byte in it, or too long: dropped without a word. */
@@ -349,13 +258,13 @@ static void test_parser(void) {
   run(50);
   CHECK(text_len == text_mark);
   /* Typed text never reaches the link: no reply to it. */
-  chip.link_len = 0;
+  sim.link_len = 0;
   cmd("zzz z");
-  CHECK(chip.link_len == 0);
+  CHECK(sim.link_len == 0);
 
   /* Output: never the link's reply header, never more than 8 bytes a millisecond. */
   CHECK(strchr(text, '{') == NULL);
-  CHECK(chip.max_text_write <= CONSOLE_TX_PER_MS);
+  CHECK(sim.max_text_write <= CONSOLE_TX_PER_MS);
 }
 
 /* ---------------------------------------------------------------- readings */
@@ -439,14 +348,14 @@ static void test_fan_duty(void) {
   CHECK(b.s.fan.fault == FAN_FAULT_NONE && b.s.burn.fault == BURN_FAULT_NONE);
 
   /* A stall: off within about a second, the event, and the core's stall count. */
-  chip.fan_blocked = 1;
+  sim.fan_blocked = 1;
   cmd("fan duty 300 10");
   run(1500);
   CHECK(said("* fan_duty fault fault stall"));
   CHECK(chip.fan_duty == 0 && !con.bench.fan);
   CHECK(b.s.burn.fault == BURN_FAULT_FAN && b.s.burn.fan_stalls == 1);
   /* The start limit held the motor current at about 6 A while it tried (FAN-9). */
-  chip.fan_blocked = 0;
+  sim.fan_blocked = 0;
   run(100);
   /* The stage restarted with its own parameters (it once restarted with them zeroed: every retry
    * then ended in a latched "uncommanded" fault). */
@@ -549,7 +458,7 @@ static void test_hb(void) {
   CHECK(!hb_ok() && chip.hb_mode == HAL_HB_STOPPED);
   /* Re-armed once per completed pass (PMP-1), never more. */
   CHECK(b.bursts - bursts <= b.loops - loops + 1 && b.bursts - bursts >= 95);
-  CHECK(chip.pump_duty_seen == 0);
+  CHECK(sim.pump_duty_seen == 0);
 }
 
 static void test_pump(void) {
@@ -561,11 +470,11 @@ static void test_pump(void) {
   CHECK(said("ok"));
   run(3000);
   CHECK(said("* pump done") && said("strokes=3") && said("peak_min_ma=1"));
-  CHECK(chip.strokes == 3);
-  CHECK(chip.stroke_len_min >= 37 && chip.stroke_len_max <= 39);   /* PMP-3: 38 ms */
-  CHECK(chip.stroke_gap_min >= 500 - 40);                          /* 2 Hz, spaced from the stroke */
-  CHECK(chip.pump_duty_seen >= 940 && chip.pump_duty_seen <= 960); /* 12 V / 12.6 V */
-  CHECK(chip.pump_unpowered_ms == 0); /* PMP-2: only on a heartbeat that has run 20 ms */
+  CHECK(sim.strokes == 3);
+  CHECK(sim.stroke_len_min >= 37 && sim.stroke_len_max <= 39);   /* PMP-3: 38 ms */
+  CHECK(sim.stroke_gap_min >= 500 - 40);                          /* 2 Hz, spaced from the stroke */
+  CHECK(sim.pump_duty_seen >= 940 && sim.pump_duty_seen <= 960); /* 12 V / 12.6 V */
+  CHECK(sim.pump_unpowered_ms == 0); /* PMP-2: only on a heartbeat that has run 20 ms */
   CHECK(!hb_ok() && chip.hb_mode == HAL_HB_STOPPED);
   CHECK(b.s.pump.fault == PUMP_FAULT_NONE);
 
@@ -574,9 +483,9 @@ static void test_pump(void) {
   run(1000);
   cmd("pump 4 600");
   run(2500);
-  CHECK(chip.strokes == 4 && chip.pump_duty_seen >= 495 && chip.pump_duty_seen <= 505);
-  CHECK(chip.stroke_gap_min >= 166 - 40);
-  CHECK(chip.pump_unpowered_ms == 0);
+  CHECK(sim.strokes == 4 && sim.pump_duty_seen >= 495 && sim.pump_duty_seen <= 505);
+  CHECK(sim.stroke_gap_min >= 166 - 40);
+  CHECK(sim.pump_unpowered_ms == 0);
 
   /* An open coil: the driver's fault, the event, and no stroke until a fault reset. */
   chip.pump_open = 1;
@@ -590,10 +499,10 @@ static void test_pump(void) {
   chip.pump_open = 0;
   cmd("clear");
   CHECK(said("ok") && b.s.pump.fault == PUMP_FAULT_NONE);
-  uint32_t before = chip.strokes;
+  uint32_t before = sim.strokes;
   cmd("pump 1");
   run(1500);
-  CHECK(chip.strokes == before + 1 && said("* pump done"));
+  CHECK(sim.strokes == before + 1 && said("* pump done"));
 
   /* stop in the middle: PUMP_CMD low at once, the heartbeat a decay wait later (PMP-10). */
   cmd("pump 20 100");
@@ -605,17 +514,17 @@ static void test_pump(void) {
   cmd("stop");
   CHECK(said("* pump stopped"));
   CHECK(chip.pump_duty == 0 && !hb_ok());
-  CHECK(chip.burst_ms >= chip.last_pump_on_ms + 10u - 1u); /* the last burst came after the decay wait */
+  CHECK(chip.burst_ms >= sim.last_pump_on_ms + 10u - 1u); /* the last burst came after the decay wait */
 
   /* The pre-start test runs first, and a failure refuses the strokes: a pump + side stuck on. */
   boot(12.6, OPTR_OK, 0);
   run(1000);
-  uint32_t s0 = chip.strokes;
+  uint32_t s0 = sim.strokes;
   b.s.chk.p.pump_off_percent = 0; /* stands in for a shorted high side: any reading fails */
   cmd("pump 1");
   run(1000);
   CHECK(said("* pump failed precheck") && said("pump_hs_short"));
-  CHECK(chip.strokes == s0);
+  CHECK(sim.strokes == s0);
 }
 
 /* The overcurrent cut (PMP-7) on the bench: armed for every stroke, and acting on a lowered
@@ -625,7 +534,7 @@ static void test_pump_oc(void) {
   run(1000);
   cmd("pump 2 200");
   run(2000);
-  CHECK(said("* pump done") && chip.oc_cuts == 0 && con.oc_arms == 2);
+  CHECK(said("* pump done") && sim.oc_cuts == 0 && con.oc_arms == 2);
   cmd("io");
   CHECK(said("pump_oc_armed=0") && said("pump_oc_ma=3300") && said("pump_oc_raw=184"));
   cmd("pump oc 3300");
@@ -633,12 +542,12 @@ static void test_pump_oc(void) {
   cmd("pump oc 99");
   CHECK(said("err"));
   /* Below the coil's 1.2 A: the cut acts, the stroke ends, the pump faults until a fault reset. */
-  uint32_t strokes = chip.strokes;
+  uint32_t strokes = sim.strokes;
   cmd("pump oc 500");
   CHECK(said("ok") && b.s.pump.p.oc_ma == 500);
   run(2000);
   CHECK(said("* pump_oc fault fault overcurrent (the cut acted)"));
-  CHECK(chip.oc_cuts == 1 && chip.strokes <= strokes + 1); /* cut in its first millisecond */
+  CHECK(sim.oc_cuts == 1 && sim.strokes <= strokes + 1); /* cut in its first millisecond */
   CHECK(b.s.pump.p.oc_ma == 3300); /* back */
   CHECK(!hb_ok() && b.s.pump.fault == PUMP_FAULT_OVERCURRENT);
   cmd("pump 1");
@@ -648,7 +557,7 @@ static void test_pump_oc(void) {
   /* Above the coil's current: no cut, said so. */
   cmd("pump oc 2000");
   run(2000);
-  CHECK(said("* pump_oc done (NO CUT)") && chip.oc_cuts == 1 && b.s.pump.p.oc_ma == 3300);
+  CHECK(said("* pump_oc done (NO CUT)") && sim.oc_cuts == 1 && b.s.pump.p.oc_ma == 3300);
   /* stop in the middle puts the threshold back too. */
   cmd("pump oc 500");
   run(5);
@@ -704,19 +613,19 @@ static void test_glow(void) {
   CHECK(said("ok"));
   run(600);
   CHECK(said("* glow done") && said("i=25.") && said("r_mohm=50") && said("cold_type=12"));
-  CHECK(chip.glow_pulses == 1 && chip.glow_last_us == 150); /* one 150 us probe */
+  CHECK(sim.glow_pulses == 1 && sim.glow_last_us == 150); /* one 150 us probe */
   cmd("glow read");
   CHECK(said("glow last_with_pulse pulse_raw=") && said("pulse_A=25.") && said("gap_A=0.00") && said("gap_vin=12."));
   CHECK(con.glow_periods > 100);
-  CHECK(chip.glow_bad == 0);   /* with GLOW_EN, on a heartbeat that had run 20 ms (GLW-7) */
+  CHECK(sim.glow_bad == 0);   /* with GLOW_EN, on a heartbeat that had run 20 ms (GLW-7) */
   CHECK(!chip.glow_en && !hb_ok());
   run(1000);
-  CHECK(chip.glow_pulses == 1);
+  CHECK(sim.glow_pulses == 1);
   /* A 24 V plug reads as one. */
-  chip.plug_ohm = 1.6;
+  sim.plug_ohm = 1.6;
   cmd("glow");
   run(600);
-  CHECK(said("cold_type=24") && chip.glow_pulses == 2);
+  CHECK(said("cold_type=24") && sim.glow_pulses == 2);
 
   /* A hot board: the planner gives no pulse (GLW-15). */
   chip.board_raw = board_raw_for(900);
@@ -724,7 +633,7 @@ static void test_glow(void) {
   cmd("glow");
   run(600);
   CHECK(said("* glow no_probe"));
-  CHECK(chip.glow_pulses == 2);
+  CHECK(sim.glow_pulses == 2);
   chip.board_raw = 2048;
   cmd("stop");
 
@@ -735,7 +644,7 @@ static void test_glow(void) {
     b.s.bench.glow_probe = 1;
     run(1);
   }
-  CHECK(chip.glow_pulses == 2);
+  CHECK(sim.glow_pulses == 2);
 }
 
 /* ---------------------------------------------------------------- watchdog, reset */
@@ -762,7 +671,7 @@ static void test_watchdog(void) {
   boot(12.6, OPTR_OK, 0);
   run(100);
   cmd("reset");
-  CHECK(chip.resets >= 1);
+  CHECK(sim.resets >= 1);
 }
 
 /* ---------------------------------------------------------------- runs */
@@ -800,12 +709,12 @@ static void test_runs(void) {
   /* The bench is refused while the burn is not off; the core ignores its requests then too. */
   cmd("run fan 30 60");
   run(500);
-  uint32_t strokes = chip.strokes, glows = chip.glow_pulses;
+  uint32_t strokes = sim.strokes, glows = sim.glow_pulses;
   for (int i = 0; i < 1000; i++) {
     b.s.bench.pump_cHz = 500, b.s.bench.heartbeat = 1, b.s.bench.glow_probe = 1;
     run(1);
   }
-  CHECK(chip.strokes == strokes && chip.glow_pulses == glows);
+  CHECK(sim.strokes == strokes && sim.glow_pulses == glows);
   cmd("stop");
   run(500);
 }

@@ -10,6 +10,7 @@
 
 extern "C" {
 #include "../core/safety.h"
+#include "co_sensor.h"
 #include "heater_model.h"
 }
 
@@ -41,8 +42,8 @@ struct Bench : LinkTransport {
   int max_heartbeat_gap_in_burn = 0;
   std::deque<uint8_t> to_esp;
   LinkClient client{this};
-  // The CO sensor: R0 300 k in clean air; the air as Rs / R0 (x 1000); unheated it reads 5 x higher.
-  // co_adc >= 0 holds the reading there (an open sensor, or none fitted).
+  // The CO sensor (co_sensor.h): the air as Rs / R0 (x 1000); co_adc >= 0 holds the reading there
+  // (an open sensor, or none fitted).
   uint32_t co_ratio = 1000;
   int co_adc = -1;
   int16_t board_c10 = 350;
@@ -162,8 +163,7 @@ struct Bench : LinkTransport {
   uint16_t co_reading() const {
     if (co_adc >= 0)
       return (uint16_t) co_adc;
-    uint64_t rs = 300000ull * co_ratio / 1000u * (safety_co_heater(&s) ? 1u : 5u);
-    return (uint16_t) ((uint64_t) CO_ADC_FULL * CO_LOAD_OHM / (CO_LOAD_OHM + rs));
+    return co_sensor_adc(co_ratio, safety_co_heater(&s));
   }
   void run(uint32_t ms) {
     for (uint32_t t = 0; t < ms; t += TICK)
