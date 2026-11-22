@@ -168,6 +168,10 @@ static int start_blocked(burn *b, const burn_inputs *in) {
     b->fault = BURN_FAULT_CO, b->why = BURN_WHY_CO, b->fault_latched = 1;
     return 1;
   }
+  if (in->co_fault) {
+    b->fault = BURN_FAULT_CO_SENSOR, b->why = BURN_WHY_CO_SENSOR, b->fault_latched = 1;
+    return 1;
+  }
   if (in->supply_cv < b->p.supply_low_cv) {
     b->fault = BURN_FAULT_SUPPLY_LOW, b->why = BURN_WHY_SUPPLY;
     return 1;
@@ -286,7 +290,7 @@ void burn_set_power(burn *b, uint8_t power) { b->power = power > 100 ? 100 : pow
 int burn_fault_reset(burn *b, const burn_inputs *in) {
   if (!b->fault_latched)
     return R_REFUSED;
-  if (in->overheat_latch || in->co_alarm || in->glow_fault || in->fan_fault || in->pump_fault)
+  if (in->overheat_latch || in->co_alarm || in->co_fault || in->glow_fault || in->fan_fault || in->pump_fault)
     return R_REFUSED; /* the cause is still there */
   b->fault_latched = 0;
   b->fault = BURN_FAULT_NONE;
@@ -395,6 +399,15 @@ static void checks(burn *b, uint32_t now, const burn_inputs *in) {
       b->fault = BURN_FAULT_CO, b->why = BURN_WHY_CO;
     else
       fault_stop(b, BURN_FAULT_CO, BURN_WHY_CO, now);
+    return;
+  }
+  /* CO-2: a sensor fault is an alarm too: the same heater-safe action. */
+  if (in->co_fault && !in->co_alarm && !(b->fault == BURN_FAULT_CO_SENSOR && b->fault_latched)) {
+    b->fault_latched = 1;
+    if (b->step == BURN_STEP_OFF)
+      b->fault = BURN_FAULT_CO_SENSOR, b->why = BURN_WHY_CO_SENSOR;
+    else
+      fault_stop(b, BURN_FAULT_CO_SENSOR, BURN_WHY_CO_SENSOR, now);
     return;
   }
   if (b->step == BURN_STEP_OFF)

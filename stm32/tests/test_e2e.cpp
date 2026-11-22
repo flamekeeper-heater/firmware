@@ -71,6 +71,7 @@ struct Bench : LinkTransport {
     in.supply_cv = m.supply_cv;
     in.overheat_latch = 0;
     in.co_alarm = 0;
+    in.co_fault = 0;
     in.glow_fault = 0;
     in.fan_fault = 0;
     in.precheck = 0;
