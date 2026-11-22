@@ -124,4 +124,51 @@
 #define NVIC_IPR(n) REG(0xE000E400u + 4u * (n)) /* word access only on the M0+ */
 #define IRQ_ADC 12u
 
+/* Bits, named REGISTER_FIELD (checked by tools/check_registers.py against the SVD). The older code
+ * writes its bits inline; each of those has an entry in the checker instead. */
+#define ADC_ISR_ADRDY (1u << 0)
+#define ADC_ISR_EOS (1u << 3)
+#define ADC_ISR_OVR (1u << 4)
+#define ADC_ISR_AWD1 (1u << 7)
+#define ADC_ISR_AWD2 (1u << 8)
+#define ADC_ISR_CCRDY (1u << 13)
+#define ADC_IER_AWD1IE (1u << 7)
+#define ADC_IER_AWD2IE (1u << 8)
+#define ADC_CR_ADSTART (1u << 2)
+#define ADC_CR_ADSTP (1u << 4)
+#define ADC_CR_ADVREGEN (1u << 28)
+#define ADC_CFGR1_DMAEN (1u << 0)
+#define ADC_CFGR1_DMACFG (1u << 1) /* DMA circular */
+#define ADC_CFGR1_CONT (1u << 13)
+#define ADC_CFGR1_AWD1SGL (1u << 22)
+#define ADC_CFGR1_AWD1EN (1u << 23)
+#define ADC_CFGR1_AWD1CH(ch) ((uint32_t) (ch) << 26)
+#define ADC_AWD1TR_LT1(raw) ((uint32_t) (raw) << 0)
+#define ADC_AWD1TR_HT1(raw) ((uint32_t) (raw) << 16)
+#define ADC_AWD2TR_LT2(raw) ((uint32_t) (raw) << 0)
+#define ADC_AWD2TR_HT2(raw) ((uint32_t) (raw) << 16)
+#define ADC_AWD2CR_AWD2CH6 (1u << 6)
+#define DMA_ISR_TEIF2 (1u << 7)
+#define DMA_IFCR_CGIF2 (1u << 4)
+#define DMA_IFCR_CTCIF2 (1u << 5)
+#define DMA_IFCR_CHTIF2 (1u << 6)
+#define DMA_IFCR_CTEIF2 (1u << 7)
+#define DMA_CCR_EN (1u << 0)
+#define DMA_CCR_CIRC (1u << 5)
+#define DMA_CCR_MINC (1u << 7)
+#define DMA_CCR_PSIZE_16 (1u << 8)
+#define DMA_CCR_MSIZE_16 (1u << 10)
+#define TIM_DIER_CC2IE (1u << 2)
+#define TIM_DIER_CC3IE (1u << 3)
+#define TIM_SR_CC2IF (1u << 2)
+#define TIM_SR_CC3IF (1u << 3)
+#define FLASH_ECCR_ADDR_ECC 0x3FFFu /* the failing double word's index in the flash */
+#define FLASH_ECCR_SYSF_ECC (1u << 20)
+#define FLASH_ECCR_ECCCIE (1u << 24)
+#define FLASH_ECCR_ECCD (1u << 31)
+#define FLASH_SR_BSY1 (1u << 16)
+#define FLASH_SR_CFGBSY (1u << 18) /* FLASH_CR in use by a program or erase */
+#define FLASH_OPTR_IWDG_STOP (1u << 17)  /* 0: the IWDG frozen in stop mode */
+#define FLASH_OPTR_IWDG_STDBY (1u << 18) /* 0: the IWDG frozen in standby */
+
 #endif /* FLAMEKEEPER_STM32G030_H */
