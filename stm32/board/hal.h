@@ -66,6 +66,9 @@ const uint8_t *hal_flash_page(uint8_t page);
 /* Programs data into an erased part of the page without erasing it: offset and len in 8-byte
  * steps. 0 when done. */
 int hal_flash_program(uint8_t page, uint16_t offset, const uint8_t *data, size_t len);
+/* 1 when reading the page hit a double ECC error (a write torn by a power loss) since it was last
+ * written: what was read is garbage. */
+uint8_t hal_flash_unreadable(uint8_t page);
 
 #ifdef __cplusplus
 }

@@ -72,13 +72,22 @@ static int co_log_append(board *b, uint32_t r0) {
 
 static void load(board *b) {
   uint8_t buf[PARAMS_IMAGE_MAX];
+  /* A page read with a double ECC error (hal_flash_unreadable): nothing from it is trusted, the
+   * defaults stand, and the next save erases and rewrites it. */
   size_t n = hal_flash_read(HAL_PAGE_PARAMS, buf, sizeof(buf));
-  if (n > 0)
+  if (hal_flash_unreadable(HAL_PAGE_PARAMS))
+    b->s.params.save_pending = 1;
+  else if (n > 0)
     safety_load_params(&b->s, buf, n);
   n = hal_flash_read(HAL_PAGE_PLUG, buf, sizeof(buf));
-  if (n > 0)
+  uint32_t r0 = co_log_scan(b);
+  if (hal_flash_unreadable(HAL_PAGE_PLUG)) {
+    b->s.plug.save_pending = 1;
+    r0 = 0;
+  } else if (n > 0) {
     safety_load_plug(&b->s, buf, n);
-  safety_load_co_r0(&b->s, co_log_scan(b));
+  }
+  safety_load_co_r0(&b->s, r0);
 }
 
 void board_init(board *b, uint32_t now, uint8_t reset_reason, uint8_t option_faults) {

@@ -325,6 +325,24 @@ void hal_uart_write(const uint8_t *d, size_t n) {
 
 /* ---------------------------------------------------------------- flash (the last two pages) */
 
+static volatile uint8_t flash_unreadable; /* a bit per saved page */
+
+/* A double ECC error raises the NMI. In a saved page (a write torn by a power loss): note the
+ * page, clear ECCD and return; the load completes with corrupt data, which the images' CRCs
+ * reject, and the board rewrites the page. Anything else waits for the watchdog, as before.
+ * UNVERIFIED on silicon: that the NMI returns into the load, and ADDR_ECC's scale. */
+void NMI_Handler(void) {
+  uint32_t eccr = FLASH_ECCR;
+  int page = hal_ecc_saved_page(eccr);
+  if (page < 0)
+    for (;;) {
+    }
+  flash_unreadable |= (uint8_t) (1u << page);
+  FLASH_ECCR = (eccr & (1u << 24)) | (1u << 31); /* clear ECCD only, keep ECCCIE */
+}
+
+uint8_t hal_flash_unreadable(uint8_t page) { return (uint8_t) ((flash_unreadable >> page) & 1u); }
+
 static uint32_t page_addr(uint8_t page) { return 0x08000000u + (30u + page) * 2048u; }
 
 size_t hal_flash_read(uint8_t page, uint8_t *out, size_t cap) {
@@ -356,7 +374,10 @@ int hal_flash_write(uint8_t page, const uint8_t *d, size_t n) {
     }
   }
   FLASH_CR = 1u << 31; /* lock */
-  return (FLASH_SR & 0xC3FAu) ? -1 : 0;
+  if (FLASH_SR & 0xC3FAu)
+    return -1;
+  flash_unreadable &= (uint8_t) ~(1u << page); /* erased and written afresh */
+  return 0;
 }
 
 const uint8_t *hal_flash_page(uint8_t page) { return (const uint8_t *) page_addr(page); }

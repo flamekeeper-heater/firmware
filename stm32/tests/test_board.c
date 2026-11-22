@@ -7,6 +7,7 @@
 
 #include "../board/analog.h"
 #include "../board/board.h"
+#include "../hal/hal_stm32g0.h"
 
 static int n_checks = 0, failures = 0;
 #define CHECK(c)                                                  \
@@ -40,6 +41,8 @@ static struct {
   size_t tx_len;
   uint8_t flash[2][HAL_FLASH_PAGE_SIZE]; /* NOR: erased 0xFF, programmed only where erased */
   uint32_t flash_writes, flash_programs, flash_bad_programs;
+  uint8_t ecc_bad[2];     /* a double ECC error somewhere in the page: reading it raises the NMI */
+  uint8_t unreadable;     /* what the NMI handler recorded, a bit per page */
   /* The CO sensor: R0 300 k, the air as Rs / R0 (x 1000), 5 x higher unheated; co_adc >= 0 holds
    * the pin there (open, or no sensor). */
   uint8_t co_heater;
@@ -107,6 +110,8 @@ void hal_uart_write(const uint8_t *d, size_t n) {
 void hal_iwdg_refresh(void) { chip.iwdg_refreshes++; }
 size_t hal_flash_read(uint8_t page, uint8_t *out, size_t cap) {
   size_t n = cap < 256u ? cap : 256u;
+  if (chip.ecc_bad[page])
+    chip.unreadable |= (uint8_t) (1u << page); /* the NMI, then the load completes with garbage */
   memcpy(out, chip.flash[page], n);
   return n;
 }
@@ -116,9 +121,16 @@ int hal_flash_write(uint8_t page, const uint8_t *d, size_t n) {
   memset(chip.flash[page], 0xFF, HAL_FLASH_PAGE_SIZE);
   memcpy(chip.flash[page], d, n);
   chip.flash_writes++;
+  chip.ecc_bad[page] = 0;
+  chip.unreadable &= (uint8_t) ~(1u << page);
   return 0;
 }
-const uint8_t *hal_flash_page(uint8_t page) { return chip.flash[page]; }
+const uint8_t *hal_flash_page(uint8_t page) {
+  if (chip.ecc_bad[page])
+    chip.unreadable |= (uint8_t) (1u << page);
+  return chip.flash[page];
+}
+uint8_t hal_flash_unreadable(uint8_t page) { return (uint8_t) ((chip.unreadable >> page) & 1u); }
 int hal_flash_program(uint8_t page, uint16_t offset, const uint8_t *d, size_t n) {
   if ((offset & 7u) || (n & 7u) || offset + n > HAL_FLASH_PAGE_SIZE)
     return -1;
@@ -427,6 +439,59 @@ static void test_co_r0_in_flash(void) {
   CHECK(b6.s.co_r0_saved == b4.s.co.r0 && b6.co_log_next == 2);
 }
 
+/* A double ECC error in a saved page (a write torn by a power loss): the NMI handler records the
+ * page instead of resetting in a loop; the board takes the defaults and rewrites the page. */
+static void test_flash_ecc_error(void) {
+  /* The NMI's decision from FLASH_ECCR: ECCD set, main flash, double word in page 30 or 31. */
+  const uint32_t ECCD = 1u << 31, SYSF = 1u << 20;
+  CHECK(hal_ecc_saved_page(ECCD | (30u * 2048u / 8u)) == HAL_PAGE_PARAMS);
+  CHECK(hal_ecc_saved_page(ECCD | (31u * 2048u / 8u + 255u)) == HAL_PAGE_PLUG);
+  CHECK(hal_ecc_saved_page(ECCD | (30u * 2048u / 8u - 1u)) == -1); /* the program: watchdog */
+  CHECK(hal_ecc_saved_page(ECCD | SYSF | (30u * 2048u / 8u)) == -1); /* system memory */
+  CHECK(hal_ecc_saved_page(30u * 2048u / 8u) == -1);                /* not a double error */
+
+  /* Saved pages: a table (fan max 5000, CO not fitted), a plug record and an R0. */
+  chip_reset();
+  params ps;
+  params_init(&ps);
+  params_set(&ps, 0x11, 5000);
+  params_set(&ps, 0x52, 0);
+  CHECK(params_apply(&ps, 1, 1) == LINK_OK);
+  uint8_t img[PARAMS_IMAGE_MAX];
+  size_t n = params_pack(&ps, img, sizeof(img));
+  CHECK(hal_flash_write(HAL_PAGE_PARAMS, img, n) == 0);
+  plug pl;
+  plug_params pp;
+  plug_params_default(&pp);
+  plug_init(&pl, &pp, 0);
+  pl.rec.verified_type = pl.rec.verified_setting = 12;
+  n = plug_pack(&pl, img, sizeof(img));
+  CHECK(hal_flash_write(HAL_PAGE_PLUG, img, n) == 0);
+  const uint8_t slot[8] = {'R', '0', 0xE0, 0x93, 0x04, 0x00, 0, 0}; /* 300000, CRC filled below */
+  uint8_t e[8];
+  memcpy(e, slot, 8);
+  uint16_t crc = link_crc16(e, 6);
+  e[6] = (uint8_t) crc, e[7] = (uint8_t) (crc >> 8);
+  CHECK(hal_flash_program(HAL_PAGE_PLUG, BOARD_CO_LOG_START, e, 8) == 0);
+  board b;
+  board_init(&b, chip.now, LINK_RESET_POWER_ON, 0);
+  CHECK(b.s.burn.p.fan_max_rpm == 5000 && b.s.plug.rec.verified_type == 12 && b.s.co_r0_saved == 300000);
+
+  /* Both pages now read with an ECC error: defaults, nothing remembered, no reset loop. */
+  chip.ecc_bad[HAL_PAGE_PARAMS] = chip.ecc_bad[HAL_PAGE_PLUG] = 1;
+  uint32_t writes = chip.flash_writes;
+  board_init(&b, chip.now, LINK_RESET_POWER_ON, 0);
+  CHECK(b.s.burn.p.fan_max_rpm == 4500 && b.s.burn.p.co_fitted == 1);
+  CHECK(b.s.plug.rec.verified_type == 0 && b.s.co_r0_saved == 0 && b.s.co.r0 == 0);
+  /* The next pass with the heater off rewrites both, erasing first. */
+  run(&b, 20);
+  CHECK(chip.flash_writes == writes + 2 && chip.unreadable == 0);
+  CHECK(!chip.ecc_bad[0] && !chip.ecc_bad[1] && log_slots_used() == 0);
+  board b2;
+  board_init(&b2, chip.now, LINK_RESET_POWER_ON, 0);
+  CHECK(b2.s.burn.p.fan_max_rpm == 4500 && b2.s.plug.rec.verified_type == 0 && chip.unreadable == 0);
+}
+
 int main(void) {
   test_conversions();
   test_schedule_and_watchdog();
@@ -437,6 +502,7 @@ int main(void) {
   test_co_sensor_fault();
   test_co_not_fitted();
   test_co_r0_in_flash();
+  test_flash_ecc_error();
   printf("board: %d checks, %d failures\n", n_checks, failures);
   return failures ? 1 : 0;
 }
