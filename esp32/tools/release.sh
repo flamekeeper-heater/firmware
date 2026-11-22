@@ -4,9 +4,9 @@
 #
 #   release.sh VERSION [--notes FILE] [--out DIR] [BOARD...]
 #
-# VERSION is "major.minor.patch"; BOARD is rev-a2 (the default). For each board it compiles the
-# profile with that version, signs the app image with the release key (signing_key.sh), checks the
-# signature, and writes to DIR (default dist/, not in git):
+# VERSION is "major.minor.patch"; BOARD is a board profile (common.sh; default rev-a2). For each
+# board it compiles the profile with that version, signs the app image with the release key
+# (signing_key.sh), checks the signature, and writes to DIR (default dist/, not in git):
 #
 #   DIR/<board>/<version>.bin    the signed image, as the app sends it
 #   DIR/<board>/manifest.json    version, build time, size, SHA-256, URL, notes, minimum protocol
@@ -67,7 +67,7 @@ fi
 
 # ---------------------------------------------------------------- build and sign
 version=${1:-}
-[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "usage: $0 MAJOR.MINOR.PATCH [--notes FILE] [--out DIR] [rev-a2]"
+[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "usage: $0 MAJOR.MINOR.PATCH [--notes FILE] [--out DIR] [BOARD...]"
 shift
 notes=""
 out="$ROOT/dist"
@@ -76,8 +76,8 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     --notes) notes=$(cat "$2"); shift 2 ;;
     --out) out=$2; shift 2 ;;
-    rev-a2) boards+=("$1"); shift ;;
-    *) die "unknown argument: $1" ;;
+    -*) die "unknown argument: $1" ;;
+    *) boards+=("$1"); shift ;;
   esac
 done
 [[ ${#boards[@]} -gt 0 ]] || boards=(rev-a2)
@@ -102,12 +102,15 @@ for board in "${boards[@]}"; do
   sha=$(shasum -a 256 "$signed" | cut -d' ' -f1)
   built=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["build_time"])' "$build/build_info.json")
   url="$URL_BASE/$board/$version.bin"
-  python3 - "$out/$board/manifest.json" "$board" "$version" "$built" "$size" "$sha" "$url" "$notes" \
+  $public || url="$version.bin"  # never published: next to its manifest
+  python3 - "$out/$board/manifest.json" "$board" "$version" "$built" "$size" "$sha" "$url" "$notes" "$public" \
     "$MIN_PROTOCOL" <<'PY'
 import json, sys
-path, board, version, built, size, sha, url, notes, minp = sys.argv[1:]
+path, board, version, built, size, sha, url, notes, public, minp = sys.argv[1:]
 m = {"board": board, "version": version, "build": int(built), "size": int(size), "sha256": sha,
      "url": url, "notes": notes, "min_protocol": json.loads(minp)}
+if public != "true":
+    m["private"] = True  # holds secrets: upload refuses it
 json.dump(m, open(path, "w"), indent=2)
 open(path, "a").write("\n")
 PY
