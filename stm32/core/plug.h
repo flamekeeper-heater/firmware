@@ -19,6 +19,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "util.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif

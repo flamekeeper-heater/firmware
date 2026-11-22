@@ -30,8 +30,6 @@ void glow_params_default(glow_params *p) {
   p->board_max_c10 = 850;
 }
 
-static uint32_t since(uint32_t now, uint32_t then) { return (uint32_t) (now - then); }
-
 static uint64_t cap_a2us(const glow *g) { return (uint64_t) g->p.bucket_cap_a2s * 1000000u; }
 
 /* Heat added by a pulse of current i (0.01 A) for w us, in A2 x us. */

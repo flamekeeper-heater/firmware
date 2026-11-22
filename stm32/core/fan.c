@@ -24,8 +24,6 @@ void fan_params_default(fan_params *p) {
   p->overspeed_ms = 500;
 }
 
-static uint32_t since(uint32_t now, uint32_t then) { return (uint32_t) (now - then); }
-
 void fan_init(fan *f, const fan_params *p, uint32_t now_ms) {
   memset(f, 0, sizeof(*f));
   f->p = *p;
@@ -39,18 +37,13 @@ void fan_clear_fault(fan *f, uint32_t now_ms) {
   f->integ = 0;
   f->target = 0;
   f->target_dropped_ms = now_ms; /* a fan still coasting gets its spin-down time again */
-  f->over = 0;
-  f->stall_timing = 0;
-  f->stuck_timing = 0;
-  f->overspeed_timing = 0;
+  f->over.on = 0;
+  f->stall.on = 0;
+  f->stuck.on = 0;
+  f->overspeed.on = 0;
 }
 
-uint16_t fan_duty_cap(const fan *f, uint16_t vin_cv) {
-  if (vin_cv == 0)
-    return 0;
-  uint32_t cap = (uint32_t) f->p.v_max_cv * 1000u / vin_cv;
-  return (uint16_t) (cap > 1000u ? 1000u : cap);
-}
+uint16_t fan_duty_cap(const fan *f, uint16_t vin_cv) { return duty_permille_for(f->p.v_max_cv, vin_cv); }
 
 static uint16_t set(fan *f, uint16_t duty) {
   f->duty = duty;
@@ -76,14 +69,8 @@ static uint16_t step(fan *f, uint32_t now_ms, uint16_t target_rpm, uint16_t open
     return set(f, 0);
 
   /* Current while the switch was off: it is stuck on (FAN-6). */
-  if (f->duty == 0 && m->isense_ma > p->stuck_on_ma) {
-    if (!f->stuck_timing)
-      f->stuck_timing = 1, f->stuck_ms = now_ms;
-    else if (since(now_ms, f->stuck_ms) >= p->stuck_on_ms)
-      return fail(f, FAN_FAULT_STUCK_ON);
-  } else {
-    f->stuck_timing = 0;
-  }
+  if (held_for(&f->stuck, f->duty == 0 && m->isense_ma > p->stuck_on_ma, now_ms, p->stuck_on_ms))
+    return fail(f, FAN_FAULT_STUCK_ON);
 
   if (open_permille > 0) {
     /* No speed to compare with: the start limit always applies, and the speed checks wait for
@@ -100,33 +87,23 @@ static uint16_t step(fan *f, uint32_t now_ms, uint16_t target_rpm, uint16_t open
     /* Speed without a command, or well above it, once it had time to slow down (FAN-3). */
     if (target_rpm == 0 && m->rpm >= p->turning_rpm && spun_down)
       return fail(f, FAN_FAULT_UNCOMMANDED);
-    if (target_rpm > 0 && spun_down &&
-        (uint32_t) m->rpm * 100u > (uint32_t) target_rpm * (100u + p->overspeed_percent)) {
-      if (!f->overspeed_timing)
-        f->overspeed_timing = 1, f->overspeed_ms = now_ms;
-      else if (since(now_ms, f->overspeed_ms) >= p->overspeed_ms)
-        return fail(f, FAN_FAULT_OVERSPEED);
-    } else {
-      f->overspeed_timing = 0;
-    }
+    int fast = target_rpm > 0 && spun_down &&
+               (uint32_t) m->rpm * 100u > (uint32_t) target_rpm * (100u + p->overspeed_percent);
+    if (held_for(&f->overspeed, fast, now_ms, p->overspeed_ms))
+      return fail(f, FAN_FAULT_OVERSPEED);
 
     if (target_rpm == 0) {
       f->integ = 0;
-      f->over = 0;
-      f->stall_timing = 0;
+      f->over.on = 0;
+      f->stall.on = 0;
       return set(f, 0);
     }
   }
 
   /* Stalled: current flows but the Hall shows no turning (FAN-3: off within 1 s). */
-  if (f->duty > 0 && m->isense_ma > p->stall_ma && m->rpm < p->turning_rpm) {
-    if (!f->stall_timing)
-      f->stall_timing = 1, f->stall_ms = now_ms;
-    else if (since(now_ms, f->stall_ms) >= p->stall_ms)
-      return fail(f, FAN_FAULT_STALL);
-  } else {
-    f->stall_timing = 0;
-  }
+  if (held_for(&f->stall, f->duty > 0 && m->isense_ma > p->stall_ma && m->rpm < p->turning_rpm, now_ms,
+               p->stall_ms))
+    return fail(f, FAN_FAULT_STALL);
 
   /* The speed loop: feed-forward from the 10 V point, plus PI on the Hall error. */
   int32_t cap = fan_duty_cap(f, m->vin_cv);
@@ -157,24 +134,15 @@ static uint16_t step(fan *f, uint32_t now_ms, uint16_t target_rpm, uint16_t open
 
   /* The start limit: while the fan turns below half its command, the motor current (average
    * switch current / duty) stays at or below the limit (FAN-9). */
-  if ((uint32_t) m->rpm * 2u < target_rpm && f->duty >= p->estimate_min_permille) {
-    uint32_t motor_ma = (uint32_t) m->isense_ma * 1000u / f->duty;
-    if (motor_ma > p->start_limit_ma) {
-      if (want > (int32_t) f->duty)
-        want = f->duty; /* no rise while above */
-      if (!f->over)
-        f->over = 1, f->over_ms = now_ms;
-      else if (since(now_ms, f->over_ms) >= p->start_limit_ms) {
-        want = (int32_t) f->duty - (int32_t) p->back_off_permille;
-        if (want < 0)
-          want = 0;
-        f->over_ms = now_ms; /* back off again after another while above */
-      }
-    } else {
-      f->over = 0;
-    }
-  } else {
-    f->over = 0;
+  int above = (uint32_t) m->rpm * 2u < target_rpm && f->duty >= p->estimate_min_permille &&
+              (uint32_t) m->isense_ma * 1000u / f->duty > p->start_limit_ma;
+  if (above && want > (int32_t) f->duty)
+    want = f->duty; /* no rise while above */
+  if (held_for(&f->over, above, now_ms, p->start_limit_ms)) {
+    want = (int32_t) f->duty - (int32_t) p->back_off_permille;
+    if (want < 0)
+      want = 0;
+    f->over.since_ms = now_ms; /* back off again after another while above */
   }
 
   /* No integral wind-up while the ramp, a limit or zero holds the duty away from what the loop

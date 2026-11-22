@@ -5,8 +5,6 @@
 
 #include "analog.h"
 
-static uint32_t since(uint32_t now, uint32_t then) { return (uint32_t) (now - then); }
-
 /* The sequencer's measurements, from the last scan. */
 static burn_inputs read_inputs(board *b) {
   burn_inputs in;

@@ -18,8 +18,6 @@ void pump_params_default(pump_params *p) {
   p->oc_hold_us = 50;
 }
 
-static uint32_t since(uint32_t now, uint32_t then) { return (uint32_t) (now - then); }
-
 void pump_init(pump *pu, const pump_params *p) {
   memset(pu, 0, sizeof(*pu));
   pu->p = *p;
@@ -37,12 +35,7 @@ void pump_clear_fault(pump *pu) {
 
 void pump_new_run(pump *pu) { pu->rearms = 0; }
 
-static uint16_t stroke_duty(const pump *pu, uint16_t vin_cv) {
-  if (vin_cv == 0)
-    return 0;
-  uint32_t d = (uint32_t) pu->p.stroke_v_cv * 1000u / vin_cv;
-  return (uint16_t) (d > 1000u ? 1000u : d);
-}
+static uint16_t stroke_duty(const pump *pu, uint16_t vin_cv) { return duty_permille_for(pu->p.stroke_v_cv, vin_cv); }
 
 static pump_out fault(pump *pu, uint8_t f) {
   pump_out o = {0, 1, 0};

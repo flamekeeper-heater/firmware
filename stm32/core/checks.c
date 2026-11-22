@@ -3,8 +3,6 @@
 
 #include <string.h>
 
-#define UNKNOWN_TEMP ((int16_t) 0x8000)
-
 enum {
   /* Power-up. */
   PU_LATCH_HOLD = 1,
@@ -40,8 +38,6 @@ void checks_params_default(checks_params *p) {
   p->rearm_max_c10 = 2400;
   p->timeout_ms = 2000;
 }
-
-static uint32_t since(uint32_t now, uint32_t then) { return (uint32_t) (now - then); }
 
 void checks_init(checks *c, const checks_params *p, uint32_t boot_ms) {
   memset(c, 0, sizeof(*c));
@@ -136,7 +132,7 @@ checks_out checks_step(checks *c, uint32_t now, const checks_obs *o) {
     case PU_WAIT_REARM: /* OVH-2: only with a plausible, cool sensor, and not too soon */
       if (since(now, c->boot_ms) < p->rearm_after_ms)
         return out;
-      if (o->hx_c10 == UNKNOWN_TEMP)
+      if (!temp_known(o->hx_c10))
         return fail(c, CHECK_FAIL_LATCH_REARM);
       if (o->hx_c10 >= p->rearm_max_c10)
         return out; /* still too hot: wait (the cooldown runs meanwhile) */

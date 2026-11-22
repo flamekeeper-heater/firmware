@@ -5,8 +5,6 @@
 
 #include "../../common/link/link.h"
 
-#define UNKNOWN_TEMP ((int16_t) 0x8000)
-
 void plug_params_default(plug_params *p) {
   memset(p, 0, sizeof(*p));
   p->r12_max_mohm = 800;
@@ -35,11 +33,11 @@ void plug_new_plug(plug *pl) {
 }
 
 static int is_cold(const plug *pl, uint32_t now, int16_t hx, int16_t board) {
-  if ((uint32_t) (now - pl->since_ms) < pl->p.cold_ms || hx == UNKNOWN_TEMP)
+  if (since(now, pl->since_ms) < pl->p.cold_ms || !temp_known(hx))
     return 0;
   if (hx < pl->p.cold_hx_c10)
     return 1;
-  if (board == UNKNOWN_TEMP)
+  if (!temp_known(board))
     return 0;
   int32_t d = (int32_t) hx - (int32_t) board;
   return d <= pl->p.cold_near_c10 && d >= -pl->p.cold_near_c10;

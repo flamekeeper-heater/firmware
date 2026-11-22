@@ -6,8 +6,6 @@
 
 #include "../board/analog.h"
 
-static uint32_t since(uint32_t now, uint32_t then) { return (uint32_t) (now - then); }
-
 /* ---------------------------------------------------------------- the UART tap */
 
 static console *tap;

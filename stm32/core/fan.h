@@ -18,6 +18,8 @@
 
 #include <stdint.h>
 
+#include "util.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -65,14 +67,10 @@ typedef struct {
   int32_t integ;        /* integral term, permille x 1000 */
   uint16_t target;
   uint32_t target_dropped_ms; /* when the command last went down (spin-down time counts from it) */
-  uint8_t over;          /* start current above the limit */
-  uint32_t over_ms;
-  uint8_t stall_timing;
-  uint32_t stall_ms;
-  uint8_t stuck_timing;
-  uint32_t stuck_ms;
-  uint8_t overspeed_timing;
-  uint32_t overspeed_ms;
+  held over;             /* start current above the limit (re-armed after each back-off) */
+  held stall;            /* current, no turning */
+  held stuck;            /* current at zero duty */
+  held overspeed;        /* well above the command */
   uint8_t fault;
 } fan;
 

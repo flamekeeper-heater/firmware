@@ -6,9 +6,6 @@
 /* Out-slot phases. */
 enum { PH_PRECHECK = 1, PH_ARM, PH_RUN, PH_TAIL, PH_ASK, PH_READ };
 
-static uint32_t since(uint32_t now, uint32_t then) { return (uint32_t) (now - then); }
-static int reached(uint32_t now, uint32_t when) { return (int32_t) (now - when) >= 0; }
-
 void bench_init(bench *bn) { memset(bn, 0, sizeof(*bn)); }
 
 int bench_interlocks_ok(const safety *s) {

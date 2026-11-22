@@ -13,11 +13,13 @@
 
 #include <stdint.h>
 
+#include "util.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define BURN_UNKNOWN_TEMP ((int16_t) 0x8000) /* heat exchanger sensor open or not read */
+#define BURN_UNKNOWN_TEMP UNKNOWN_TEMP /* a sensor open or not read */
 
 /* The heater states the app protocol reports (link_status.state). */
 enum {
@@ -200,10 +202,8 @@ typedef struct {
   uint8_t attempt;
   uint8_t fault_latched;   /* needs burn_fault_reset() (hardware latch, CO, CO sensor) */
   uint32_t step_ms;        /* when this step began */
-  uint32_t fan_low_ms;     /* when the fan was first seen below the stall speed (0 = not low) */
-  uint8_t fan_low;
-  uint32_t supply_bad_ms;
-  uint8_t supply_bad;
+  held fan_low;            /* the fan below the stall speed while asked to turn */
+  held supply_bad;         /* the supply outside its range */
   int16_t start_c10, peak_c10;
   uint32_t flame_ms;       /* when the flame was seen */
   /* Glow on-time: this attempt's, and the last 10 minutes' in one-minute buckets (ms): the
@@ -223,8 +223,7 @@ typedef struct {
   uint32_t last_ms;
   uint8_t glow_on;
   uint32_t fuel_mp, air_mp; /* running: the pump's and the fan's power, milli-percent */
-  uint8_t board_hot;
-  uint32_t board_hot_ms;
+  held board_hot;          /* the board too hot even at the lowest power */
   burn_outputs out;
 } burn;
 

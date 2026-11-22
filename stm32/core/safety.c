@@ -3,6 +3,9 @@
 
 #include <string.h>
 
+/* One "not known" temperature everywhere: the CO module and the link use their own names for it. */
+typedef char unknown_temps_agree[CO_UNKNOWN_TEMP == UNKNOWN_TEMP && LINK_UNKNOWN_I16 == UNKNOWN_TEMP ? 1 : -1];
+
 static void on_info(void *ctx, link_info *out) {
   safety *s = (safety *) ctx;
   out->kind = LINK_KIND_STM32;

@@ -12,8 +12,6 @@ enum { MODE_OFF = 0, MODE_HEAT = 1, MODE_FAN = 2, MODE_PRIME = 3 };
 #define BUCKET_MS 60000u
 #define BUCKETS 11u
 
-#define MS(seconds) ((uint32_t) (seconds) * 1000u)
-
 /* What each step is (indexed by BURN_STEP_*). A fan retry (step 12) is all 0 here: it stands for the
  * step it goes on with (effective_step) for the state and for being active. */
 enum {
@@ -95,14 +93,10 @@ void burn_params_default(burn_params *p) {
   p->co_fitted = 1; /* the safe side: a board without the sensor shows a sensor fault until set */
 }
 
-static uint32_t since(uint32_t now, uint32_t then) { return (uint32_t) (now - then); }
-
 static void enter(burn *b, uint8_t step, uint32_t now) {
   b->step = step;
   b->step_ms = now;
 }
-
-static int temp_known(int16_t t) { return t != BURN_UNKNOWN_TEMP; }
 
 /* The heat exchanger too hot for a start: it cools down first. */
 static int hot(const burn *b, const burn_inputs *in) {
@@ -261,8 +255,8 @@ int burn_start(burn *b, uint8_t mode, uint8_t power, uint32_t now, const burn_in
   b->mode = mode;
   b->power = power > 100 ? 100 : power;
   b->attempt = 1;
-  b->fan_low = 0;
-  b->supply_bad = 0;
+  b->fan_low.on = 0;
+  b->supply_bad.on = 0;
   b->glow_attempt_ms = 0;
   b->fan_on_ms = now;
   b->air_ok = 0;
@@ -329,7 +323,7 @@ static void fan_stalled(burn *b, uint8_t why, uint32_t now, const burn_inputs *i
   b->fault = BURN_FAULT_FAN;
   b->why = why;
   b->fan_ok_ms = 0;
-  b->fan_low = 0;
+  b->fan_low.on = 0;
   if (++b->fan_stalls > b->p.fan_retries) {
     b->fault_latched = 1;
     enter(b, BURN_STEP_OFF, now);
@@ -425,49 +419,31 @@ static void checks(burn *b, uint32_t now, uint32_t dt, const burn_inputs *in) {
   }
 
   /* Board too hot even at the lowest power (FAN-4). */
-  if (temp_known(in->board_c10) && in->board_c10 >= p->board_stop_c10 && burn_active(b)) {
-    if (!b->board_hot)
-      b->board_hot = 1, b->board_hot_ms = now;
-    else if (since(now, b->board_hot_ms) >= p->board_stop_ms) {
-      fault_stop(b, BURN_FAULT_OVERHEAT, BURN_WHY_BOARD_HOT, now);
-      return;
-    }
-  } else {
-    b->board_hot = 0;
+  int board_hot = temp_known(in->board_c10) && in->board_c10 >= p->board_stop_c10 && burn_active(b);
+  if (held_for(&b->board_hot, board_hot, now, p->board_stop_ms)) {
+    fault_stop(b, BURN_FAULT_OVERHEAT, BURN_WHY_BOARD_HOT, now);
+    return;
   }
 
-  /* Supply out of range for a while. */
+  /* Supply out of range for a while (timed whether or not a run is active). */
   int bad = in->supply_cv < p->supply_low_cv || in->supply_cv > p->supply_high_cv;
-  if (bad && !b->supply_bad)
-    b->supply_bad = 1, b->supply_bad_ms = now;
-  else if (!bad)
-    b->supply_bad = 0;
-  if (b->supply_bad && since(now, b->supply_bad_ms) >= p->supply_fault_ms && burn_active(b)) {
+  if (held_for(&b->supply_bad, bad, now, p->supply_fault_ms) && burn_active(b)) {
     fault_stop(b, in->supply_cv < p->supply_low_cv ? BURN_FAULT_SUPPLY_LOW : BURN_FAULT_SUPPLY_HIGH,
                BURN_WHY_SUPPLY, now);
     return;
   }
 
   /* Fan stall (FAN-3): asked to turn, past its spin-up time, and still not turning. */
-  if (b->out.fan_rpm > 0 && since(now, b->fan_on_ms) >= p->fan_spin_up_ms) {
-    if (in->fan_rpm < p->fan_stall_rpm) {
-      if (!b->fan_low)
-        b->fan_low = 1, b->fan_low_ms = now;
-      else if (since(now, b->fan_low_ms) >= p->fan_stall_ms) {
-        fan_stalled(b, BURN_WHY_FAN_STALL, now, in); /* no air: everything off at once */
-        return;
-      }
-    } else {
-      b->fan_low = 0;
-      /* Turning as asked: the stall count forgets in time (FAN-5). */
-      if (b->fan_stalls > 0) {
-        b->fan_ok_ms += dt;
-        if (b->fan_ok_ms >= MS(p->fan_retry_forget_s))
-          b->fan_stalls = 0, b->fan_ok_ms = 0;
-      }
-    }
-  } else {
-    b->fan_low = 0;
+  int asked = b->out.fan_rpm > 0 && since(now, b->fan_on_ms) >= p->fan_spin_up_ms;
+  if (held_for(&b->fan_low, asked && in->fan_rpm < p->fan_stall_rpm, now, p->fan_stall_ms)) {
+    fan_stalled(b, BURN_WHY_FAN_STALL, now, in); /* no air: everything off at once */
+    return;
+  }
+  if (asked && in->fan_rpm >= p->fan_stall_rpm && b->fan_stalls > 0) {
+    /* Turning as asked: the stall count forgets in time (FAN-5). */
+    b->fan_ok_ms += dt;
+    if (b->fan_ok_ms >= MS(p->fan_retry_forget_s))
+      b->fan_stalls = 0, b->fan_ok_ms = 0;
   }
 }
 

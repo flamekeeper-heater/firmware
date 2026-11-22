@@ -23,6 +23,8 @@
 
 #include <stdint.h>
 
+#include "util.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -78,7 +80,7 @@ typedef struct {
   uint16_t glow_ca;        /* GLOW_ISENSE now, 0.01 A */
   uint8_t latch_armed;     /* OVERHEAT_N high */
   uint8_t pump_hs_ok;      /* PUMP_HS_FLT_N high */
-  int16_t hx_c10;          /* heat-exchanger sensor, 0x8000 when open */
+  int16_t hx_c10;          /* heat-exchanger sensor, UNKNOWN_TEMP when open */
 } checks_obs;
 
 typedef struct {

@@ -5,11 +5,13 @@
 
 #include <stdint.h>
 
+#include "../core/util.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define ANALOG_UNKNOWN_TEMP ((int16_t) 0x8000)
+#define ANALOG_UNKNOWN_TEMP UNKNOWN_TEMP
 
 /* VDDA from VREFINT (PWR-6: its calibration was taken at 3.0 V), mV. */
 uint16_t analog_vdda_mv(uint16_t vref_raw, uint16_t vrefint_cal);
