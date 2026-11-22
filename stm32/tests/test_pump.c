@@ -32,6 +32,7 @@ typedef struct {
   int hb_held;
   uint32_t ms_run;
   int in_stroke;
+  pump_out last;
 } rig;
 
 static void rig_init(rig *r, double vin) {
@@ -54,6 +55,7 @@ static void ms(rig *r, uint16_t rate, int priming) {
     m.hs_ok = 0, r->hs_ok = 0;
   m.hb_running_ms = (uint16_t) r->hb_running_ms;
   pump_out o = pump_ms(&r->pu, r->now, rate, priming, &m);
+  r->last = o;
 
   /* The heartbeat: held off when the driver asks (a re-arm then clears the high side's fault). */
   if (o.hb_hold_off) {
@@ -197,8 +199,58 @@ static void test_not_ready(void) {
   CHECK(r.strokes == 0); /* before the heartbeat has run 20 ms: nothing */
 }
 
+/* PMP-7: the overcurrent watchdog is armed from a stroke's first PWM pulse until decay_ms after
+ * its last, and only then. */
+static void test_overcurrent_window(void) {
+  rig r;
+  rig_init(&r, 12.6);
+  CHECK(r.pu.p.oc_ma == 3300 && r.pu.p.oc_hold_us == 50);
+  int armed_idle = 0, armed_in_stroke = 0, unarmed_in_stroke = 0, armed_after = 0;
+  int strokes_seen = 0, was_stroke = 0;
+  for (int k = 0; k < 1000; k++) { /* 1.6 Hz: two strokes */
+    ms(&r, 160, 0);
+    if (r.last.duty > 0) {
+      armed_in_stroke += r.last.oc_armed;
+      unarmed_in_stroke += !r.last.oc_armed;
+      if (!was_stroke)
+        strokes_seen++;
+    } else if (r.last.oc_armed) {
+      armed_after++;
+    }
+    if (strokes_seen == 0)
+      armed_idle += r.last.oc_armed; /* before the first stroke: never */
+    was_stroke = r.last.duty > 0;
+  }
+  CHECK(strokes_seen == 2);
+  CHECK(armed_idle == 0);
+  CHECK(unarmed_in_stroke == 0);
+  CHECK(armed_in_stroke == 2 * 38);
+  CHECK(armed_after == 2 * 10); /* PUMP_DECAY_WAIT_MS after each stroke */
+
+  /* A stroke stopped early (no fuel wanted): the window still runs decay_ms past its last pulse. */
+  rig r2;
+  rig_init(&r2, 12.6);
+  run(&r2, 40, 160, 0);
+  CHECK(r2.in_stroke && r2.last.oc_armed);
+  int after = 0;
+  for (int k = 0; k < 30; k++) {
+    ms(&r2, 0, 0);
+    after += r2.last.oc_armed;
+  }
+  CHECK(after == 10);
+
+  /* The watchdog's cut: a fault, the heartbeat held off, and nothing armed any more. */
+  rig r3;
+  rig_init(&r3, 12.6);
+  r3.shorted_coil = 1;
+  run(&r3, 200, 160, 0);
+  CHECK(r3.pu.fault == PUMP_FAULT_OVERCURRENT);
+  CHECK(r3.last.hb_hold_off && !r3.last.oc_armed && r3.last.duty == 0);
+}
+
 int main(void) {
   test_strokes();
+  test_overcurrent_window();
   test_rate_limits();
   test_stop_mid_stroke();
   test_faults();

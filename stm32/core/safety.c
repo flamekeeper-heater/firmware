@@ -336,12 +336,13 @@ safety_io safety_ms(safety *s, uint32_t now, const checks_obs *o, pump_meas *pm)
                          : (c->failed & CHECK_FAILS_PUMP) != 0 ? BURN_PRECHECK_FAILED_PUMP
                          : (c->failed & CHECK_FAILS_GLOW) != 0 ? BURN_PRECHECK_FAILED_GLOW
                                                                : BURN_PRECHECK_FAILED;
-  safety_io io = {out.heartbeat, out.glow_en, out.latch_reset, out.pump_pulse_us, 0};
+  safety_io io = {out.heartbeat, out.glow_en, out.latch_reset, out.pump_pulse_us, 0, 0};
   if (!checks_busy(c) && !was_power_up && !was_pre_start) {
     /* The pump strokes, and the heartbeat the burn needs unless the pump holds it off. */
     pm->hb_running_ms = s->hb_running_ms;
     pump_out po = pump_ms(&s->pump, now, s->burn.out.pump_cHz, s->burn.step == BURN_STEP_PRIMING, pm);
     io.pump_duty = po.duty;
+    io.pump_oc_armed = po.oc_armed;
     io.heartbeat = heartbeat_wanted(&s->burn) && !po.hb_hold_off ? CHECKS_HB_RUNNING : CHECKS_HB_STOPPED;
   }
   if (io.heartbeat == CHECKS_HB_RUNNING)

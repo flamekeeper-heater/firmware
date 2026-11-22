@@ -2,7 +2,8 @@
  * millisecond from the main loop, it schedules the core's passes:
  *
  *   every 1 ms   fresh ADC scan, the link's received bytes, the self-tests and the pump strokes
- *   every 5 ms   the glow planner's next pulse
+ *                (and the pump's overcurrent watchdog, armed for each stroke)
+ *   every 5 ms   the glow planner's next pulse, once per glow period on that period's readings
  *   every 10 ms  the safety loop pass: the sequencer, the fan, the slow readings, the flash; then,
  *                only if that pass completed, the heartbeat's next burst and the watchdog (PMP-1,
  *                WDG-16)
@@ -28,6 +29,7 @@ typedef struct {
   uint8_t latch_was_armed;   /* the overheat latch has been armed since the reset (OVH-1) */
   uint8_t want_burst;        /* the core wants the heartbeat running */
   uint8_t glow_en_test, glow_en_planner;
+  uint8_t pump_cut;          /* the overcurrent watchdog cut a stroke; kept until the core latched it */
   uint32_t last_glow_ms, last_loop_ms;
   uint32_t loops, bursts, refreshes; /* for the tests and the logs */
 } board;

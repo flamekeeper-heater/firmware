@@ -114,10 +114,15 @@ void board_ms(board *b, uint32_t now) {
   pump_meas pm;
   pm.vin_cv = vin;
   pm.i_ma = analog_pump_ma(b->raw[HAL_ADC_PUMP_I], v);
-  pm.overcurrent = hal_pump_overcurrent();
+  /* PMP-7: the watchdog's interrupt has already cut; the report stays until the core latches it. */
+  if (hal_pump_overcurrent())
+    b->pump_cut = 1;
+  pm.overcurrent = b->pump_cut;
   pm.hs_ok = o.pump_hs_ok;
   pm.hb_running_ms = 0;
   safety_io io = safety_ms(&b->s, now, &o, &pm);
+  if (b->s.pump.fault != PUMP_FAULT_NONE)
+    b->pump_cut = 0;
 
   /* A running heartbeat is re-armed by the loop pass below; a static level or a stop is at once.
    * Going from stopped to running, the first burst starts now (the last pass completed). */
@@ -134,18 +139,24 @@ void board_ms(board *b, uint32_t now) {
                                                          : HAL_HB_STOPPED);
   }
   hal_latch_reset(io.latch_reset);
+  hal_pump_oc_arm(io.pump_oc_armed, analog_pump_oc_raw(b->s.pump.p.oc_ma, v), b->s.pump.p.oc_hold_us);
   hal_pump_duty(io.pump_duty);
   if (io.pump_pulse_us)
     hal_pump_test_pulse_us(io.pump_pulse_us);
   b->glow_en_test = io.glow_en;
 
-  /* Every 5 ms: the glow planner's next pulse. */
-  if (since(now, b->last_glow_ms) >= 5u) {
+  /* Every glow period (5 ms): the planner's next pulse, from the readings that period's timer took
+   * in its pulse and in the gap before it (GLW-6). Should the periods stop coming (the timer's
+   * interrupt lost), it still steps every 10 ms, with no readings, so GLOW_EN keeps following the
+   * burn and only probes go out. */
+  hal_glow_sample gs;
+  int period = hal_glow_period(&gs);
+  if (period || since(now, b->last_glow_ms) >= 10u) {
     b->last_glow_ms = now;
     glow_meas gm;
-    gm.vin_cv = vin;
-    gm.pulse_ca = analog_glow_ca(hal_glow_pulse_raw(), v);
-    gm.gap_ca = analog_glow_ca(b->raw[HAL_ADC_GLOW_I], v);
+    gm.vin_cv = period ? analog_vin_cv(gs.gap_vin, v) : vin;
+    gm.pulse_ca = period ? analog_glow_ca(gs.pulse_i, v) : 0;
+    gm.gap_ca = period ? analog_glow_ca(gs.gap_i, v) : 0;
     gm.airflow_ok = (uint8_t) (hal_hall_rpm() >= b->s.burn.p.glow_min_fan_rpm);
     gm.board_c10 = analog_board_c10(b->raw[HAL_ADC_BOARD]);
     gm.high_side_trip = (uint8_t) !hal_pwr_flt_n();

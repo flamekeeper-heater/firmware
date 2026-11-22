@@ -26,11 +26,28 @@ enum {
   HAL_ADC_COUNT
 };
 
-void hal_adc_scan(uint16_t raw[HAL_ADC_COUNT]); /* one fresh conversion of every channel */
+/* The latest conversion of every channel. The ADC scans them all without a break (the ADC schedule
+ * in hal_stm32g0.c), so each is at most one scan old. */
+void hal_adc_scan(uint16_t raw[HAL_ADC_COUNT]);
 uint16_t hal_vrefint_cal(void);                 /* the factory VREFINT reading at VDDA = 3.0 V */
-uint16_t hal_glow_pulse_raw(void);  /* GLOW_ISENSE sampled 100-150 us into the last pulse */
 uint16_t hal_pump_peak_raw(void);   /* the highest PUMP_ISENSE during the last test pulse */
-uint8_t hal_pump_overcurrent(void); /* the ADC watchdog cut a stroke since the last call */
+
+/* One glow period's readings (GLW-6), picked from the scan by GLOW_PWM's timer at fixed instants. */
+typedef struct {
+  uint16_t pulse_i; /* GLOW_ISENSE inside this period's pulse, 105-125 us after it began; 0 when no
+                       pulse was on then */
+  uint16_t gap_i;   /* GLOW_ISENSE at the end of the gap before that pulse */
+  uint16_t gap_vin; /* VIN_SENSE then */
+} hal_glow_sample;
+/* 1 once per glow period (5 ms), after its in-pulse reading: that period's readings. */
+uint8_t hal_glow_period(hal_glow_sample *s);
+
+/* PMP-7: arms the ADC watchdog on PUMP_ISENSE (counts above threshold_raw for longer than hold_us)
+ * while on; its interrupt sets PUMP_CMD low and stops the heartbeat by itself, then reports here.
+ * Called every millisecond; the core turns it on from a stroke's first pulse until the coil's
+ * decay window after its last. */
+void hal_pump_oc_arm(uint8_t on, uint16_t threshold_raw, uint16_t hold_us);
+uint8_t hal_pump_overcurrent(void); /* the watchdog cut a stroke since the last call */
 uint16_t hal_hall_rpm(void);        /* 0 when no edge for a while */
 
 uint8_t hal_overheat_n(void);    /* OVERHEAT_N_MCU (PC14): 1 = the latch is armed */

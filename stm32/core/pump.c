@@ -14,6 +14,8 @@ void pump_params_default(pump_params *p) {
   p->gap_ma = 100;
   p->rise_ma = 300;
   p->rearm_ms = 10;
+  p->oc_ma = 3300;
+  p->oc_hold_us = 50;
 }
 
 static uint32_t since(uint32_t now, uint32_t then) { return (uint32_t) (now - then); }
@@ -33,15 +35,15 @@ static uint16_t stroke_duty(const pump *pu, uint16_t vin_cv) {
 }
 
 static pump_out fault(pump *pu, uint8_t f) {
-  pump_out o = {0, 1};
+  pump_out o = {0, 1, 0};
   pu->fault = f;
   pu->stroking = 0;
   return o;
 }
 
-pump_out pump_ms(pump *pu, uint32_t now, uint16_t rate_cHz, int priming, const pump_meas *m) {
+static pump_out step(pump *pu, uint32_t now, uint16_t rate_cHz, int priming, const pump_meas *m) {
   const pump_params *p = &pu->p;
-  pump_out out = {0, 0};
+  pump_out out = {0, 0, 0};
 
   if (pu->fault != PUMP_FAULT_NONE) {
     out.hb_hold_off = 1; /* PMP-7, PMP-8: the heartbeat stays stopped */
@@ -126,5 +128,12 @@ pump_out pump_ms(pump *pu, uint32_t now, uint16_t rate_cHz, int priming, const p
     pu->next_ms = now + period;
     out.duty = stroke_duty(pu, m->vin_cv);
   }
+  return out;
+}
+
+pump_out pump_ms(pump *pu, uint32_t now, uint16_t rate_cHz, int priming, const pump_meas *m) {
+  pump_out out = step(pu, now, rate_cHz, priming, m);
+  /* PMP-7: from a stroke's first pulse until decay_ms after its last. */
+  out.oc_armed = (uint8_t) (pu->fault == PUMP_FAULT_NONE && (pu->stroking || pu->after_stroke));
   return out;
 }

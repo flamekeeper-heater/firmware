@@ -174,9 +174,11 @@ and while priming.
 `stm32/core/pump.*` turns the fuel rate into strokes, one millisecond at a time: 38 ms strokes at a
 12 V equivalent duty whatever the supply, at most 6 Hz (10 Hz priming), the first only once the
 heartbeat has run 20 ms with the high side reporting no fault. It stops the pump and the heartbeat
-for the hardware overcurrent cut, current still flowing 10 ms after a stroke or appearing between
-strokes, and a stroke with no current rise (an open coil). A high-side fault gets one heartbeat
-restart per run; a second locks out.
+for the overcurrent cut, current still flowing 10 ms after a stroke or appearing between strokes,
+and a stroke with no current rise (an open coil). A high-side fault gets one heartbeat restart per
+run; a second locks out. The overcurrent cut is the ADC's watchdog, armed from a stroke's first
+pulse until 10 ms after its last: above 3.3 A on two scans in a row (40 us), its interrupt sets
+PUMP_CMD low and stops the heartbeat itself, then the driver latches the fault.
 
 `stm32/core/plug.*` checks the glow plug's type against its setting before a start heats it (a
 12 V plug on a 24 V supply would overheat), from the resistance the first glow probe measures. On
@@ -197,14 +199,23 @@ pump's 6 Hz ceiling are not settings.
 `stm32/board/` runs the core on the chip through a small hardware interface (`hal.h`): the ADC
 counts become volts, amps and temperatures (the thermistor curves are generated tables, since the
 chip has no maths library), and a 1 ms tick schedules the self-tests and pump strokes (1 ms), the
-glow planner (5 ms) and the safety loop pass (10 ms). Only a completed pass re-arms the heartbeat's
-burst and refreshes the watchdog. Saved data goes to flash only with the heater off.
+glow planner (once per 5 ms glow period) and the safety loop pass (10 ms). Only a completed pass
+re-arms the heartbeat's burst and refreshes the watchdog. Saved data goes to flash only with the
+heater off.
+
+**The ADC schedule.** The one ADC scans every channel back to back, for ever, into a DMA buffer
+(20 us a scan), and nothing else starts a conversion: the main loop copies the buffer each
+millisecond; the glow timer picks GLOW_ISENSE 105-125 us into each pulse (settled, inside the
+shortest 150 us pulse) and GLOW_ISENSE and VIN in the gap just before the next pulse, and the
+planner runs on those once per period; the analog watchdogs watch every PUMP_ISENSE conversion
+during strokes. A stopped ADC is restarted from its first channel, so no reading lands in another
+channel's place.
 
 `stm32/hal/` is that interface on the STM32G030's registers (no vendor HAL, no C library), with the
 start-up code, the linker script and `main`. It is built, but has not run on a chip yet: the clock
-tree, the alternate functions, the DMA request for the heartbeat burst, the ADC order and the flash
-programming all need checking on the first board or a NUCLEO-G031K8. Not done yet: the pump's
-overcurrent watchdog (PMP-7) and the CO sensor.
+tree, the alternate functions, the DMA requests, the ADC order, scan time and pick instants, the
+overcurrent cut's latency and the flash programming all need checking on the first board or a
+NUCLEO-G031K8. Not done yet: the CO sensor.
 
 `stm32/core/safety.*` joins them all to the link: the start-number rule, the dead-man, the status and
 the update handshake.

@@ -29,6 +29,12 @@ uint16_t analog_glow_ca(uint16_t raw, uint16_t vdda_mv) { return clamp16(analog_
 
 uint16_t analog_pump_ma(uint16_t raw, uint16_t vdda_mv) { return clamp16(analog_mv(raw, vdda_mv) * 1000u / 450u); }
 
+uint16_t analog_pump_oc_raw(uint16_t ma, uint16_t vdda_mv) {
+  uint32_t mv = (uint32_t) ma * 450u / 1000u; /* PMP-17: 0.45 V per A */
+  uint32_t raw = mv * 4095u / (vdda_mv ? vdda_mv : 3300u);
+  return (uint16_t) (raw > 4094u ? 4094u : raw);
+}
+
 uint16_t analog_fan_ma(uint16_t raw, uint16_t vdda_mv) { return clamp16(analog_mv(raw, vdda_mv) * 1000u / 15u); }
 
 /* Counts fall as the temperature rises: interpolate between the table's points. */

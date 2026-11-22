@@ -104,4 +104,22 @@
 #define IRQ_TIM3 16u
 #define IRQ_USART2 28u
 
+/* The ADC schedule (hal_stm32g0.c): the scan by DMA, the analog watchdogs, the glow timer's gap
+ * compare, interrupt priorities. Offsets from RM0454 sections 9.6, 10.6, 14.12. */
+#define ADC_IER REG(ADC + 0x04)
+#define ADC_AWD1TR REG(ADC + 0x20)
+#define ADC_AWD2TR REG(ADC + 0x24)
+#define ADC_AWD2CR REG(ADC + 0xA0)
+#define DMA_ISR REG(DMA1 + 0x00)
+#define DMA_IFCR REG(DMA1 + 0x04)
+#define DMA_CCR2 REG(DMA1 + 0x1C)
+#define DMA_CNDTR2 REG(DMA1 + 0x20)
+#define DMA_CPAR2 REG(DMA1 + 0x24)
+#define DMA_CMAR2 REG(DMA1 + 0x28)
+#define DMAMUX_C1CR REG(0x40020804u)
+#define DMAMUX_REQ_ADC 5u
+#define TIM_CCR3(t) REG((t) + 0x3C)
+#define NVIC_IPR(n) REG(0xE000E400u + 4u * (n)) /* word access only on the M0+ */
+#define IRQ_ADC 12u
+
 #endif /* FLAMEKEEPER_STM32G030_H */
