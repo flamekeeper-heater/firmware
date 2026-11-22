@@ -253,6 +253,8 @@ erased. DETAIL carries the state and a rough ppm reading.
   (whole cycles, every way a run ends, the glow caps and the airflow rule), and end to end with the
   ESP32's real link client over a byte wire (dead-man, an MCU reset mid-run).
 - `common/*/tests/run.sh`: the link codec and the CO alarm.
+- `stm32/tools/check_registers.py`: the driver's register map (`stm32/hal/`: bases, offsets, every
+  bit it writes, IRQ numbers, the flash layout) against ST's SVD for the STM32G030; usage at its top.
 - `esp32/tools/boot_test.sh`: boots a compiled image in Espressif's QEMU and fails on a crash or a
   restart. A C6 build checks its own signature at start-up, so pass the signed app with `--app`.
   The C6's log goes to USB Serial/JTAG, which QEMU does not emulate, so a clean C6 run ends with

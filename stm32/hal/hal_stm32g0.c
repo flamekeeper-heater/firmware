@@ -572,7 +572,7 @@ int hal_flash_write(uint8_t page, const uint8_t *d, size_t n) {
   }
   FLASH_KEYR = 0x45670123u;
   FLASH_KEYR = 0xCDEF89ABu;
-  FLASH_SR = 0xFFFFu; /* clear old errors */
+  FLASH_SR = 0x83FBu; /* clear old errors and EOP */
   FLASH_CR = (1u << 1) | ((30u + page) << 3) | (1u << 16); /* erase the page */
   while (FLASH_SR & (1u << 16)) {
   }
@@ -587,7 +587,7 @@ int hal_flash_write(uint8_t page, const uint8_t *d, size_t n) {
     }
   }
   FLASH_CR = 1u << 31; /* lock */
-  if (FLASH_SR & 0xC3FAu)
+  if (FLASH_SR & 0x83FAu) /* OPERR..FASTERR, OPTVERR */
     return -1;
   flash_unreadable &= (uint8_t) ~(1u << page); /* erased and written afresh */
   return 0;
@@ -603,7 +603,7 @@ int hal_flash_program(uint8_t page, uint16_t offset, const uint8_t *d, size_t n)
   }
   FLASH_KEYR = 0x45670123u;
   FLASH_KEYR = 0xCDEF89ABu;
-  FLASH_SR = 0xFFFFu;
+  FLASH_SR = 0x83FBu; /* clear EOP and the error flags */
   FLASH_CR = 1u; /* program */
   uint32_t a = page_addr(page) + offset;
   for (size_t i = 0; i < n; i += 8) {
@@ -615,7 +615,7 @@ int hal_flash_program(uint8_t page, uint16_t offset, const uint8_t *d, size_t n)
     }
   }
   FLASH_CR = 1u << 31; /* lock */
-  return (FLASH_SR & 0xC3FAu) ? -1 : 0;
+  return (FLASH_SR & 0x83FAu) ? -1 : 0; /* OPERR..FASTERR, OPTVERR */
 }
 
 /* ---------------------------------------------------------------- start-up */
