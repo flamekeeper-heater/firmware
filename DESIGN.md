@@ -148,14 +148,16 @@ current read in the last pulse scaled by the supply since:
 
 `stm32/core/fan.*` drives the fan's low-side switch (25 kHz) from the speed the sequencer wants:
 
-- A speed loop on the Hall reading, at most 10 V average at the motor whatever the supply.
+- A speed loop on the Hall reading, at most 10 V average at the motor whatever the supply. Its
+  integral does not wind up while the fan turns below half its command (spinning up or blocked).
 - The start limit: the duty rises from 0 over at least 1 s, and while the fan turns below half its
   command the motor current (the shunt's average switch current divided by the duty) is held at or
   below 6 A, so a frozen fan never reaches the fan's one-time 8 A fuse. Below 10 % duty the
   estimate is too coarse and the ramp runs on time alone.
 - Faults: a stalled motor (current, no Hall edges, 1 s), current at zero duty (the switch stuck
-  on), and speed with no command or 20 % over it once the fan has had 30 s to slow down. A stall
-  stops everything at once and the sequencer retries it; the others stop the fuel and burn off.
+  on), and speed with no command, or 20 % over it for 0.5 s, once the fan has had 30 s to slow
+  down. A stall stops everything at once and the sequencer retries it; the others stop the fuel
+  and burn off.
 
 `stm32/core/checks.*` tests the interlocks themselves, in 1 ms steps the hardware layer carries
 out (heartbeat modes, the glow enable, single short pump pulses, the latch reset line):

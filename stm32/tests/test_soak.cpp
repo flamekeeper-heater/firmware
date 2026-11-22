@@ -21,6 +21,7 @@
 //               does, or more leniently)
 //   latch       a latched fault clears only with a fault reset the MCU accepted (or an MCU reset)
 //   deadman     2 s without a valid frame: nothing still starting or running
+//   fan_false   no fan speed fault (overspeed, turning uncommanded) unless the fan switch is stuck on
 //   live        and the other way round: the fan turns when asked (and nothing stops it), the glow
 //               stage pulses when asked (with airflow, a cool board and room in its budget), the pump
 //               strokes when asked (with a healthy stage)
@@ -132,6 +133,7 @@ struct Bench : LinkTransport {
   uint8_t last_result = 0;
   bool pulsed = false, stroked = false;  // this pass
   bool fan_stop_excused = false;
+  bool fan_stuck_seen = false;  // the fan switch was stuck on since the last reset of its fault
   uint32_t fan_slow_ms = 0, glow_wait_ms = 0, pump_wait_ms = 0;
 
   // faults
@@ -215,6 +217,7 @@ struct Bench : LinkTransport {
     oracle_seen = false;
     heard = false;
     latched_shadow = s.burn.fault_latched;
+    fan_stuck_seen = fan_stuck_on;
     stall_retries = 0, turning_ms = 0;
     attempt_glow_ms = 0;
     std::fill(glow_ring.begin(), glow_ring.end(), 0);  // the window is the MCU's since its reset
@@ -261,6 +264,8 @@ struct Bench : LinkTransport {
       to_esp.insert(to_esp.end(), reply, reply + n);
       if (op == LINK_OP_FAULT_RESET && result == LINK_OK)
         reset_ok = true, st.fault_resets++, stall_retries = 0, fan_stop_excused = false;  // the lockout goes too
+      if (reset_ok)
+        fan_stuck_seen = fan_stuck_on;
     }
     if (before_step == BURN_STEP_OFF && s.burn.step == BURN_STEP_COOLDOWN && reset_ok) {
       // A fault reset on a hot heater cools it down, as after an MCU reset: no fuel, no glow.
@@ -487,6 +492,12 @@ struct Bench : LinkTransport {
       if (turning_ms >= uint32_t(p.fan_retry_forget_s) * SEC)
         stall_retries = 0;
     }
+
+    // The fan turns only from its duty here, unless its switch is stuck on: a speed fault (FAN-3,
+    // FAN-6) without that is a false alarm.
+    fan_stuck_seen = fan_stuck_seen || fan_stuck_on;
+    if ((s.fan.fault == FAN_FAULT_OVERSPEED || s.fan.fault == FAN_FAULT_UNCOMMANDED) && !fan_stuck_seen)
+      fail("fan_false", "a fan speed fault with the fan driven only by its duty");
 
     // The stages' parameters are not settings: they never change.
     glow_params gp;
@@ -765,6 +776,11 @@ void regression(const char *name, const std::vector<Ev> &ev, uint32_t end_ms) {
 }
 
 void regressions() {
+  // A fan that froze for 3 s in ignition and freed before a stall was declared: the speed loop's
+  // integral wound up while it slowed, the freed fan overshot past 1.2 x its command and the fan
+  // stage latched an overspeed fault (a burn-off and a fault reset for nothing).
+  regression("fan_freed_overspeed",
+             {{300 * SEC, U_HEAT, 0, 0}, {340 * SEC, F_FAN_STALL, 1, 0}, {343 * SEC, F_FAN_STALL, 0, 0}}, 420 * SEC);
   // A fan that froze in a run locked out in the cooldown and stopped with the heater hot; the user
   // freed it and reset the fault, and the heater stayed off and hot, nothing cooling it (seed 22,
   // moved earlier, the fan freed before the reset).

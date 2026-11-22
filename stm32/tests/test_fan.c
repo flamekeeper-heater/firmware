@@ -202,6 +202,28 @@ static void test_uncommanded_and_overspeed(void) {
   CHECK(r2.f.fault == FAN_FAULT_OVERSPEED);
 }
 
+static void test_freed_after_a_short_freeze(void) {
+  /* Frozen for 3 s at the start speed, freed before a stall is declared: the integral did not wind
+   * up while the fan was far below its command, so the freed fan does not overshoot into an
+   * overspeed fault (and a brief overshoot would not latch one either). */
+  rig r;
+  rig_init(&r, 0.9, 12.6);
+  run(&r, 40000, 1500);
+  CHECK(fabs(r.mo.rpm - 1500) < 60);
+  r.mo.frozen = 1;
+  run(&r, 900, 1500); /* the stall check needs 1 s of current with no turning */
+  r.mo.frozen = 0;
+  double peak = 0;
+  for (int i = 0; i < 1000; i++) {
+    tick(&r, 1500);
+    if (r.mo.rpm > peak)
+      peak = r.mo.rpm;
+  }
+  CHECK(r.f.fault == FAN_FAULT_NONE);
+  CHECK(peak < 1500 * 1.2);
+  CHECK(fabs(r.mo.rpm - 1500) < 60);
+}
+
 static void test_off_is_off(void) {
   rig r;
   rig_init(&r, 0.9, 12.6);
@@ -219,6 +241,7 @@ int main(void) {
   test_spin_down_is_not_a_fault();
   test_stuck_on();
   test_uncommanded_and_overspeed();
+  test_freed_after_a_short_freeze();
   test_off_is_off();
   printf("fan: %d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;

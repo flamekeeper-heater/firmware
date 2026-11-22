@@ -37,7 +37,8 @@ typedef struct {
   uint16_t stuck_on_ma;         /* average switch current at zero duty above this */
   uint16_t stuck_on_ms;
   uint16_t spin_down_ms;        /* time a fan gets to slow down before speed counts as a fault */
-  uint8_t overspeed_percent;    /* above the command by more than this */
+  uint8_t overspeed_percent;    /* above the command by more than this ... */
+  uint16_t overspeed_ms;        /* ... this long (a fan freed from a short block overshoots briefly) */
 } fan_params;
 
 void fan_params_default(fan_params *p);
@@ -69,6 +70,8 @@ typedef struct {
   uint32_t stall_ms;
   uint8_t stuck_timing;
   uint32_t stuck_ms;
+  uint8_t overspeed_timing;
+  uint32_t overspeed_ms;
   uint8_t fault;
 } fan;
 

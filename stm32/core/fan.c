@@ -21,6 +21,7 @@ void fan_params_default(fan_params *p) {
   p->stuck_on_ms = 100;
   p->spin_down_ms = 30000;
   p->overspeed_percent = 20;
+  p->overspeed_ms = 500;
 }
 
 static uint32_t since(uint32_t now, uint32_t then) { return (uint32_t) (now - then); }
@@ -85,8 +86,14 @@ static uint16_t step(fan *f, uint32_t now_ms, uint16_t target_rpm, uint16_t open
     if (target_rpm == 0 && m->rpm >= p->turning_rpm && spun_down)
       return fail(f, FAN_FAULT_UNCOMMANDED);
     if (target_rpm > 0 && spun_down &&
-        (uint32_t) m->rpm * 100u > (uint32_t) target_rpm * (100u + p->overspeed_percent))
-      return fail(f, FAN_FAULT_OVERSPEED);
+        (uint32_t) m->rpm * 100u > (uint32_t) target_rpm * (100u + p->overspeed_percent)) {
+      if (!f->overspeed_timing)
+        f->overspeed_timing = 1, f->overspeed_ms = now_ms;
+      else if (since(now_ms, f->overspeed_ms) >= p->overspeed_ms)
+        return fail(f, FAN_FAULT_OVERSPEED);
+    } else {
+      f->overspeed_timing = 0;
+    }
 
     if (target_rpm == 0) {
       f->integ = 0;
@@ -156,8 +163,11 @@ static uint16_t step(fan *f, uint32_t now_ms, uint16_t target_rpm, uint16_t open
   }
 
   /* No integral wind-up while the ramp, a limit or zero holds the duty away from what the loop
-   * wants. */
-  if (open_permille == 0 && !(err > 0 && want < free_want) && !(err < 0 && want > free_want))
+   * wants, nor upwards while the fan turns below half its command (spinning up, or blocked): the
+   * feed-forward carries it there, and a fan freed from a block would overshoot on the wind-up. */
+  int below_half = (uint32_t) m->rpm * 2u < target_rpm;
+  if (open_permille == 0 && !(err > 0 && want < free_want) && !(err < 0 && want > free_want) &&
+      !(err > 0 && below_half && integ > f->integ))
     f->integ = integ;
   return set(f, (uint16_t) want);
 }
