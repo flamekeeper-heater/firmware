@@ -218,7 +218,8 @@ void LinkClient::on_reply_(const uint8_t *f) {
       Param *pp = this->param_(this->out_id_);
       if (pp == nullptr || pp->help_done)
         return;
-      if (result != LINK_OK || n < LINK_PARAM_HELP_FIXED || get_u16(p) != this->out_id_ || p[2] != pp->help.size()) {
+      if (result != LINK_OK || n < LINK_PARAM_HELP_FIXED || get_u16(p) != this->out_id_ || p[2] != pp->help.size() ||
+          p[3] < p[2]) {
         pp->help.clear();
         pp->help_done = true;  // none, or a muddle: left without one
         return;
