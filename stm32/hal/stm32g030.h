@@ -166,5 +166,7 @@
 #define FLASH_ECCR_SYSF_ECC (1u << 20)
 #define FLASH_ECCR_ECCCIE (1u << 24)
 #define FLASH_ECCR_ECCD (1u << 31)
+#define FLASH_OPTR_IWDG_STOP (1u << 17)  /* 0: the IWDG frozen in stop mode */
+#define FLASH_OPTR_IWDG_STDBY (1u << 18) /* 0: the IWDG frozen in standby */
 
 #endif /* FLAMEKEEPER_STM32G030_H */

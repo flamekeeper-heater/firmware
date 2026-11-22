@@ -64,7 +64,9 @@ uint8_t hal_reset_reason(void) {
 uint8_t hal_option_faults(void) {
   uint32_t optr = FLASH_OPTR;
   int iwdg_sw = (optr >> 16) & 1u, nboot_sel = (optr >> 24) & 1u, optverr = (FLASH_SR >> 15) & 1u;
-  return (uint8_t) ((iwdg_sw || nboot_sel || optverr) ? LINK_CHECK_OPTION_BYTES : 0u);
+  const uint32_t runs = FLASH_OPTR_IWDG_STOP | FLASH_OPTR_IWDG_STDBY; /* both 1 (their default) */
+  int iwdg_frozen = (optr & runs) != runs;
+  return (uint8_t) ((iwdg_sw || iwdg_frozen || nboot_sel || optverr) ? LINK_CHECK_OPTION_BYTES : 0u);
 }
 
 /* WDG-2, WDG-3: started on every start, about 80 ms (LSI 32 kHz / 4, 640). */
