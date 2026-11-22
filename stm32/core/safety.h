@@ -9,6 +9,7 @@
 
 #include "../../common/link/link.h"
 #include "burn.h"
+#include "fan.h"
 #include "glow.h"
 
 #ifdef __cplusplus
@@ -30,6 +31,7 @@ extern "C" {
 typedef struct {
   burn burn;
   glow glow;
+  fan fan;
   link_mcu mcu;
   link_parser parser;
   link_start_gate gate;
@@ -48,8 +50,8 @@ typedef struct {
 } safety;
 
 /* reset_reason and checks come from the start-up code. */
-void safety_init(safety *s, const burn_params *p, const glow_params *gp, uint32_t now,
-                 const burn_inputs *in, uint8_t reset_reason, uint8_t checks);
+void safety_init(safety *s, const burn_params *p, const glow_params *gp, const fan_params *fp,
+                 uint32_t now, const burn_inputs *in, uint8_t reset_reason, uint8_t checks);
 
 /* One received byte. When it completes a request, the reply is written to reply (LINK_FRAME_MAX
  * bytes) and its length returned; otherwise 0. */
@@ -63,6 +65,10 @@ const burn_outputs *safety_outputs(const safety *s);
 /* One glow PWM period (5 ms): the planner turns the sequencer's glow request into the next pulse.
  * The hardware layer fills m with that period's readings. */
 glow_cmd safety_glow_period(safety *s, uint32_t now, glow_meas *m);
+
+/* One pass of the fan stage: the speed the sequencer wants, as a PWM duty (permille), from that
+ * pass's fan readings. Call it every pass, after safety_step. */
+uint16_t safety_fan_step(safety *s, uint32_t now, const fan_meas *m);
 
 /* A heat start waits while more than this share of the glow plug's heat budget is used (after any
  * reset it starts full and drains in 240 s). PROVISIONAL. */

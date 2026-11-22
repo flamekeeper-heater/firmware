@@ -34,7 +34,7 @@ typedef struct {
   burn b;
   heater_model m;
   uint32_t now;
-  uint8_t latch, co, glow_fault;
+  uint8_t latch, co, glow_fault, fan_fault;
   /* What the run did. */
   uint32_t glow_ms, glow_no_air_ms, pump_ms, max_glow_attempt_ms;
   uint8_t max_step_seen;
@@ -48,6 +48,7 @@ static burn_inputs inputs(const rig *r) {
   in.overheat_latch = r->latch;
   in.co_alarm = r->co;
   in.glow_fault = r->glow_fault;
+  in.fan_fault = r->fan_fault;
   return in;
 }
 
@@ -274,6 +275,34 @@ static void test_glow_stage_fault(void) {
   CHECK_EQ(start(&r, HEAT, 50), 0x2F); /* no restart: the board needs looking at */
 }
 
+static void test_fan_stage_faults(void) {
+  /* The fan's switch stuck on while running: fuel off, burn off and cool (the fan runs anyway). */
+  rig r;
+  rig_init(&r, 0, 10);
+  CHECK_EQ(start(&r, HEAT, 50), 0);
+  CHECK(run_until_step(&r, BURN_STEP_RUNNING, 5 * MIN));
+  r.fan_fault = 2;
+  run(&r, TICK);
+  CHECK_EQ(r.b.fault, BURN_FAULT_FAN);
+  CHECK_EQ(r.b.why, BURN_WHY_FAN_STAGE);
+  CHECK_EQ(r.b.step, BURN_STEP_BURN_OFF);
+  CHECK_EQ(r.b.out.pump_cHz, 0);
+  CHECK(r.b.fault_latched);
+
+  /* A stalled fan reported by the fan stage: everything off at once (no air to cool with). */
+  rig r2;
+  rig_init(&r2, 0, 10);
+  CHECK_EQ(start(&r2, HEAT, 50), 0);
+  CHECK(run_until_step(&r2, BURN_STEP_RUNNING, 5 * MIN));
+  r2.fan_fault = 1;
+  run(&r2, TICK);
+  CHECK_EQ(r2.b.step, BURN_STEP_OFF);
+  CHECK_EQ(r2.b.why, BURN_WHY_FAN_STALL);
+  CHECK_EQ(r2.b.out.fan_rpm, 0);
+  CHECK_EQ(r2.b.out.pump_cHz, 0);
+  CHECK_EQ(start(&r2, HEAT, 50), 0x2F);
+}
+
 static void test_fan_stall(void) {
   rig r;
   rig_init(&r, 0, 10);
@@ -405,6 +434,7 @@ int main(void) {
   test_overheat_latch();
   test_co_alarm();
   test_glow_stage_fault();
+  test_fan_stage_faults();
   test_fan_stall();
   test_sensor_open();
   test_reset_while_hot();

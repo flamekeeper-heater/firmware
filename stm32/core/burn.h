@@ -76,6 +76,7 @@ enum {
   BURN_WHY_COOLDOWN_LIMIT = 12, /* the heat exchanger never cooled within the cooldown limit */
   BURN_WHY_CO = 13,
   BURN_WHY_GLOW_STAGE = 14,     /* the glow planner stopped: stuck low side or repeated trips */
+  BURN_WHY_FAN_STAGE = 15,      /* the fan's switch stuck on, or the fan turning against its command */
 };
 
 typedef struct {
@@ -130,6 +131,7 @@ typedef struct {
   uint8_t overheat_latch;  /* 1: the hardware overheat latch has tripped (OVERHEAT_N low) */
   uint8_t co_alarm;        /* 1: the CO alarm is on */
   uint8_t glow_fault;      /* 1: the glow stage failed (low side stuck on, repeated trips) */
+  uint8_t fan_fault;       /* the fan stage's fault (fan.h FAN_FAULT_*), 0 none */
 } burn_inputs;
 
 /* What the power stages should do now. */

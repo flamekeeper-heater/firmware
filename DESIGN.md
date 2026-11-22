@@ -133,7 +133,18 @@ current read in the last pulse scaled by the supply since:
 - Current between pulses (the low side stuck on) or repeated high-side trips: glow off at once
   and a fault that needs a reset. No airflow or a hot board: no glow.
 
-`stm32/core/safety.*` joins both to the link: the start-number rule, the dead-man, the status and
+`stm32/core/fan.*` drives the fan's low-side switch (25 kHz) from the speed the sequencer wants:
+
+- A speed loop on the Hall reading, at most 10 V average at the motor whatever the supply.
+- The start limit: the duty rises from 0 over at least 1 s, and while the fan turns below half its
+  command the motor current (the shunt's average switch current divided by the duty) is held at or
+  below 6 A, so a frozen fan never reaches the fan's one-time 8 A fuse. Below 10 % duty the
+  estimate is too coarse and the ramp runs on time alone.
+- Faults: a stalled motor (current, no Hall edges, 1 s), current at zero duty (the switch stuck
+  on), and speed with no command or 20 % over it once the fan has had 30 s to slow down. A stall
+  stops everything at once; the others stop the fuel and burn off.
+
+`stm32/core/safety.*` joins all three to the link: the start-number rule, the dead-man, the status and
 the update handshake.
 
 ## Firmware updates and signing

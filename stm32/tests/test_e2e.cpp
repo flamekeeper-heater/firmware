@@ -37,6 +37,7 @@ struct Bench : LinkTransport {
   bool esp_alive = true;  // false: the ESP32 is hung (its loop stops)
   // The glow plug: 0.2 Ohm cold to 1.0 Ohm hot, on a 12.6 V supply.
   double plug_heat = 0, last_i = 0, glow_w = 0;
+  uint16_t fan_duty = 0;
   std::deque<uint8_t> to_esp;
   LinkClient client{this};
 
@@ -46,8 +47,10 @@ struct Bench : LinkTransport {
     burn_params_default(&p);
     glow_params gp;
     glow_params_default(&gp);
+    fan_params fp;
+    fan_params_default(&fp);
     burn_inputs in = inputs();
-    safety_init(&s, &p, &gp, now, &in, LINK_RESET_POWER_ON, 0);
+    safety_init(&s, &p, &gp, &fp, now, &in, LINK_RESET_POWER_ON, 0);
   }
   burn_inputs inputs() const {
     burn_inputs in;
@@ -57,6 +60,7 @@ struct Bench : LinkTransport {
     in.overheat_latch = 0;
     in.co_alarm = 0;
     in.glow_fault = 0;
+    in.fan_fault = 0;
     return in;
   }
   // ESP32 -> MCU: the MCU answers each complete request at once (well inside its 20 ms).
@@ -100,6 +104,13 @@ struct Bench : LinkTransport {
     now += TICK;
     burn_inputs in = inputs();
     safety_step(&s, now, &in);
+    // The fan stage: the model's fan follows its target; the shunt reads about 4.3 A at full
+    // speed, times the duty.
+    fan_meas fm;
+    fm.rpm = in.fan_rpm;
+    fm.vin_cv = 1260;
+    fm.isense_ma = (uint16_t) (4300.0 * m.fan_rpm / 5000.0 * fan_duty / 1000.0);
+    fan_duty = safety_fan_step(&s, now, &fm);
     if (esp_alive)
       client.loop(now);
   }
@@ -150,6 +161,8 @@ static void test_heat_cycle() {
   CHECK(b.client.raw_status().run_time_s > 120);
   b.run(1 * MIN);
   CHECK(b.client.raw_status().state == BURN_STATE_OFF);  // and it stays off
+  CHECK(b.s.fan.fault == FAN_FAULT_NONE);  // no false fan fault through spin-up, changes, coasting
+  CHECK(b.s.glow.fault == GLOW_FAULT_NONE);
 }
 
 static void test_dead_man() {
@@ -186,8 +199,10 @@ static void test_mcu_reset_mid_run() {
   burn_params_default(&p);
   glow_params gp;
   glow_params_default(&gp);
+  fan_params fp;
+  fan_params_default(&fp);
   burn_inputs in = b.inputs();
-  safety_init(&b.s, &p, &gp, b.now, &in, LINK_RESET_WATCHDOG, 0);
+  safety_init(&b.s, &p, &gp, &fp, b.now, &in, LINK_RESET_WATCHDOG, 0);
   CHECK(b.s.burn.step == BURN_STEP_COOLDOWN);
   CHECK(b.run_until_state(BURN_STATE_COOLING, 5 * SEC));
   CHECK(b.run_until_state(BURN_STATE_OFF, 25 * MIN));

@@ -35,7 +35,7 @@ safety MCU (the link protocol between the two, and the CO alarm).
 | `esp32/components/` | The ESPHome components. `flamekeeper/` is the core: plain C++ with host tests. |
 | `esp32/tools/` | Signing, release, network flashing and a QEMU boot test. |
 | `esp32/keys/` | The project's public release key. |
-| `stm32/` | The safety MCU firmware: so far its core (`core/`: the burn sequencer, the glow pulse planner and the link glue), host-tested against a heater model. |
+| `stm32/` | The safety MCU firmware: so far its core (`core/`: the burn sequencer, the glow pulse planner, the fan controller and the link glue), host-tested against a heater model. |
 | `common/` | C99 shared with the safety MCU: the link codec (`link/`) and the CO alarm (`co/`). |
 | [PROTOCOL.md](PROTOCOL.md) | The app protocol, over Bluetooth LE and Wi-Fi. |
 | [DESIGN.md](DESIGN.md) | How the firmware is put together, and the link to the safety MCU. |

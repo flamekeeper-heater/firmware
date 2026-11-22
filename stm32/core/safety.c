@@ -80,7 +80,20 @@ static void on_detail(void *ctx, link_detail *out) {
 
 static int on_fault_reset(void *ctx) {
   safety *s = (safety *) ctx;
-  return burn_fault_reset(&s->burn, &s->in);
+  /* The stages' own faults clear with a user reset too, once the burn agrees. */
+  burn_inputs in = s->in;
+  in.glow_fault = 0;
+  in.fan_fault = 0;
+  int r = burn_fault_reset(&s->burn, &in);
+  if (r == LINK_OK) {
+    if (s->glow.fault != GLOW_FAULT_NONE)
+      glow_init(&s->glow, &s->glow.p, s->now);
+    if (s->fan.fault != FAN_FAULT_NONE)
+      fan_init(&s->fan, &s->fan.p, s->now);
+    s->in.glow_fault = 0;
+    s->in.fan_fault = 0;
+  }
+  return r;
 }
 
 static int on_update_prepare(void *ctx, uint8_t *method) {
@@ -96,8 +109,8 @@ static int on_update_prepare(void *ctx, uint8_t *method) {
   return LINK_OK;
 }
 
-void safety_init(safety *s, const burn_params *p, const glow_params *gp, uint32_t now,
-                 const burn_inputs *in, uint8_t reset_reason, uint8_t checks) {
+void safety_init(safety *s, const burn_params *p, const glow_params *gp, const fan_params *fp,
+                 uint32_t now, const burn_inputs *in, uint8_t reset_reason, uint8_t checks) {
   memset(s, 0, sizeof(*s));
   s->now = now;
   s->in = *in;
@@ -105,6 +118,7 @@ void safety_init(safety *s, const burn_params *p, const glow_params *gp, uint32_
   s->checks = checks;
   burn_init(&s->burn, p, now, in);
   glow_init(&s->glow, gp, now);
+  fan_init(&s->fan, fp, now);
   link_parser_init(&s->parser, LINK_REQUEST);
   link_start_gate_init(&s->gate);
   link_deadman_init(&s->deadman);
@@ -132,6 +146,7 @@ void safety_step(safety *s, uint32_t now, const burn_inputs *in) {
   s->now = now;
   s->in = *in;
   s->in.glow_fault = (uint8_t) (in->glow_fault || s->glow.fault != GLOW_FAULT_NONE);
+  s->in.fan_fault = in->fan_fault ? in->fan_fault : s->fan.fault;
   if (burn_fuel_steps(&s->burn) && s->burn.step != BURN_STEP_PRIMING) {
     s->run_ms += dt;
     s->run_time_s += s->run_ms / 1000u;
@@ -143,6 +158,10 @@ void safety_step(safety *s, uint32_t now, const burn_inputs *in) {
 }
 
 const burn_outputs *safety_outputs(const safety *s) { return &s->burn.out; }
+
+uint16_t safety_fan_step(safety *s, uint32_t now, const fan_meas *m) {
+  return fan_step(&s->fan, now, s->burn.out.fan_rpm, m);
+}
 
 glow_cmd safety_glow_period(safety *s, uint32_t now, glow_meas *m) {
   /* Airflow as the sequencer sees it too: both must agree (GLW-14). */
