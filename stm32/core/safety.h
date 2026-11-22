@@ -13,6 +13,7 @@
 #include "fan.h"
 #include "glow.h"
 #include "params.h"
+#include "plug.h"
 #include "pump.h"
 
 #ifdef __cplusplus
@@ -38,6 +39,10 @@ typedef struct {
   checks chk;
   pump pump;
   params params;
+  plug plug;
+  uint8_t plug_judged;    /* the current start's plug-type verdict is in */
+  uint8_t plug_refused;   /* PLUG_REFUSE_* for the sequencer, 0 none */
+  uint8_t plug_warning;   /* the last start ran with a plug-type warning (12 V supply) */
   uint16_t hb_running_ms; /* the heartbeat as last asked: running this long (0 = not) */
   uint8_t power_up_started;
   uint8_t precheck_started; /* the pre-start test of the current start has begun */
@@ -88,6 +93,12 @@ void safety_load_params(safety *s, const uint8_t *image, size_t len);
  * once they are. */
 static inline int safety_params_save_pending(const safety *s) { return s->params.save_pending; }
 static inline void safety_params_saved(safety *s) { s->params.save_pending = 0; }
+/* The plug-type check's record, the same way (plug_pack / plug_unpack). */
+static inline int safety_plug_save_pending(const safety *s) { return s->plug.save_pending; }
+static inline void safety_plug_saved(safety *s) { s->plug.save_pending = 0; }
+void safety_load_plug(safety *s, const uint8_t *image, size_t len);
+/* "New glow plug fitted": the plug's remembered type check no longer holds. */
+static inline void safety_new_glow_plug(safety *s) { plug_new_plug(&s->plug); }
 
 /* What the millisecond step asks of the hardware. */
 typedef struct {

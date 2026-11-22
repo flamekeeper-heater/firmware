@@ -76,6 +76,7 @@ struct Bench : LinkTransport {
     in.precheck = 0;
     in.pump_fault = 0;
     in.board_c10 = 350;  // a cool board: no derate
+    in.plug_refused = 0;
     return in;
   }
   // ESP32 -> MCU: the MCU answers each complete request at once (well inside its 20 ms).
@@ -216,6 +217,8 @@ static void test_heat_cycle() {
   CHECK(b.latch_armed);
   CHECK(b.max_heartbeat_gap_in_burn == 0);
   CHECK(b.s.pump.fault == PUMP_FAULT_NONE);
+  // Started two minutes after power-on: not cold, nothing remembered, a 12 V supply: a warning.
+  CHECK(b.s.plug_judged && b.s.plug_refused == 0 && b.s.plug_warning);
   CHECK(b.s.pump.strokes > 100);  // real strokes through the run
   CHECK(b.stroke_ms_total == b.s.pump.strokes * 38);
   CHECK(b.s.glow.fault == GLOW_FAULT_NONE);
@@ -320,7 +323,22 @@ static void test_parameters() {
   CHECK(c.s.burn.p.fan_max_rpm == 5000);
 }
 
+static void test_plug_cold_check() {
+  // Eleven minutes after power-on with a cool heater: the first probe verifies the 12 V plug.
+  Bench b;
+  b.run(11 * MIN);
+  b.client.set_power_demand(50);
+  CHECK(b.client.set_mode(Mode::HEAT).accepted());
+  CHECK(b.run_until_state(BURN_STATE_HEATING, 5 * MIN));
+  CHECK(b.s.plug.last_cold);
+  CHECK(b.s.plug.rec.verified_type == 12 && b.s.plug.rec.verified_setting == 12);
+  CHECK(safety_plug_save_pending(&b.s));
+  CHECK(!b.s.plug_warning);
+  CHECK(b.s.plug.last_r_mohm > 150 && b.s.plug.last_r_mohm < 400);  // the model's 0.2 Ohm plug
+}
+
 int main() {
+  test_plug_cold_check();
   test_parameters();
   test_glow_rests_after_reset();
   test_heat_cycle();

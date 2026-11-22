@@ -55,6 +55,7 @@ void burn_params_default(burn_params *p) {
   p->board_stop_ms = 10000;
   p->fuel_up_percent_s = 5;
   p->air_down_percent_s = 5;
+  p->plug_v = 12;
 }
 
 static uint32_t since(uint32_t now, uint32_t then) { return (uint32_t) (now - then); }
@@ -443,6 +444,11 @@ static void sequence(burn *b, uint32_t now, const burn_inputs *in) {
     case BURN_STEP_PREHEAT:
       o->fan_rpm = p->fan_start_rpm;
       want_glow = 1;
+      if (in->plug_refused) { /* GLW-10 to GLW-13: not this plug, or not checked */
+        b->fault = BURN_FAULT_GLOW, b->why = BURN_WHY_PLUG_TYPE;
+        enter(b, BURN_STEP_OFF, now);
+        break;
+      }
       if (in_step >= (uint32_t) p->preheat_s * 1000u) {
         b->start_c10 = in->hx_c10;
         b->peak_c10 = in->hx_c10;

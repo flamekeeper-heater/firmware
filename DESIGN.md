@@ -171,6 +171,14 @@ for the hardware overcurrent cut, current still flowing 10 ms after a stroke or 
 strokes, and a stroke with no current rise (an open coil). A high-side fault gets one heartbeat
 restart per run; a second locks out.
 
+`stm32/core/plug.*` checks the glow plug's type against its setting before a start heats it (a
+12 V plug on a 24 V supply would overheat), from the resistance the first glow probe measures. On
+a cold plug (no glow for 10 minutes since the last glow or reset, heat exchanger near the board's
+temperature or below 40 C) it tells a 12 V plug from a 24 V one and remembers a match, in a small
+flash record, with the setting it was checked against. A warm start needs that remembered match,
+and a reading that fits it. On a 24 V supply a mismatch or a missing check refuses the start; on a
+12 V supply it is only a warning. A plug outside every range never starts.
+
 `stm32/core/params.*` is the heater's parameter table, which the apps show through the link: the
 pump and fan ranges, the start-up and shut-down timings, the glow power and the overheat limits,
 each with a name, unit, range, step and help text. Changes are staged, then applied together only

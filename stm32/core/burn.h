@@ -82,6 +82,7 @@ enum {
   BURN_WHY_SELF_TEST = 16,      /* the pre-start self-test failed: the board needs looking at */
   BURN_WHY_PUMP_STAGE = 17,     /* overcurrent, current between strokes, open coil, high side */
   BURN_WHY_BOARD_HOT = 18,      /* the board stayed too hot even at the lowest power */
+  BURN_WHY_PLUG_TYPE = 19,      /* the glow plug is not the type set, or its check is missing */
 };
 
 typedef struct {
@@ -136,6 +137,8 @@ typedef struct {
   uint16_t board_stop_ms;
   /* Fuel follows air: the pump falls at once and rises this slowly, the fan the other way round. */
   uint8_t fuel_up_percent_s, air_down_percent_s;
+
+  uint8_t plug_v;              /* the glow plug fitted: 12 or 24 (V) */
 } burn_params;
 
 void burn_params_default(burn_params *p);
@@ -151,6 +154,7 @@ typedef struct {
   uint8_t fan_fault;       /* the fan stage's fault (fan.h FAN_FAULT_*), 0 none */
   uint8_t precheck;        /* the pre-start self-test: BURN_PRECHECK_* */
   uint8_t pump_fault;      /* the pump stage's fault (pump.h PUMP_FAULT_*), 0 none */
+  uint8_t plug_refused;    /* the plug-type check refused this start (plug.h PLUG_REFUSE_*), 0 none */
   int16_t board_c10;       /* BOARD_NTC near the power stage, 0.1 C, or BURN_UNKNOWN_TEMP */
 } burn_inputs;
 

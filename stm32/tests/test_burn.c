@@ -34,7 +34,7 @@ typedef struct {
   burn b;
   heater_model m;
   uint32_t now;
-  uint8_t latch, co, glow_fault, fan_fault, pump_fault;
+  uint8_t latch, co, glow_fault, fan_fault, pump_fault, plug_refused;
   uint8_t precheck; /* what the pre-start self-test reports (passes by default) */
   int16_t board_c10; /* the board thermistor */
   int air_below_fuel; /* passes where the fan's level fell below the fuel's */
@@ -55,6 +55,7 @@ static burn_inputs inputs(const rig *r) {
   in.precheck = r->precheck;
   in.pump_fault = r->pump_fault;
   in.board_c10 = r->board_c10;
+  in.plug_refused = r->plug_refused;
   return in;
 }
 
@@ -451,6 +452,22 @@ static void test_board_too_hot(void) {
   CHECK(run_until_step(&r, BURN_STEP_OFF, 25 * MIN)); /* the cooldown keeps its full fan */
 }
 
+static void test_plug_refused(void) {
+  rig r;
+  rig_init(&r, 0, 10);
+  CHECK_EQ(start(&r, HEAT, 50), 0);
+  CHECK(run_until_step(&r, BURN_STEP_PREHEAT, 10 * SEC));
+  r.plug_refused = 3; /* the probe says a 12 V plug, set as 24 V, on a 24 V supply */
+  run(&r, TICK);
+  CHECK_EQ(r.b.step, BURN_STEP_OFF);
+  CHECK_EQ(r.b.fault, BURN_FAULT_GLOW);
+  CHECK_EQ(r.b.why, BURN_WHY_PLUG_TYPE);
+  CHECK_EQ(r.pump_ms, 0); /* no fuel went in */
+  CHECK(!r.b.fault_latched); /* fix the setting and start again */
+  r.plug_refused = 0;
+  CHECK_EQ(start(&r, HEAT, 50), 0);
+}
+
 static void test_fan_stall(void) {
   rig r;
   rig_init(&r, 0, 10);
@@ -590,6 +607,7 @@ int main(void) {
   test_pump_stage_fault();
   test_board_derate();
   test_board_too_hot();
+  test_plug_refused();
   test_fan_stall();
   test_sensor_open();
   test_reset_while_hot();

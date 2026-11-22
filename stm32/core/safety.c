@@ -67,8 +67,14 @@ static void on_poll(void *ctx, const link_desired *want, link_status *out) {
       s->start_result = LINK_BUSY; /* the glow plug's stage is still resting */
     else {
       s->start_result = (uint8_t) burn_start(b, want->mode, want->power, s->now, &s->in);
-      if (s->start_result == LINK_OK)
+      if (s->start_result == LINK_OK) {
         pump_new_run(&s->pump); /* a new run: the high side's one re-arm again */
+        /* The plug's cold state is taken now, before any glow of this start. */
+        plug_begin(&s->plug, s->now, s->in.hx_c10, s->in.board_c10);
+        s->plug_judged = 0;
+        s->plug_refused = 0;
+        s->plug_warning = 0;
+      }
     }
   }
   if (want->mode == LINK_MODE_OFF) {
@@ -161,6 +167,8 @@ static int on_param_help(void *ctx, uint16_t id, const char **text) {
   return LINK_OK;
 }
 
+void safety_load_plug(safety *s, const uint8_t *image, size_t len) { plug_unpack(&s->plug, image, len); }
+
 void safety_load_params(safety *s, const uint8_t *image, size_t len) {
   if (params_unpack(&s->params, image, len) && heater_off(s))
     s->burn.p = s->params.live;
@@ -212,6 +220,9 @@ void safety_init(safety *s, const burn_params *p, const glow_params *gp, const f
   s->reset_reason = reset_reason;
   s->checks = checks;
   params_init(&s->params);
+  plug_params pl;
+  plug_params_default(&pl);
+  plug_init(&s->plug, &pl, now);
   s->params.live = *p;
   burn_init(&s->burn, p, now, in);
   glow_init(&s->glow, gp, now);
@@ -255,6 +266,7 @@ void safety_step(safety *s, uint32_t now, const burn_inputs *in) {
   s->in.fan_fault = in->fan_fault ? in->fan_fault : s->fan.fault;
   s->in.precheck = s->precheck_result;
   s->in.pump_fault = in->pump_fault ? in->pump_fault : s->pump.fault;
+  s->in.plug_refused = s->plug_refused;
   if (burn_fuel_steps(&s->burn) && s->burn.step != BURN_STEP_PRIMING) {
     s->run_ms += dt;
     s->run_time_s += s->run_ms / 1000u;
@@ -335,5 +347,17 @@ glow_cmd safety_glow_period(safety *s, uint32_t now, glow_meas *m) {
   /* Airflow as the sequencer sees it too: both must agree (GLW-14). */
   if (s->in.fan_rpm < s->burn.p.glow_min_fan_rpm)
     m->airflow_ok = 0;
-  return glow_period(&s->glow, now, s->burn.out.glow_w, m);
+  glow_cmd c = glow_period(&s->glow, now, s->burn.out.glow_w, m);
+  /* The plug-type check (GLW-10 to GLW-13), once per start, from the first probe's reading. */
+  if (s->burn.step == BURN_STEP_PREHEAT && !s->plug_judged && s->glow.have_reading) {
+    s->plug_judged = 1;
+    uint8_t v = plug_judge(&s->plug, s->burn.p.plug_v, s->glow.vin_then_cv, s->glow.i_ca);
+    if (v >= PLUG_REFUSE_RANGE)
+      s->plug_refused = v;
+    else if (v == PLUG_WARN)
+      s->plug_warning = 1;
+  }
+  if (c.width_us > 0)
+    plug_glow_seen(&s->plug, now);
+  return c;
 }

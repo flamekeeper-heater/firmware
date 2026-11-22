@@ -42,6 +42,8 @@ const param_def PARAM_TABLE[] = {
      F(flame_rise_c10), 1, "Heat exchanger rise that counts as the flame lit."},
     {0x30, "Glow power", PARAM_UNIT_W, 0, PARAM_GROUP_GLOW, PARAM_LEVEL_ADVANCED, OFF, 40, 90, 5, F(glow_w), 0,
      "Power into the glow plug, at most 90 W. More lights sooner and wears the plug faster."},
+    {0x32, "Glow plug type", PARAM_UNIT_V, 0, PARAM_GROUP_GLOW, PARAM_LEVEL_BASIC, OFF, 12, 24, 12, F(plug_v), 0,
+     "The plug fitted, 12 or 24 V. A 12 V plug set as 24 V will not start on a 24 V supply."},
     {0x31, "Glow after flame", PARAM_UNIT_S, 0, PARAM_GROUP_GLOW, PARAM_LEVEL_EXPERT, OFF, 0, 60, 5,
      F(glow_after_flame_s), 0, "How long the glow plug stays on once the flame is seen."},
     {0x40, "Burn-off time", PARAM_UNIT_S, 0, PARAM_GROUP_STOP, PARAM_LEVEL_ADVANCED, OFF, 10, 120, 5, F(burn_off_s),
