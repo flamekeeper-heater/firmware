@@ -129,8 +129,120 @@
 #define NVIC_IPR(n) REG(0xE000E400u + 4u * (n)) /* word access only on the M0+ */
 #define IRQ_ADC 12u
 
-/* Bits, named REGISTER_FIELD (checked by tools/check_registers.py against the SVD). The older code
- * writes its bits inline; each of those has an entry in the checker instead. */
+/* Bits, named REGISTER_FIELD (checked by tools/check_registers.py against the SVD; the driver writes
+ * no bit inline). REGISTER_FIELD_VALUE is a value of a field, in place; REGISTER_FIELD(v) places v
+ * in the field. A field per pin (GPIO) or per interrupt (NVIC_IPR) takes its index n:
+ * REGISTER_FIELD_Msk(n) is field n's mask, REGISTER_FIELD(n) its bit, REGISTER_FIELD(n, v) places v
+ * in it. */
+
+/* RCC, FLASH_ACR: the clock tree */
+#define RCC_CR_PLLON (1u << 24)
+#define RCC_CR_PLLRDY (1u << 25)
+#define RCC_CFGR_SW (7u << 0)
+#define RCC_CFGR_SW_PLL (2u << 0) /* PLLRCLK */
+#define RCC_CFGR_SWS (7u << 3)
+#define RCC_CFGR_SWS_PLL (2u << 3)
+#define RCC_PLLCFGR_PLLSRC_HSI16 (2u << 0)
+#define RCC_PLLCFGR_PLLM(v) ((uint32_t) (v) << 4)  /* divides by v + 1 */
+#define RCC_PLLCFGR_PLLN(n) ((uint32_t) (n) << 8)  /* multiplies by n */
+#define RCC_PLLCFGR_PLLREN (1u << 28)
+#define RCC_PLLCFGR_PLLR(v) ((uint32_t) (v) << 29) /* divides by v + 1 */
+#define FLASH_ACR_LATENCY (7u << 0)
+#define FLASH_ACR_LATENCY_2WS (2u << 0)
+#define FLASH_ACR_PRFTEN (1u << 8)
+#define FLASH_ACR_ICEN (1u << 9)
+#define SYST_CSR_ENABLE (1u << 0)
+#define SYST_CSR_CLKSOURCE (1u << 2) /* the processor clock */
+#define SYST_CSR_COUNTFLAG (1u << 16)
+
+/* RCC: the clock enables and the reset flags */
+#define RCC_IOPENR_GPIOAEN (1u << 0)
+#define RCC_IOPENR_GPIOBEN (1u << 1)
+#define RCC_IOPENR_GPIOCEN (1u << 2)
+#define RCC_AHBENR_DMA1EN (1u << 0)
+#define RCC_APBENR1_TIM3EN (1u << 1)
+#define RCC_APBENR1_USART2EN (1u << 17)
+#define RCC_APBENR2_SYSCFGEN (1u << 0)
+#define RCC_APBENR2_TIM1EN (1u << 11)
+#define RCC_APBENR2_TIM16EN (1u << 17)
+#define RCC_APBENR2_TIM17EN (1u << 18)
+#define RCC_APBENR2_ADCEN (1u << 20)
+#define RCC_CSR_RMVF (1u << 23)
+#define RCC_CSR_PINRSTF (1u << 26)
+#define RCC_CSR_PWRRSTF (1u << 27)
+#define RCC_CSR_SFTRSTF (1u << 28)
+#define RCC_CSR_IWDGRSTF (1u << 29)
+
+/* IWDG */
+#define IWDG_KR_KEY_START 0xCCCCu
+#define IWDG_KR_KEY_UNLOCK 0x5555u /* PR and RLR writable */
+#define IWDG_KR_KEY_RELOAD 0xAAAAu
+#define IWDG_SR_PVU (1u << 0)
+#define IWDG_SR_RVU (1u << 1)
+#define IWDG_SR_WVU (1u << 2)
+
+/* GPIO, a field per pin n */
+#define GPIO_MODER_MODER_Msk(n) (3u << (2u * (n)))
+#define GPIO_MODER_MODER(n, v) ((uint32_t) (v) << (2u * (n)))
+#define GPIO_MODER_MODER_INPUT 0u
+#define GPIO_MODER_MODER_OUTPUT 1u
+#define GPIO_MODER_MODER_AF 2u
+#define GPIO_PUPDR_PUPDR_Msk(n) (3u << (2u * (n)))
+#define GPIO_PUPDR_PUPDR(n, v) ((uint32_t) (v) << (2u * (n)))
+#define GPIO_PUPDR_PUPDR_UP 1u
+#define GPIO_AFRL_AFSEL_Msk(n) (15u << (4u * (n)))         /* pins 0-7 */
+#define GPIO_AFRL_AFSEL(n, v) ((uint32_t) (v) << (4u * (n)))
+#define GPIO_AFRH_AFSEL_Msk(n) (15u << (4u * ((n) - 8u))) /* pins 8-15 */
+#define GPIO_AFRH_AFSEL(n, v) ((uint32_t) (v) << (4u * ((n) - 8u)))
+#define GPIO_BSRR_BS(n) (1u << (n))
+#define GPIO_BSRR_BR(n) (1u << ((n) + 16u))
+#define GPIO_IDR_IDR(n) (1u << (n))
+#define GPIO_LCKR_LCK(n) (1u << (n))
+#define GPIO_LCKR_LCKK (1u << 16)
+
+/* Timers */
+#define TIM_CR1_CEN (1u << 0)
+#define TIM_CR1_ARPE (1u << 7)
+#define TIM_DIER_UDE (1u << 8)
+#define TIM_SR_CC1IF (1u << 1)
+#define TIM_EGR_UG (1u << 0)
+#define TIM_CCMR1_CC1S_TI1 (1u << 0) /* CC1 an input, on TI1 */
+#define TIM_CCMR1_OC1PE (1u << 3)
+#define TIM_CCMR1_OC1M (7u << 4)
+#define TIM_CCMR1_OC1M_FORCE_LOW (4u << 4) /* OC1REF forced inactive */
+#define TIM_CCMR1_OC1M_FORCE_HIGH (5u << 4)
+#define TIM_CCMR1_OC1M_PWM1 (6u << 4)
+#define TIM_CCMR1_OC2PE (1u << 11)
+#define TIM_CCMR1_OC2M_PWM1 (6u << 12)
+#define TIM_CCER_CC1E (1u << 0)
+#define TIM_CCER_CC2E (1u << 4)
+#define TIM_BDTR_MOE (1u << 15)
+
+/* USART2 */
+#define USART_CR1_UE (1u << 0)
+#define USART_CR1_RE (1u << 2)
+#define USART_CR1_TE (1u << 3)
+#define USART_CR1_RXNEIE (1u << 5)
+#define USART_CR1_TXEIE (1u << 7)
+#define USART_ISR_ORE (1u << 3)
+#define USART_ISR_RXNE (1u << 5)
+#define USART_ISR_TXE (1u << 7)
+#define USART_ICR_ORECF (1u << 3)
+
+/* NVIC: the interrupt enables, a priority byte per interrupt */
+#define NVIC_ISER_SETENA(irq) (1u << (irq))
+#define NVIC_IPR_PRI_Msk(irq) (0xFFu << (8u * ((irq) % 4u)))
+#define NVIC_IPR_PRI(irq, v) ((uint32_t) (v) << (8u * ((irq) % 4u)))
+
+/* The ADC set-up, the DMA's memory-to-peripheral direction */
+#define ADC_CR_ADEN (1u << 0)
+#define ADC_CR_ADCAL (1u << 31)
+#define ADC_CFGR2_CKMODE_PCLK_DIV4 (2u << 30)
+#define ADC_SMPR_SMP1_19_5 (4u << 0) /* 19.5 ADC clocks */
+#define ADC_CCR_VREFEN (1u << 22)
+#define DMA_CCR_DIR (1u << 4) /* read from memory */
+
+/* The ADC schedule's bits */
 #define ADC_ISR_ADRDY (1u << 0)
 #define ADC_ISR_EOS (1u << 3)
 #define ADC_ISR_OVR (1u << 4)
@@ -171,9 +283,37 @@
 #define FLASH_ECCR_SYSF_ECC (1u << 20)
 #define FLASH_ECCR_ECCCIE (1u << 24)
 #define FLASH_ECCR_ECCD (1u << 31)
+#define FLASH_SR_EOP (1u << 0)
+#define FLASH_SR_OPERR (1u << 1)
+#define FLASH_SR_PROGERR (1u << 3)
+#define FLASH_SR_WRPERR (1u << 4)
+#define FLASH_SR_PGAERR (1u << 5)
+#define FLASH_SR_SIZERR (1u << 6)
+#define FLASH_SR_PGSERR (1u << 7)
+#define FLASH_SR_MISERR (1u << 8)
+#define FLASH_SR_FASTERR (1u << 9)
+#define FLASH_SR_OPTVERR (1u << 15) /* the option bytes failed to load */
 #define FLASH_SR_BSY1 (1u << 16)
 #define FLASH_SR_CFGBSY (1u << 18) /* FLASH_CR in use by a program or erase */
+/* Every error flag, OPERR..FASTERR and OPTVERR (all rc_w1), and those with EOP: the clear. */
+#define FLASH_SR_ERRORS (FLASH_SR_OPERR | FLASH_SR_PROGERR | FLASH_SR_WRPERR | FLASH_SR_PGAERR | \
+                         FLASH_SR_SIZERR | FLASH_SR_PGSERR | FLASH_SR_MISERR | FLASH_SR_FASTERR | \
+                         FLASH_SR_OPTVERR)
+#define FLASH_SR_CLEAR (FLASH_SR_EOP | FLASH_SR_ERRORS)
+#define FLASH_CR_PG (1u << 0)
+#define FLASH_CR_PER (1u << 1)
+#define FLASH_CR_PNB(page) ((uint32_t) (page) << 3)
+#define FLASH_CR_STRT (1u << 16)
+#define FLASH_CR_LOCK (1u << 31)
+/* FLASH_KEYR's unlock sequence, and where the main flash starts (checked against ST's headers). */
+#define FLASH_KEY1 0x45670123u
+#define FLASH_KEY2 0xCDEF89ABu
+#define FLASH_MEM_BASE 0x08000000u
+#define FLASH_OPTR_IWDG_SW (1u << 16)    /* 0: the IWDG started by hardware */
 #define FLASH_OPTR_IWDG_STOP (1u << 17)  /* 0: the IWDG frozen in stop mode */
 #define FLASH_OPTR_IWDG_STDBY (1u << 18) /* 0: the IWDG frozen in standby */
+#define FLASH_OPTR_NBOOT_SEL (1u << 24)  /* 0: the BOOT0 pin chooses, with nBOOT1 */
+#define FLASH_OPTR_NBOOT1 (1u << 25)     /* 1: BOOT0 high boots the system memory (the ROM bootloader) */
+#define FLASH_OPTR_NBOOT0 (1u << 26)     /* the boot choice when nBOOT_SEL is 1 */
 
 #endif /* FLAMEKEEPER_STM32G030_H */

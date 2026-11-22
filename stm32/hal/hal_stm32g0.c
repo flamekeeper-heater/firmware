@@ -28,77 +28,77 @@
 /* ---------------------------------------------------------------- clocks, ticks, reset, options */
 
 void hal_clock_init(void) {
-  FLASH_ACR = (FLASH_ACR & ~7u) | 2u | (1u << 8) | (1u << 9); /* 2 wait states, prefetch, cache */
-  while ((FLASH_ACR & 7u) != 2u) {
+  /* 2 wait states, prefetch, cache */
+  FLASH_ACR = (FLASH_ACR & ~FLASH_ACR_LATENCY) | FLASH_ACR_LATENCY_2WS | FLASH_ACR_PRFTEN | FLASH_ACR_ICEN;
+  while ((FLASH_ACR & FLASH_ACR_LATENCY) != FLASH_ACR_LATENCY_2WS) {
   }
   /* PLL: HSI16 / M 1 x N 8 / R 2 = 64 MHz. */
-  RCC_PLLCFGR = 2u | (0u << 4) | (8u << 8) | (1u << 28) | (1u << 29);
-  RCC_CR |= 1u << 24;
-  while (!(RCC_CR & (1u << 25))) {
+  RCC_PLLCFGR = RCC_PLLCFGR_PLLSRC_HSI16 | RCC_PLLCFGR_PLLM(0u) | RCC_PLLCFGR_PLLN(8u) | RCC_PLLCFGR_PLLREN |
+                RCC_PLLCFGR_PLLR(1u);
+  RCC_CR |= RCC_CR_PLLON;
+  while (!(RCC_CR & RCC_CR_PLLRDY)) {
   }
-  RCC_CFGR = (RCC_CFGR & ~7u) | 2u;
-  while (((RCC_CFGR >> 3) & 7u) != 2u) {
+  RCC_CFGR = (RCC_CFGR & ~RCC_CFGR_SW) | RCC_CFGR_SW_PLL;
+  while ((RCC_CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_PLL) {
   }
   SYST_RVR = SYSCLK_HZ / 1000u - 1u;
   SYST_CVR = 0;
-  SYST_CSR = 5u; /* processor clock, counter on, no interrupt: polled */
+  SYST_CSR = SYST_CSR_CLKSOURCE | SYST_CSR_ENABLE; /* no interrupt: polled */
 }
 
-int hal_ms_elapsed(void) { return (SYST_CSR & (1u << 16)) != 0; }
+int hal_ms_elapsed(void) { return (SYST_CSR & SYST_CSR_COUNTFLAG) != 0; }
 
 uint8_t hal_reset_reason(void) {
   uint32_t csr = RCC_CSR;
-  RCC_CSR |= 1u << 23; /* clear the flags for next time */
-  if (csr & (1u << 29))
+  RCC_CSR |= RCC_CSR_RMVF; /* clear the flags for next time */
+  if (csr & RCC_CSR_IWDGRSTF)
     return LINK_RESET_WATCHDOG;
-  if (csr & (1u << 28))
+  if (csr & RCC_CSR_SFTRSTF)
     return LINK_RESET_SOFTWARE;
-  if (csr & (1u << 27))
+  if (csr & RCC_CSR_PWRRSTF)
     return LINK_RESET_POWER_ON;
-  if (csr & (1u << 26))
+  if (csr & RCC_CSR_PINRSTF)
     return LINK_RESET_PIN;
   return LINK_RESET_UNKNOWN;
 }
 
-/* WDG-1, WDG-4: IWDG in hardware, stopped in neither stop nor standby, boot from the main flash. */
+/* WDG-1, WDG-4: the option bytes the ESP32's updater writes (hal_optr_wdg1_ok). */
 uint8_t hal_option_faults(void) {
-  uint32_t optr = FLASH_OPTR;
-  int iwdg_sw = (optr >> 16) & 1u, nboot_sel = (optr >> 24) & 1u, optverr = (FLASH_SR >> 15) & 1u;
-  const uint32_t runs = FLASH_OPTR_IWDG_STOP | FLASH_OPTR_IWDG_STDBY; /* both 1 (their default) */
-  int iwdg_frozen = (optr & runs) != runs;
-  return (uint8_t) ((iwdg_sw || iwdg_frozen || nboot_sel || optverr) ? LINK_CHECK_OPTION_BYTES : 0u);
+  return (uint8_t) (hal_optr_wdg1_ok(FLASH_OPTR, FLASH_SR) ? 0u : LINK_CHECK_OPTION_BYTES);
 }
 
 /* WDG-2, WDG-3: started on every start, about 80 ms (LSI 32 kHz / 4, 640). */
 void hal_iwdg_start(void) {
-  IWDG_KR = 0xCCCCu;
-  IWDG_KR = 0x5555u;
+  IWDG_KR = IWDG_KR_KEY_START;
+  IWDG_KR = IWDG_KR_KEY_UNLOCK;
   IWDG_PR = 0u;
   IWDG_RLR = 640u;
-  while (IWDG_SR & 7u) {
+  while (IWDG_SR & (IWDG_SR_PVU | IWDG_SR_RVU | IWDG_SR_WVU)) {
   }
-  IWDG_KR = 0xAAAAu;
+  IWDG_KR = IWDG_KR_KEY_RELOAD;
 }
 
-void hal_iwdg_refresh(void) { IWDG_KR = 0xAAAAu; }
+void hal_iwdg_refresh(void) { IWDG_KR = IWDG_KR_KEY_RELOAD; }
 
 /* ---------------------------------------------------------------- pins */
 
 static void pin_mode(uint32_t port, unsigned pin, unsigned mode) {
-  GPIO_MODER(port) = (GPIO_MODER(port) & ~(3u << (2 * pin))) | (mode << (2 * pin));
+  GPIO_MODER(port) = (GPIO_MODER(port) & ~GPIO_MODER_MODER_Msk(pin)) | GPIO_MODER_MODER(pin, mode);
 }
 static void pin_af(uint32_t port, unsigned pin, unsigned af) {
   if (pin < 8)
-    GPIO_AFRL(port) = (GPIO_AFRL(port) & ~(15u << (4 * pin))) | (af << (4 * pin));
+    GPIO_AFRL(port) = (GPIO_AFRL(port) & ~GPIO_AFRL_AFSEL_Msk(pin)) | GPIO_AFRL_AFSEL(pin, af);
   else
-    GPIO_AFRH(port) = (GPIO_AFRH(port) & ~(15u << (4 * (pin - 8)))) | (af << (4 * (pin - 8)));
-  pin_mode(port, pin, 2u);
+    GPIO_AFRH(port) = (GPIO_AFRH(port) & ~GPIO_AFRH_AFSEL_Msk(pin)) | GPIO_AFRH_AFSEL(pin, af);
+  pin_mode(port, pin, GPIO_MODER_MODER_AF);
 }
 static void pin_pull_up(uint32_t port, unsigned pin) {
-  GPIO_PUPDR(port) = (GPIO_PUPDR(port) & ~(3u << (2 * pin))) | (1u << (2 * pin));
+  GPIO_PUPDR(port) = (GPIO_PUPDR(port) & ~GPIO_PUPDR_PUPDR_Msk(pin)) | GPIO_PUPDR_PUPDR(pin, GPIO_PUPDR_PUPDR_UP);
 }
-static void pin_set(uint32_t port, unsigned pin, int on) { GPIO_BSRR(port) = on ? (1u << pin) : (1u << (pin + 16)); }
-static int pin_get(uint32_t port, unsigned pin) { return (GPIO_IDR(port) >> pin) & 1u; }
+static void pin_set(uint32_t port, unsigned pin, int on) {
+  GPIO_BSRR(port) = on ? GPIO_BSRR_BS(pin) : GPIO_BSRR_BR(pin);
+}
+static int pin_get(uint32_t port, unsigned pin) { return (int) ((GPIO_IDR(port) & GPIO_IDR_IDR(pin)) >> pin); }
 
 /* Interrupts off around what an interrupt also writes; restores the previous state, so it is safe
  * before main enables them. */
@@ -111,7 +111,11 @@ static void irq_restore(uint32_t m) { __asm__ volatile("msr primask, %0" : : "r"
 
 /* ---------------------------------------------------------------- timers */
 
-static volatile uint16_t burst[26];
+/* PMP-1: the heartbeat's burst, CCR1 values TIM1's DMA writes one per update (1 ms): HB_BURST
+ * updates at half duty, then 0, so the burst ends in hardware, interrupts or not. Filled once by
+ * timers_init. In RAM, not flash: a flash page erase stalls every flash read, the DMA's too. */
+#define HB_BURST 25
+static volatile uint16_t burst[HB_BURST + 1];
 /* The pump's overcurrent cut (PMP-7) has stopped the heartbeat: no burst until the core has the
  * report (hal_pump_overcurrent), and then holds the heartbeat off itself. */
 static volatile uint8_t hb_blocked;
@@ -133,44 +137,47 @@ static void timers_init(void) {
   TIM_PSC(TIM1) = 0;
   TIM_ARR(TIM1) = SYSCLK_HZ / 25000u - 1u;
   TIM_RCR(TIM1) = 24;
-  TIM_CCMR1(TIM1) = (6u << 4) | (1u << 3) | (6u << 12) | (1u << 11); /* PWM1, preload, both */
+  TIM_CCMR1(TIM1) = TIM_CCMR1_OC1M_PWM1 | TIM_CCMR1_OC1PE | TIM_CCMR1_OC2M_PWM1 | TIM_CCMR1_OC2PE;
   TIM_CCR1(TIM1) = 0;
   TIM_CCR2(TIM1) = 0;
-  TIM_CCER(TIM1) = (1u << 0) | (1u << 4);
-  TIM_BDTR(TIM1) = 1u << 15; /* main output enable */
-  TIM_DIER(TIM1) = 1u << 8;  /* update DMA request */
-  TIM_EGR(TIM1) = 1;
-  TIM_CR1(TIM1) = 1u | (1u << 7);
+  TIM_CCER(TIM1) = TIM_CCER_CC1E | TIM_CCER_CC2E;
+  TIM_BDTR(TIM1) = TIM_BDTR_MOE;
+  TIM_DIER(TIM1) = TIM_DIER_UDE; /* the update's DMA request */
+  TIM_EGR(TIM1) = TIM_EGR_UG;
+  TIM_CR1(TIM1) = TIM_CR1_CEN | TIM_CR1_ARPE;
+  for (int i = 0; i < HB_BURST; i++)
+    burst[i] = (uint16_t) ((TIM_ARR(TIM1) + 1u) / 2u);
+  burst[HB_BURST] = 0;
   DMAMUX_C0CR = DMAMUX_REQ_TIM1_UP;
-  DMA_CPAR1 = TIM1 + 0x34u; /* CCR1 */
+  DMA_CPAR1 = (uint32_t) &TIM_CCR1(TIM1);
   /* TIM3, 200 Hz at 1 MHz: CH1 the glow pulse; CH2 and CH3 (no pins) pick the pulse and gap
    * readings from the ADC's scan (GLW-6, the ADC schedule below). */
   TIM_PSC(TIM3) = SYSCLK_HZ / 1000000u - 1u;
   TIM_ARR(TIM3) = GLOW_PERIOD_US - 1u;
-  TIM_CCMR1(TIM3) = (6u << 4) | (1u << 3);
+  TIM_CCMR1(TIM3) = TIM_CCMR1_OC1M_PWM1 | TIM_CCMR1_OC1PE;
   TIM_CCR1(TIM3) = 0;
   TIM_CCR2(TIM3) = GLOW_PULSE_PICK_US;
   TIM_CCR3(TIM3) = GLOW_GAP_PICK_US;
-  TIM_CCER(TIM3) = 1u << 0;
+  TIM_CCER(TIM3) = TIM_CCER_CC1E;
   TIM_DIER(TIM3) = TIM_DIER_CC2IE | TIM_DIER_CC3IE;
-  TIM_EGR(TIM3) = 1;
-  TIM_CR1(TIM3) = 1u | (1u << 7);
-  NVIC_ISER = 1u << IRQ_TIM3;
+  TIM_EGR(TIM3) = TIM_EGR_UG;
+  TIM_CR1(TIM3) = TIM_CR1_CEN | TIM_CR1_ARPE;
+  NVIC_ISER = NVIC_ISER_SETENA(IRQ_TIM3);
   /* TIM16, 100 kHz: input capture of the Hall on CH1. */
   TIM_PSC(TIM16) = SYSCLK_HZ / 100000u - 1u;
   TIM_ARR(TIM16) = 0xFFFF;
-  TIM_CCMR1(TIM16) = 1u; /* CC1 input on TI1 */
-  TIM_CCER(TIM16) = 1u;
-  TIM_CR1(TIM16) = 1u;
+  TIM_CCMR1(TIM16) = TIM_CCMR1_CC1S_TI1;
+  TIM_CCER(TIM16) = TIM_CCER_CC1E;
+  TIM_CR1(TIM16) = TIM_CR1_CEN;
   /* TIM17, 20 kHz: the pump's PWM. */
   TIM_PSC(TIM17) = 0;
   TIM_ARR(TIM17) = SYSCLK_HZ / 20000u - 1u;
-  TIM_CCMR1(TIM17) = (6u << 4) | (1u << 3);
+  TIM_CCMR1(TIM17) = TIM_CCMR1_OC1M_PWM1 | TIM_CCMR1_OC1PE;
   TIM_CCR1(TIM17) = 0;
-  TIM_CCER(TIM17) = 1u;
-  TIM_BDTR(TIM17) = 1u << 15;
-  TIM_EGR(TIM17) = 1;
-  TIM_CR1(TIM17) = 1u | (1u << 7);
+  TIM_CCER(TIM17) = TIM_CCER_CC1E;
+  TIM_BDTR(TIM17) = TIM_BDTR_MOE;
+  TIM_EGR(TIM17) = TIM_EGR_UG;
+  TIM_CR1(TIM17) = TIM_CR1_CEN | TIM_CR1_ARPE;
 }
 
 void hal_heartbeat(uint8_t mode) {
@@ -178,25 +185,21 @@ void hal_heartbeat(uint8_t mode) {
   uint32_t m = irq_off();
   if (hb_blocked && mode != HAL_HB_STATIC_LOW)
     mode = HAL_HB_STOPPED;
-  uint32_t ccmr = TIM_CCMR1(TIM1) & ~(7u << 4);
+  uint32_t ccmr = TIM_CCMR1(TIM1) & ~TIM_CCMR1_OC1M;
   if (mode == HAL_HB_BURST) {
-    /* PMP-1: 25 updates of half a period, then 0: the burst ends in hardware, interrupts or not. */
-    for (int i = 0; i < 25; i++)
-      burst[i] = (uint16_t) ((TIM_ARR(TIM1) + 1u) / 2u);
-    burst[25] = 0;
     DMA_CCR1 = 0;
     DMA_CMAR1 = (uint32_t) burst;
-    DMA_CNDTR1 = 26;
+    DMA_CNDTR1 = HB_BURST + 1;
     /* memory to peripheral, memory increment, 16 bit both sides */
-    DMA_CCR1 = (1u << 4) | (1u << 7) | (1u << 8) | (1u << 10) | 1u;
-    TIM_CCMR1(TIM1) = ccmr | (6u << 4);
+    DMA_CCR1 = DMA_CCR_DIR | DMA_CCR_MINC | DMA_CCR_PSIZE_16 | DMA_CCR_MSIZE_16 | DMA_CCR_EN;
+    TIM_CCMR1(TIM1) = ccmr | TIM_CCMR1_OC1M_PWM1;
     irq_restore(m);
     return;
   }
   DMA_CCR1 = 0;
   TIM_CCR1(TIM1) = 0;
   /* Static levels for the self-tests (PMP-11): forced active / inactive. */
-  TIM_CCMR1(TIM1) = ccmr | ((mode == HAL_HB_STATIC_HIGH ? 5u : 4u) << 4);
+  TIM_CCMR1(TIM1) = ccmr | (mode == HAL_HB_STATIC_HIGH ? TIM_CCMR1_OC1M_FORCE_HIGH : TIM_CCMR1_OC1M_FORCE_LOW);
   irq_restore(m);
 }
 
@@ -208,7 +211,7 @@ static uint32_t hall_last, hall_period, hall_seen_ms;
 static uint32_t ms_count;
 
 uint16_t hal_hall_rpm(void) {
-  if (TIM_SR(TIM16) & (1u << 1)) {
+  if (TIM_SR(TIM16) & TIM_SR_CC1IF) {
     uint32_t cap = TIM_CCR1(TIM16);
     hall_period = (cap - hall_last) & 0xFFFFu;
     hall_last = cap;
@@ -255,19 +258,19 @@ uint16_t hal_hall_rpm(void) {
 static volatile uint16_t adc_buf[HAL_ADC_COUNT];
 
 static void adc_init(void) {
-  ADC_CR = 1u << 28; /* the regulator */
+  ADC_CR = ADC_CR_ADVREGEN; /* the regulator */
   for (volatile int i = 0; i < 2000; i++) {
   }
-  ADC_CR |= 1u << 31; /* calibration */
-  while (ADC_CR & (1u << 31)) {
+  ADC_CR |= ADC_CR_ADCAL; /* calibration */
+  while (ADC_CR & ADC_CR_ADCAL) {
   }
-  ADC_CFGR2 = 2u << 30;  /* PCLK / 4 */
-  ADC_SMPR = 4u;         /* 19.5 cycles */
-  ADC_CFGR1 = 0;         /* CFG-1: bit-mask selection, 12 bit, single */
-  ADC_CCR |= 1u << 22;   /* VREFINT */
-  ADC_ISR = 1u;
-  ADC_CR |= 1u;
-  while (!(ADC_ISR & 1u)) {
+  ADC_CFGR2 = ADC_CFGR2_CKMODE_PCLK_DIV4;
+  ADC_SMPR = ADC_SMPR_SMP1_19_5;
+  ADC_CFGR1 = 0; /* CFG-1: bit-mask selection, 12 bit, single */
+  ADC_CCR |= ADC_CCR_VREFEN;
+  ADC_ISR = ADC_ISR_ADRDY;
+  ADC_CR |= ADC_CR_ADEN;
+  while (!(ADC_ISR & ADC_ISR_ADRDY)) {
   }
 }
 
@@ -296,7 +299,7 @@ static void adc_start(void) {
 }
 
 static void irq_priority(unsigned irq, uint32_t level) {
-  NVIC_IPR(irq / 4u) = (NVIC_IPR(irq / 4u) & ~(0xFFu << (8u * (irq % 4u)))) | (level << (8u * (irq % 4u)));
+  NVIC_IPR(irq / 4u) = (NVIC_IPR(irq / 4u) & ~NVIC_IPR_PRI_Msk(irq)) | NVIC_IPR_PRI(irq, level);
 }
 
 static void adc_schedule_init(void) {
@@ -321,7 +324,7 @@ static void adc_schedule_init(void) {
   /* Priorities: the overcurrent cut first (0, the reset value), then the glow picks, the link. */
   irq_priority(IRQ_TIM3, 0x40u);
   irq_priority(IRQ_USART2, 0x80u);
-  NVIC_ISER = 1u << IRQ_ADC;
+  NVIC_ISER = NVIC_ISER_SETENA(IRQ_ADC);
   adc_start();
   adc_wait_scan();
 }
@@ -382,7 +385,7 @@ void hal_pump_test_pulse_us(uint16_t us) {
   /* One pulse on PUMP_CMD by hand (PB9 as a plain output), PUMP_ISENSE's peak from the scan. */
   uint16_t peak = 0;
   uint32_t ticks = us * (SYSCLK_HZ / 1000000u), reload = SYST_RVR + 1u;
-  pin_mode(GPIOB, 9, 1u);
+  pin_mode(GPIOB, 9, GPIO_MODER_MODER_OUTPUT);
   pin_set(GPIOB, 9, 1);
   uint32_t start = SYST_CVR, now;
   do {
@@ -417,11 +420,11 @@ static void oc_thresholds(uint16_t t) {
 /* The cut, in the interrupt: PUMP_CMD low and the heartbeat stopped at once (PMP-7), each as
  * hal_pump_duty(0) and hal_heartbeat(HAL_HB_STOPPED) would, without waiting for the main loop. */
 static void pump_cut(void) {
-  TIM_CCMR1(TIM17) = (TIM_CCMR1(TIM17) & ~(7u << 4)) | (4u << 4); /* OC1REF forced low */
+  TIM_CCMR1(TIM17) = (TIM_CCMR1(TIM17) & ~TIM_CCMR1_OC1M) | TIM_CCMR1_OC1M_FORCE_LOW;
   TIM_CCR1(TIM17) = 0;
   DMA_CCR1 = 0;
   TIM_CCR1(TIM1) = 0;
-  TIM_CCMR1(TIM1) = (TIM_CCMR1(TIM1) & ~(7u << 4)) | (4u << 4);
+  TIM_CCMR1(TIM1) = (TIM_CCMR1(TIM1) & ~TIM_CCMR1_OC1M) | TIM_CCMR1_OC1M_FORCE_LOW;
   ADC_IER = 0;
   pump_forced = 1;
   hb_blocked = 1;
@@ -456,7 +459,7 @@ void hal_pump_oc_arm(uint8_t on, uint16_t threshold_raw, uint16_t hold_us) {
     oc_thresholds(threshold_raw);
     pump_oc_arm(&oc, pump_oc_need(hold_us, ADC_SCAN_US));
     if (pump_forced) {
-      TIM_CCMR1(TIM17) = (TIM_CCMR1(TIM17) & ~(7u << 4)) | (6u << 4);
+      TIM_CCMR1(TIM17) = (TIM_CCMR1(TIM17) & ~TIM_CCMR1_OC1M) | TIM_CCMR1_OC1M_PWM1;
       pump_forced = 0;
     }
     ADC_ISR = ADC_ISR_AWD1 | ADC_ISR_AWD2;
@@ -493,9 +496,9 @@ static volatile uint8_t rx_head, rx_tail, tx_head, tx_tail;
 
 void USART2_IRQHandler(void) {
   uint32_t isr = USART_ISR;
-  if (isr & (1u << 3))
-    USART_ICR = 1u << 3; /* overrun: drop, the parser resynchronises */
-  if (isr & (1u << 5)) {
+  if (isr & USART_ISR_ORE)
+    USART_ICR = USART_ICR_ORECF; /* overrun: drop, the parser resynchronises */
+  if (isr & USART_ISR_RXNE) {
     uint8_t next = (uint8_t) ((rx_head + 1u) & 127u);
     uint8_t c = (uint8_t) USART_RDR;
     if (next != rx_tail) {
@@ -503,12 +506,12 @@ void USART2_IRQHandler(void) {
       rx_head = next;
     }
   }
-  if ((isr & (1u << 7)) && (USART_CR1 & (1u << 7))) {
+  if ((isr & USART_ISR_TXE) && (USART_CR1 & USART_CR1_TXEIE)) {
     if (tx_tail != tx_head) {
       USART_TDR = tx_buf[tx_tail];
       tx_tail = (uint8_t) ((tx_tail + 1u) & 127u);
     } else {
-      USART_CR1 &= ~(1u << 7);
+      USART_CR1 &= ~USART_CR1_TXEIE;
     }
   }
 }
@@ -529,7 +532,7 @@ void hal_uart_write(const uint8_t *d, size_t n) {
     tx_buf[tx_head] = d[i];
     tx_head = next;
   }
-  USART_CR1 |= 1u << 7;
+  USART_CR1 |= USART_CR1_TXEIE;
 }
 
 /* ---------------------------------------------------------------- flash (the last two pages) */
@@ -552,11 +555,13 @@ void NMI_Handler(void) {
 
 uint8_t hal_flash_unreadable(uint8_t page) { return (uint8_t) ((flash_unreadable >> page) & 1u); }
 
-static uint32_t page_addr(uint8_t page) { return 0x08000000u + (30u + page) * 2048u; }
+static uint32_t page_addr(uint8_t page) {
+  return FLASH_MEM_BASE + (HAL_SAVED_PAGE_FIRST + page) * HAL_FLASH_PAGE_SIZE;
+}
 
 size_t hal_flash_read(uint8_t page, uint8_t *out, size_t cap) {
   const uint8_t *p = (const uint8_t *) page_addr(page);
-  size_t n = cap < 256u ? cap : 256u;
+  size_t n = cap < HAL_FLASH_IMAGE_MAX ? cap : HAL_FLASH_IMAGE_MAX;
   memcpy(out, p, n);
   return n;
 }
@@ -564,34 +569,49 @@ size_t hal_flash_read(uint8_t page, uint8_t *out, size_t cap) {
 /* ST's sequence (RM0454, and HAL's FLASH_WaitForLastOperation): before touching FLASH_CR and after
  * each erase or double word, wait for BSY1, then for CFGBSY (FLASH_CR still taken by the
  * operation) unless an error flag is up, which ST's HAL does not wait past either; the caller
- * reads the errors at the end. */
+ * reads the errors at the end (flash_lock_result). */
 static void flash_wait(void) {
   while (FLASH_SR & FLASH_SR_BSY1) {
   }
-  while ((FLASH_SR & (FLASH_SR_CFGBSY | 0x83FAu)) == FLASH_SR_CFGBSY) {
+  while ((FLASH_SR & (FLASH_SR_CFGBSY | FLASH_SR_ERRORS)) == FLASH_SR_CFGBSY) {
   }
 }
 
-int hal_flash_write(uint8_t page, const uint8_t *d, size_t n) {
-  if (n > 256u)
-    return -1;
+/* Unlocks FLASH_CR once the flash is idle, and clears EOP and any old errors. */
+static void flash_unlock(void) {
   flash_wait();
-  FLASH_KEYR = 0x45670123u;
-  FLASH_KEYR = 0xCDEF89ABu;
-  FLASH_SR = 0x83FBu; /* clear old errors and EOP */
-  FLASH_CR = (1u << 1) | ((30u + page) << 3) | (1u << 16); /* erase the page */
-  flash_wait();
-  FLASH_CR = 1u; /* program, 64 bits at a time */
-  uint32_t a = page_addr(page);
+  FLASH_KEYR = FLASH_KEY1;
+  FLASH_KEYR = FLASH_KEY2;
+  FLASH_SR = FLASH_SR_CLEAR;
+}
+
+/* n bytes from d to addr (erased, double-word aligned), 64 bits at a time; a last partial double
+ * word is padded with 0xFF. */
+static void flash_program_dwords(uint32_t addr, const uint8_t *d, size_t n) {
+  FLASH_CR = FLASH_CR_PG;
   for (size_t i = 0; i < n; i += 8) {
     uint32_t w[2] = {0xFFFFFFFFu, 0xFFFFFFFFu};
     memcpy(w, d + i, n - i < 8 ? n - i : 8);
-    REG(a + i) = w[0];
-    REG(a + i + 4) = w[1];
+    REG(addr + i) = w[0];
+    REG(addr + i + 4) = w[1];
     flash_wait();
   }
-  FLASH_CR = 1u << 31; /* lock */
-  if (FLASH_SR & 0x83FAu) /* OPERR..FASTERR, OPTVERR */
+}
+
+/* Locks FLASH_CR again: 0, or -1 if any operation since flash_unlock raised an error. */
+static int flash_lock_result(void) {
+  FLASH_CR = FLASH_CR_LOCK;
+  return (FLASH_SR & FLASH_SR_ERRORS) ? -1 : 0;
+}
+
+int hal_flash_write(uint8_t page, const uint8_t *d, size_t n) {
+  if (n > HAL_FLASH_IMAGE_MAX)
+    return -1;
+  flash_unlock();
+  FLASH_CR = FLASH_CR_PER | FLASH_CR_PNB(HAL_SAVED_PAGE_FIRST + page) | FLASH_CR_STRT; /* erase */
+  flash_wait();
+  flash_program_dwords(page_addr(page), d, n);
+  if (flash_lock_result())
     return -1;
   flash_unreadable &= (uint8_t) ~(1u << page); /* erased and written afresh */
   return 0;
@@ -601,49 +621,38 @@ const uint8_t *hal_flash_page(uint8_t page) { return (const uint8_t *) page_addr
 
 /* Double words into an erased part of the page, no erase (the CO sensor's R0 log). */
 int hal_flash_program(uint8_t page, uint16_t offset, const uint8_t *d, size_t n) {
-  if ((offset & 7u) || (n & 7u) || offset + n > 2048u)
+  if ((offset & 7u) || (n & 7u) || offset + n > HAL_FLASH_PAGE_SIZE)
     return -1;
-  flash_wait();
-  FLASH_KEYR = 0x45670123u;
-  FLASH_KEYR = 0xCDEF89ABu;
-  FLASH_SR = 0x83FBu; /* clear EOP and the error flags */
-  FLASH_CR = 1u; /* program */
-  uint32_t a = page_addr(page) + offset;
-  for (size_t i = 0; i < n; i += 8) {
-    uint32_t w[2];
-    memcpy(w, d + i, 8);
-    REG(a + i) = w[0];
-    REG(a + i + 4) = w[1];
-    flash_wait();
-  }
-  FLASH_CR = 1u << 31; /* lock */
-  return (FLASH_SR & 0x83FAu) ? -1 : 0; /* OPERR..FASTERR, OPTVERR */
+  flash_unlock();
+  flash_program_dwords(page_addr(page) + offset, d, n);
+  return flash_lock_result();
 }
 
 /* ---------------------------------------------------------------- start-up */
 
 void hal_init(void) {
-  RCC_IOPENR = 7u;                                      /* GPIOA, B, C */
-  RCC_AHBENR |= 1u;                                     /* DMA1 (and its DMAMUX) */
-  RCC_APBENR1 |= (1u << 1) | (1u << 17);                /* TIM3, USART2 */
-  RCC_APBENR2 |= 1u | (1u << 11) | (1u << 17) | (1u << 18) | (1u << 20); /* SYSCFG, TIM1, 16, 17, ADC */
+  RCC_IOPENR = RCC_IOPENR_GPIOAEN | RCC_IOPENR_GPIOBEN | RCC_IOPENR_GPIOCEN;
+  RCC_AHBENR |= RCC_AHBENR_DMA1EN; /* and its DMAMUX */
+  RCC_APBENR1 |= RCC_APBENR1_TIM3EN | RCC_APBENR1_USART2EN;
+  RCC_APBENR2 |= RCC_APBENR2_SYSCFGEN | RCC_APBENR2_TIM1EN | RCC_APBENR2_TIM16EN | RCC_APBENR2_TIM17EN |
+                 RCC_APBENR2_ADCEN;
 
   /* Outputs default-off before they are driven (CFG-9). */
   pin_set(GPIOB, 0, 0);
-  pin_mode(GPIOB, 0, 1u); /* GLOW_EN */
+  pin_mode(GPIOB, 0, GPIO_MODER_MODER_OUTPUT); /* GLOW_EN */
   pin_set(GPIOB, 6, 0);
-  pin_mode(GPIOB, 6, 1u); /* LATCH_RESET */
+  pin_mode(GPIOB, 6, GPIO_MODER_MODER_OUTPUT); /* LATCH_RESET */
   pin_set(GPIOC, 6, 0);
-  pin_mode(GPIOC, 6, 1u); /* CO_HEAT_EN */
+  pin_mode(GPIOC, 6, GPIO_MODER_MODER_OUTPUT); /* CO_HEAT_EN */
   /* Inputs: PC14, PC15 inputs only (CFG-5), pull-ups on PA7 and PC15 (CFG-11). */
-  pin_mode(GPIOC, 14, 0u);
-  pin_mode(GPIOC, 15, 0u);
+  pin_mode(GPIOC, 14, GPIO_MODER_MODER_INPUT);
+  pin_mode(GPIOC, 15, GPIO_MODER_MODER_INPUT);
   pin_pull_up(GPIOC, 15);
-  pin_mode(GPIOA, 7, 0u);
+  pin_mode(GPIOA, 7, GPIO_MODER_MODER_INPUT);
   pin_pull_up(GPIOA, 7);
-  GPIO_LCKR(GPIOC) = (1u << 16) | (1u << 14); /* OVH-5: lock PC14 as an input */
-  GPIO_LCKR(GPIOC) = (1u << 14);
-  GPIO_LCKR(GPIOC) = (1u << 16) | (1u << 14);
+  GPIO_LCKR(GPIOC) = GPIO_LCKR_LCKK | GPIO_LCKR_LCK(14); /* OVH-5: lock PC14 as an input */
+  GPIO_LCKR(GPIOC) = GPIO_LCKR_LCK(14);
+  GPIO_LCKR(GPIOC) = GPIO_LCKR_LCKK | GPIO_LCKR_LCK(14);
   (void) GPIO_LCKR(GPIOC);
   /* Analog inputs stay in their reset (analog) mode. */
 
@@ -659,10 +668,10 @@ void hal_init(void) {
 
   /* USART2 at 115200 8N1 (PA2 TX, PA3 RX). */
   USART_BRR = SYSCLK_HZ / 115200u;
-  USART_CR1 = (1u << 5) | (1u << 3) | (1u << 2) | 1u;
+  USART_CR1 = USART_CR1_RXNEIE | USART_CR1_TE | USART_CR1_RE | USART_CR1_UE;
   pin_af(GPIOA, 2, 1u);
   pin_af(GPIOA, 3, 1u);
-  NVIC_ISER = 1u << IRQ_USART2;
+  NVIC_ISER = NVIC_ISER_SETENA(IRQ_USART2);
 }
 
 void hal_ms_tick(void) { ms_count++; }

@@ -6,9 +6,12 @@ Usage: python3 -I stm32/tools/check_registers.py --svd PATH/STM32G030.svd [--st-
 It reads hal/stm32g030.h, the other hal/*.h and *.c, hal/startup.c, bringup/main.c and the linker script, and checks against
 the SVD: each peripheral base, each register macro's offset and name, each named bit or field
 macro in the header (PERIPH_REG_FIELD, with optional _Pos/_Msk suffixes, or a field value such as
-RCC_CFGR_SW_PLL), the IRQ numbers and the vector table, every bit constant written inline in the
-driver (each one must have an entry in INLINE_CLAIMS below, saying which field it means), every
-constant written whole into a register (no reserved bits), and the flash and RAM layout. The SVD
+RCC_CFGR_SW_PLL, or a field per pin or interrupt: GPIO_MODER_MODER_Msk(n), GPIO_BSRR_BS(n),
+GPIO_MODER_MODER(n, v), NVIC_IPR_PRI(irq, v), checked for every index the register has), masks
+named as an OR of checked flags, the IRQ numbers and the vector table, that the driver writes no
+unnamed constant into a register (a bit or field must be a header macro; only a whole number in a
+one-number register such as ARR or RLR, and arithmetic, stay inline), every constant written whole
+into a register (no reserved bits), and the flash and RAM layout. The SVD
 is ST's (Apache-2.0); get STM32G030.svd from ST's STM32G0 SVD package (st.com, "STM32G0 System
 View Description") or the modm-io/cmsis-svd-stm32 or cmsis-svd/cmsis-svd-data collections on
 GitHub. --st-dir optionally names a directory with ST's own headers, for the facts the SVD does
@@ -50,6 +53,11 @@ CMSIS_BASE = {"ADC": "ADC1_BASE", "FLASH": "FLASH_R_BASE", "DMAMUX": "DMAMUX1_BA
 FLASH_SIZE_K8 = 64 * 1024
 # RM0454 (option bytes); no ST header carries it, so it stays UNVERIFIED by this tool.
 OPTION_BYTES = 0x1FFF7800
+# Header constants that are neither registers nor fields, checked against ST's headers by value:
+# macro -> (ST file, ST macro).
+ST_CONSTANTS = {"FLASH_KEY1": ("stm32g0xx_hal_flash.h", "FLASH_KEY1"),
+                "FLASH_KEY2": ("stm32g0xx_hal_flash.h", "FLASH_KEY2"),
+                "FLASH_MEM_BASE": ("stm32g030xx.h", "FLASH_BASE")}
 
 # Cortex-M0+ system registers (ARMv6-M Architecture Reference Manual): not in ST's SVD.
 CORE = {
@@ -69,126 +77,6 @@ CORE = {
 for _k in range(8):
     CORE[0xE000E400 + 4 * _k] = ("NVIC", f"IPR{_k}", {f"PRI_{i}": (8 * i, 8) for i in range(4)})
 CORE_EXCEPTIONS = {2: "NMI", 3: "HardFault", 11: "SVCall", 14: "PendSV", 15: "SysTick"}
-
-# What each bit constant written inline in hal/*.c means: (register macro, the constant as the
-# code writes it, the field(s), how). Fields: one name, several joined by "|", or NAME* for the
-# per-pin fields (NAME0..NAME15) a shift by the pin number reaches. How: "bit" (a shift places
-# the value in the field), "mask" (the constant is exactly the fields' mask), "value" (the
-# constant is a value of the field, placed or compared elsewhere). "x" stands for any variable
-# and "n" for the pin number. A new inline constant without an entry here FAILs as UNCHECKED:
-# add its entry, or give it a named macro in stm32g030.h (checked by name).
-INLINE_CLAIMS = [
-    # clocks
-    ("FLASH_ACR", "7u", "LATENCY", "mask"),
-    ("FLASH_ACR", "2u", "LATENCY", "value"),
-    ("FLASH_ACR", "1u << 8", "PRFTEN", "bit"),
-    ("FLASH_ACR", "1u << 9", "ICEN", "bit"),
-    ("RCC_PLLCFGR", "2u", "PLLSRC", "value"),
-    ("RCC_PLLCFGR", "0u << 4", "PLLM", "bit"),
-    ("RCC_PLLCFGR", "8u << 8", "PLLN", "bit"),
-    ("RCC_PLLCFGR", "1u << 28", "PLLREN", "bit"),
-    ("RCC_PLLCFGR", "1u << 29", "PLLR", "bit"),
-    ("RCC_CR", "1u << 24", "PLLON", "bit"),
-    ("RCC_CR", "1u << 25", "PLLRDY", "bit"),
-    ("RCC_CFGR", "7u", "SW", "mask"),
-    ("RCC_CFGR", "2u", "SW|SWS", "value"),
-    ("RCC_CFGR", "(x >> 3) & 7u", "SWS", "bit"),
-    ("SYST_CSR", "5u", "ENABLE|CLKSOURCE", "mask"),
-    ("SYST_CSR", "1u << 16", "COUNTFLAG", "bit"),
-    # reset reason and option bytes
-    ("RCC_CSR", "1u << 23", "RMVF", "bit"),
-    ("RCC_CSR", "1u << 29", "IWDGRSTF", "bit"),
-    ("RCC_CSR", "1u << 28", "SFTRSTF", "bit"),
-    ("RCC_CSR", "1u << 27", "PWRRSTF", "bit"),
-    ("RCC_CSR", "1u << 26", "PINRSTF", "bit"),
-    ("FLASH_OPTR", "(x >> 16) & 1u", "IWDG_SW", "bit"),
-    ("FLASH_OPTR", "(x >> 24) & 1u", "nBOOT_SEL", "bit"),
-    ("FLASH_SR", "(x >> 15) & 1u", "OPTVERR", "bit"),
-    # watchdog
-    ("IWDG_SR", "7u", "PVU|RVU|WVU", "mask"),
-    # pins
-    ("GPIO_MODER", "3u << (2 * n)", "MODER*", "mask"),
-    ("GPIO_MODER", "x << (2 * n)", "MODER*", "bit"),
-    ("GPIO_AFRL", "15u << (4 * n)", "AFSEL*", "mask"),
-    ("GPIO_AFRL", "x << (4 * n)", "AFSEL*", "bit"),
-    ("GPIO_AFRH", "15u << (4 * (n - 8))", "AFSEL*", "mask"),
-    ("GPIO_AFRH", "x << (4 * (n - 8))", "AFSEL*", "bit"),
-    ("GPIO_PUPDR", "3u << (2 * n)", "PUPDR*", "mask"),
-    ("GPIO_PUPDR", "1u << (2 * n)", "PUPDR*", "bit"),
-    ("GPIO_BSRR", "1u << n", "BS*", "bit"),
-    ("GPIO_BSRR", "1u << (n + 16)", "BR*", "bit"),
-    ("GPIO_IDR", "(x >> n) & 1u", "IDR*", "bit"),
-    ("GPIO_LCKR", "1u << 16", "LCKK", "bit"),
-    ("GPIO_LCKR", "1u << 14", "LCK14", "bit"),
-    # timers
-    ("TIM_CCMR1", "6u << 4", "OC1M", "bit"),
-    ("TIM_CCMR1", "1u << 3", "OC1PE", "bit"),
-    ("TIM_CCMR1", "6u << 12", "OC2M", "bit"),
-    ("TIM_CCMR1", "1u << 11", "OC2PE", "bit"),
-    ("TIM_CCMR1", "7u << 4", "OC1M", "mask"),
-    ("TIM_CCMR1", "x << 4", "OC1M", "bit"),
-    ("TIM_CCMR1", "5u << 4", "OC1M", "bit"),
-    ("TIM_CCMR1", "4u << 4", "OC1M", "bit"),
-    ("TIM_CCMR1", "1u", "CC1S", "value"),
-    ("TIM_CCER", "1u << 0", "CC1E", "bit"),
-    ("TIM_CCER", "1u << 4", "CC2E", "bit"),
-    ("TIM_CCER", "1u", "CC1E", "mask"),
-    ("TIM_BDTR", "1u << 15", "MOE", "bit"),
-    ("TIM_DIER", "1u << 8", "UDE", "bit"),
-    ("TIM_EGR", "1", "UG", "mask"),
-    ("TIM_CR1", "1u", "CEN", "mask"),
-    ("TIM_CR1", "1u << 7", "ARPE", "bit"),
-    ("TIM_SR", "1u << 1", "CC1IF", "bit"),
-    ("TIM_CCR1", "0xFFFFu", "CCR1", "mask"),
-    ("DMA_CPAR1", "TIM1 + 0x34u", "CCR1", "address"),
-    ("NVIC_ISER", "1u << *", "SETENA", "bit"),
-    ("NVIC_IPR", "0xFFu << (8u * (n % 4u))", "PRI_*", "mask"),
-    ("NVIC_IPR", "x << (8u * (n % 4u))", "PRI_*", "bit"),
-    # DMA
-    ("DMA_CCR1", "1u << 4", "DIR", "bit"),
-    ("DMA_CCR1", "1u << 7", "MINC", "bit"),
-    ("DMA_CCR1", "1u << 8", "PSIZE", "bit"),
-    ("DMA_CCR1", "1u << 10", "MSIZE", "bit"),
-    ("DMA_CCR1", "1u", "EN", "mask"),
-    # ADC
-    ("ADC_CR", "1u << 28", "ADVREGEN", "bit"),
-    ("ADC_CR", "1u << 31", "ADCAL", "bit"),
-    ("ADC_CR", "1u", "ADEN", "mask"),
-    ("ADC_CFGR2", "2u << 30", "CKMODE", "bit"),
-    ("ADC_SMPR", "4u", "SMP1", "value"),
-    ("ADC_CCR", "1u << 22", "VREFEN", "bit"),
-    ("ADC_ISR", "1u", "ADRDY", "mask"),
-    # USART2
-    ("USART_ISR", "1u << 3", "ORE", "bit"),
-    ("USART_ISR", "1u << 5", "RXNE", "bit"),
-    ("USART_ISR", "1u << 7", "TXE", "bit"),
-    ("USART_ICR", "1u << 3", "ORECF", "bit"),
-    ("USART_CR1", "1u << 7", "TXEIE", "bit"),
-    ("USART_CR1", "1u << 5", "RXNEIE", "bit"),
-    ("USART_CR1", "1u << 3", "TE", "bit"),
-    ("USART_CR1", "1u << 2", "RE", "bit"),
-    ("USART_CR1", "1u", "UE", "mask"),
-    # flash programming
-    ("FLASH_SR", "0x83FBu", "EOP|OPERR|PROGERR|WRPERR|PGAERR|SIZERR|PGSERR|MISERR|FASTERR|OPTVERR",
-     "mask"),
-    ("FLASH_SR", "0x83FAu", "OPERR|PROGERR|WRPERR|PGAERR|SIZERR|PGSERR|MISERR|FASTERR|OPTVERR",
-     "mask"),
-    ("FLASH_CR", "1u << 1", "PER", "bit"),
-    ("FLASH_CR", "x << 3", "PNB", "bit"),
-    ("FLASH_CR", "1u << 16", "STRT", "bit"),
-    ("FLASH_CR", "1u", "PG", "mask"),
-    ("FLASH_CR", "1u << 31", "LOCK", "bit"),
-    # clock enables
-    ("RCC_IOPENR", "7u", "GPIOAEN|GPIOBEN|GPIOCEN", "mask"),
-    ("RCC_AHBENR", "1u", "DMA1EN", "mask"),
-    ("RCC_APBENR1", "1u << 1", "TIM3EN", "bit"),
-    ("RCC_APBENR1", "1u << 17", "USART2EN", "bit"),
-    ("RCC_APBENR2", "1u", "SYSCFGEN", "mask"),
-    ("RCC_APBENR2", "1u << 11", "TIM1EN", "bit"),
-    ("RCC_APBENR2", "1u << 17", "TIM16EN", "bit"),
-    ("RCC_APBENR2", "1u << 18", "TIM17EN", "bit"),
-    ("RCC_APBENR2", "1u << 20", "ADCEN", "bit"),
-]
 
 # ------------------------------------------------------------------------------------ reporting
 
@@ -253,7 +141,10 @@ def ceval(text, names, free=None):
                     return f()
         raise NotConst(text)
 
-    return ev(tree)
+    try:
+        return ev(tree)
+    except ValueError as e:  # a negative shift: an index the macro does not serve
+        raise NotConst(text) from e
 
 
 def strip_c(text):
@@ -472,7 +363,7 @@ class Map:
         self.svd, self.hdr, self.names = svd, hdr, names
         self.bases = {}  # macro -> address, for macros naming a peripheral
         self.regs = {}  # macro -> {"param": bool, "offset", "fixed": (periph, addr) | None}
-        self.field_fns = {}  # function-like field macro -> [(field label, mask)]
+        self.field_fns = {}  # function-like field macro -> [(field label, mask, None | {n: (field, (off, w))})]
         self.field_owner = {}  # field macro -> the register macros it belongs to
         for name, (params, body, line) in hdr.items():
             if params is None and name in svd.periphs:
@@ -644,13 +535,45 @@ def check_named(svd, m, st, fname, defs, names, quiet_unknown):
         if mm:
             check_sysmem(st, where, name, int(mm.group(1), 16))
             continue
+        if name in ST_CONSTANTS:
+            check_st_constant(st, where, names(name), *ST_CONSTANTS[name])
+            continue
         regs, rest = field_regs(m, name)
         if not regs:
             if not quiet_unknown:
                 report("NOTE", f"{where}: not a register, base, field, IRQ or DMAMUX name; not checked")
             continue
         m.field_owner[name] = regs
+        if params is None and check_composite(m, where, name, regs, body, names):
+            continue
         check_field_macro(m, st, where, name, regs, rest, params, body, names)
+
+
+def check_composite(m, where, name, regs, body, names):
+    """A mask named for a set of flags: an OR of field macros already checked, each of the same
+    register (FLASH_SR_ERRORS = FLASH_SR_OPERR | ...). True if the body is such an OR."""
+    parts = re.fullmatch(r"\(?\s*([A-Za-z_]\w*(?:\s*\|\s*[A-Za-z_]\w*)+)\s*\)?", body)
+    if not parts:
+        return False
+    parts = [x.strip() for x in parts.group(1).split("|")]
+    foreign = [x for x in parts if not set(m.field_owner.get(x, [])) & set(regs)]
+    if foreign:
+        report("FAIL", f"{where}: {', '.join(foreign)} not a checked field of {', '.join(regs)}")
+    else:
+        report("PASS", f"{where} = {names(name):#x}: {' | '.join(parts)}")
+    return True
+
+
+def check_st_constant(st, where, value, fn, ref):
+    v = st.value(ref) if st.has(fn) else None
+    if value is None:
+        report("FAIL", f"{where}: cannot evaluate")
+    elif v is None:
+        report("UNVERIFIED", f"{where} = {value:#x}: {fn} not given")
+    elif v == value:
+        report("PASS", f"{where} = {value:#x} [ST's {ref}]")
+    else:
+        report("FAIL", f"{where} = {value:#x}, ST's {ref} = {v:#x}")
 
 
 def check_irq(svd, st, where, irq, value):
@@ -705,6 +628,58 @@ def find_field(fields, want):
     return None
 
 
+def indexed_fields(fields, base):
+    """A register's field per pin or interrupt: {n: (field, (offset, width))} for FIELDn or
+    FIELD_n (MODER0..MODER15, PRI_0..PRI_3)."""
+    out = {}
+    for k, v in fields.items():
+        mm = re.fullmatch(re.escape(base) + r"_?(\d+)", k, re.I)
+        if mm:
+            out[int(mm.group(1))] = (k, v)
+    return out
+
+
+def check_indexed_macro(m, where, name, regs, rest, kind, params, body, names):
+    """REG_FIELD_Msk(n) (field n's mask), REG_FIELD_Pos(n) (its offset), REG_FIELD(n) (a one-bit
+    field's bit) and REG_FIELD(n, v) (v placed in field n), where the register has a field per
+    index n and none named FIELD: evaluated for every n the register has. False if it has none."""
+    if len(params) > 2:
+        return False
+    results, labels, ns = [], set(), set()
+    for reg in regs:
+        for periph, addr in m.instances(reg):
+            label, fields = m.fields(periph, addr)
+            if not fields or find_field(fields, rest):
+                continue
+            fam = indexed_fields(fields, rest)
+            if not fam:
+                continue
+            labels.add(label)
+            m.field_fns.setdefault(name, []).append((f"{label}.{rest}n", None, fam))
+            for n, (f, (off, w)) in sorted(fam.items()):
+                ns.add(n)
+                fmask = ((1 << w) - 1) << off
+                try:
+                    if len(params) == 2:
+                        one = ceval(body, names, {params[0]: n, params[1]: 1})
+                        full = ceval(body, names, {params[0]: n, params[1]: (1 << w) - 1})
+                        ok = one == 1 << off and full == fmask
+                    else:
+                        ok = ceval(body, names, {params[0]: n}) == (off if kind == "pos" else fmask)
+                except (NotConst, ZeroDivisionError):
+                    ok = False
+                if not ok:
+                    results.append(f"{label}.{f}")
+    if not labels:
+        return False
+    what = f"{where}: {', '.join(sorted(labels))}.{rest}n, n = {min(ns)}..{max(ns)}"
+    if results:
+        report("FAIL", f"{what}: wrong for " + ", ".join(sorted(set(results))))
+    else:
+        report("PASS", what)
+    return True
+
+
 def check_field_macro(m, st, where, name, regs, rest, params, body, names):
     kind = "mask"
     for suf, k in (("_Pos", "pos"), ("_POS", "pos"), ("_SHIFT", "pos"), ("_Msk", "mask"),
@@ -712,6 +687,8 @@ def check_field_macro(m, st, where, name, regs, rest, params, body, names):
         if rest.endswith(suf):
             rest, kind = rest[: -len(suf)], k
             break
+    if params and check_indexed_macro(m, where, name, regs, rest, kind, params, body, names):
+        return
     try:
         if params:
             free0 = {p: 0 for p in params}
@@ -740,6 +717,22 @@ def check_field_macro(m, st, where, name, regs, rest, params, body, names):
                 if f:
                     fval = "_".join(parts[i:])
                     break
+        if f is None and fval is None and kind == "mask":
+            # A value of a field per pin: GPIO_MODER_MODER_OUTPUT fits each MODERn.
+            parts = rest.split("_")
+            for i in range(len(parts) - 1, 0, -1):
+                fam = indexed_fields(fields, "_".join(parts[:i]))
+                widths = {w for _, (_, w) in fam.values()}
+                if len(widths) == 1:
+                    w = widths.pop()
+                    ok = value < (1 << w)
+                    results.append((ok, f"value {'_'.join(parts[i:])} {value:#x} "
+                                        f"{'fits' if ok else 'does not fit'} {label}.{'_'.join(parts[:i])}n "
+                                        f"({w} bits)"))
+                    break
+            else:
+                missing.append((False, f"{label} has no field {rest}"))
+            continue
         if f is None:
             missing.append((False, f"{label} has no field {rest}"))
             continue
@@ -748,7 +741,7 @@ def check_field_macro(m, st, where, name, regs, rest, params, body, names):
         results.extend(extra)
         fmask = ((1 << w) - 1) << off
         if kind == "fn":
-            m.field_fns.setdefault(name, []).append((f"{label}.{f}", fmask))
+            m.field_fns.setdefault(name, []).append((f"{label}.{f}", fmask, None))
         if kind == "pos" or kind == "fn":
             ok = value == off
             results.append((ok, f"{label}.{f} at bit {off}" + ("" if ok else f", macro says {value}")))
@@ -959,121 +952,12 @@ def statements(toks):
     return out
 
 
-def build_claims(m, names):
-    claims = {}
-    for i, (reg, text, fields, how) in enumerate(INLINE_CLAIMS):
-        if reg not in m.regs:
-            report("NOTE", f"INLINE_CLAIMS: {reg} is not a register macro in stm32g030.h")
-            continue
-        if "*" in text and "<<" in text and not fields.endswith("*"):
-            item = ("shl", num(text.split("<<")[0].strip()), "*")
-        else:
-            toks = [t for t, _ in tokenize(text)]
-            its = [x for x, _ in items(toks, lambda n: None if n in ("x", "n") else names(n))]
-            its = [x if x[0] != "arith" else ("lit", x[1]) for x in its]
-            if len(its) != 1:
-                report("FAIL", f"INLINE_CLAIMS: cannot read {text!r} for {reg}")
-                continue
-            item = its[0]
-        claims.setdefault(reg, []).append({"id": i, "item": item, "fields": fields, "how": how,
-                                           "text": text, "used": []})
-    return claims
-
-
-def item_matches(claim_item, item):
-    if claim_item == item:
-        return True
-    if claim_item[0] == "shl" and item[0] == "shl":
-        if claim_item[2] == "*" and claim_item[1] == item[1] and isinstance(item[2], int):
-            return True
-        if claim_item[1] is None and claim_item[2] == item[2] and item[1] is None:
-            return True
-    return False
-
-
-def check_claim(m, st, claim, periph, addr):
-    """[(ok, text)] for one claim on one register instance."""
-    label, fields = m.fields(periph, addr)
-    if fields is None:
-        return [(False, f"{periph} has no register here")]
-    item, how, spec = claim["item"], claim["how"], claim["fields"]
-    if how == "address":
-        regs = m.svd.regs_at(item[1], item[2]) if item[1] in m.svd.periphs else []
-        ok = any(r["norm"] == spec for r in regs)
-        return [(ok, f"{item[1]} + {item[2]:#x} is {item[1]}." + (regs[0]["norm"] if regs else "reserved"))]
-    if spec.endswith("*"):
-        pre = spec[:-1]
-        pat = {int(k[len(pre):]): v for k, v in fields.items()
-               if k.startswith(pre) and k[len(pre):].isdigit()}
-        if not pat:
-            return [(False, f"{label} has no {spec} fields")]
-        amt = item[2] if item[0] == "shl" else item[1]
-        widths = {w for _, w in pat.values()}
-        if len(widths) != 1:
-            return [(False, f"{label}.{spec}: fields of different widths")]
-        w = widths.pop()
-        res = []
-        if isinstance(amt, tuple):
-            bad = [n for n, (off, _) in pat.items() if off != amt[1] * n + amt[2]]
-            pos = ("n" if amt[1] == 1 else f"{amt[1]}n") + (f"{amt[2]:+d}" if amt[2] else "")
-            res.append((not bad, f"{label}.{pre}n at bit {pos}"
-                        + (f" (not for n = {bad})" if bad else "")))
-        elif amt is not None:
-            hit = [n for n, (off, _) in pat.items() if off == amt]
-            res.append((bool(hit), f"{label}.{pre}{hit[0] if hit else '?'} at bit {amt}"))
-        val = item[1] if item[0] == "shl" else item[2]
-        if val is not None:
-            ok = val == (1 << w) - 1 if how == "mask" or item[0] == "ext" else val < (1 << w)
-            res.append((ok, f"{val:#x} {'is the' if ok else 'does not fit the'} {w}-bit field"))
-        return res
-    names_ = spec.split("|")
-    fs, res = [], []
-    for n in names_:
-        f = find_field(fields, n)
-        if f is None:
-            return [(False, f"{label} has no field {n}")]
-        off, w = fields[f]
-        w, extra = cmsis_vs_svd(st, claim["reg"], f, off, w, label)
-        fs.append((f, (off, w)))
-        res.extend(extra)
-    if item[0] == "shl" and item[2] == "*":
-        f, (off, w) = fs[0]
-        return [(True, f"{label}.{f} holds any bit 0..{w - 1} (IRQ numbers checked separately)")]
-    if item[0] == "shl":
-        f, (off, w) = fs[0]
-        if isinstance(item[2], int):
-            res.append((item[2] == off, f"{label}.{f} at bit {off}"))
-        if item[1] is not None:
-            ok = item[1] == (1 << w) - 1 if how == "mask" else item[1] < (1 << w)
-            res.append((ok, f"{item[1]} fits {w} bit{'s' if w > 1 else ''}" if ok
-                        else f"{item[1]:#x} does not fit {label}.{f} ({w} bits)"))
-    elif item[0] == "ext":
-        f, (off, w) = fs[0]
-        res.append((item[1] == off, f"{label}.{f} at bit {off}"))
-        res.append((item[2] == (1 << w) - 1, f"mask {item[2]:#x} for {w} bit{'s' if w > 1 else ''}"))
-    elif item[0] in ("lit", "arith"):
-        v = item[1]
-        if how == "mask":
-            want = 0
-            for _, (off, w) in fs:
-                want |= ((1 << w) - 1) << off
-            res.append((v == want, f"{v:#x} = mask of {label}.{'|'.join(f for f, _ in fs)}"
-                        + ("" if v == want else f" ({want:#x})")))
-        else:
-            for f, (off, w) in fs:
-                res.append((v < (1 << w), f"{v} a value of {label}.{f} ({w} bits)"))
-    else:
-        res.append((False, f"cannot check a {item[0]} item"))
-    return res
-
-
 def check_sources(m, st, src_files, names):
-    claims = build_claims(m, names)
-    for reg, cl in claims.items():
-        for c in cl:
-            c["reg"] = reg
+    """The driver's register uses: each register exists where it is used, field macros with
+    constant arguments fit, no unnamed constant goes into a register, whole writes set no reserved
+    bit, and field macros meet only their own registers."""
+    print("-- register uses in the driver")
     reg_names = set(m.regs)
-    results = {}  # claim id -> list of (ok, text, where)
     for path in src_files:
         rel = os.path.basename(path)
         text = strip_c(open(path, encoding="utf-8").read())
@@ -1119,67 +1003,59 @@ def check_sources(m, st, src_files, names):
                         report("FAIL", f"{rel}:{ln} {macro}({inst}): {inst} has no such register")
             kept = [(t, ln) for t, ln in zip(toks, lines) if t != "@"]
             clean, lines = [t for t, _ in kept], [ln for _, ln in kept]
+            # A field macro's call becomes its name (for the owner check) in clean, and its value,
+            # when the arguments are constant, in valued (for the whole-write check).
+            valued = list(clean)
             j = 0
             while j < len(clean):
                 if clean[j] in m.field_fns and j + 1 < len(clean) and clean[j + 1] == "(":
                     e = group_end(clean, j + 1)
-                    params, body, _ = m.hdr[clean[j]]
-                    arg = " ".join(clean[j + 2:e])
-                    what = f"{rel}:{lines[j]} {clean[j]}({arg})"
+                    params, body, _ = names.defs[clean[j]]
+                    args, cur, depth = [], [], 0
+                    for t in clean[j + 2:e]:
+                        if t == "," and depth == 0:
+                            args.append(" ".join(cur))
+                            cur = []
+                            continue
+                        depth += (t == "(") - (t == ")")
+                        cur.append(t)
+                    args.append(" ".join(cur))
+                    what = f"{rel}:{lines[j]} {clean[j]}({', '.join(args)})"
+                    value = clean[j]
                     try:
-                        v = ceval(body, names, {params[0]: ceval(arg, names)})
-                        for label, fmask in m.field_fns[clean[j]]:
+                        vals = [ceval(a, names) for a in args]
+                        v = ceval(body, names, dict(zip(params, vals)))
+                        for label, fmask, fam in m.field_fns[clean[j]]:
+                            if fam is not None:  # a field per index: the index's own field
+                                f = fam.get(vals[0])
+                                fmask = ((1 << f[1][1]) - 1) << f[1][0] if f else 0
+                                label = f"{label.rsplit('.', 1)[0]}.{f[0] if f else 'nothing at ' + str(vals[0])}"
                             ok = v & ~fmask == 0
                             report("PASS" if ok else "FAIL", f"{what} = {v:#x}: "
                                    + ("inside" if ok else "outside") + f" {label} ({fmask:#x})")
-                    except NotConst:
+                        value = f"{v:#x}"
+                    except (NotConst, ZeroDivisionError):
                         pass  # a variable argument: the macro itself is checked
-                    clean[j:e + 1] = ["FIELD_MACRO"]
+                    valued[j:e + 1] = [value]
+                    clean[j:e + 1] = [clean[j]]
                     lines[j:e + 1] = [lines[j]]
                 j += 1
+            # Every constant in a statement that touches a register is a named macro (replaced
+            # above, or a plain name), arithmetic, 0, or a whole number in a one-number register.
             for item, idx in items(clean, names):
-                if item[0] == "arith" or item in (("lit", 0),):
+                if item[0] == "arith" or item == ("lit", 0):
                     continue
                 if item[0] == "addr" and item[1] not in m.bases:
                     continue
-                ln = lines[min(idx, len(lines) - 1)]
-                matched = None
-                for macro, inst, _ in occ:
-                    for c in claims.get(macro, []):
-                        if item_matches(c["item"], item):
-                            matched = (c, macro, inst)
-                            break
-                    if matched:
-                        break
-                if not matched:
-                    if item[0] == "lit" and value_reg_fits(m, occ, item[1]):
-                        continue
-                    regs = ", ".join(sorted({o[0] for o in occ}))
-                    report("FAIL", f"{rel}:{ln} UNCHECKED {sig_text(item)} on {regs}: add it to "
-                                   "INLINE_CLAIMS or use a named macro")
+                if item[0] == "shr" and isinstance(item[1], tuple):
+                    continue  # x >> pin: reads a bit by a variable index, places no constant
+                if item[0] == "lit" and value_reg_fits(m, occ, item[1]):
                     continue
-                c, macro, inst = matched
-                c["used"].append(f"{rel}:{ln}")
-                for periph, addr in m.instances(macro, inst):
-                    if m.fields(periph, addr)[0] is None and m.regs[macro]["param"] and not inst:
-                        continue  # a family member without this register
-                    for ok, txt in check_claim(m, st, c, periph, addr):
-                        results.setdefault(c["id"], set()).add((ok, txt))
-            check_whole_write(m, rel, clean, occ, lines, names)
+                regs = ", ".join(sorted({o[0] for o in occ}))
+                report("FAIL", f"{rel}:{lines[min(idx, len(lines) - 1)]} UNNAMED {sig_text(item)} on "
+                               f"{regs}: give it a named macro in stm32g030.h")
+            check_whole_write(m, rel, valued, occ, lines, names)
             check_field_use(m, rel, clean, occ, lines, aliases)
-    print("-- inline constants (INLINE_CLAIMS)")
-    for reg, cl in claims.items():
-        for c in cl:
-            where = f"{','.join(sorted(set(c['used']))) or '(unused)'} {reg} {c['text']} = {c['fields']}"
-            if not c["used"]:
-                report("NOTE", f"INLINE_CLAIMS entry not used by the code: {reg} {c['text']}")
-                continue
-            res = results.get(c["id"], set())
-            bad = sorted(t for ok, t in res if not ok)
-            if bad:
-                report("FAIL", f"{where}: " + "; ".join(bad))
-            else:
-                report("PASS", f"{where}: " + "; ".join(sorted(t for _, t in res)))
 
 
 def value_reg_fits(m, occ, v):
@@ -1289,7 +1165,7 @@ def check_vectors(svd, st, path, hdr_names, c_texts):
             report("PASS", f"{rel}: vector 16 + {n} = {h} (SVD {irq} = {want})"
                    + (" [CMSIS agrees]" if cm == n else ""))
     for t in c_texts:
-        for mm in re.finditer(r"NVIC_ISER\s*=\s*1u?\s*<<\s*IRQ_(\w+)", t):
+        for mm in re.finditer(r"NVIC_ISER\s*=\s*(?:1u?\s*<<\s*|NVIC_ISER_SETENA\s*\(\s*)IRQ_(\w+)", t):
             irq = mm.group(1)
             ok = handlers.get(irq) == hdr_names("IRQ_" + irq)
             report("PASS" if ok else "FAIL", f"NVIC_ISER enables IRQ_{irq}: "
@@ -1336,14 +1212,27 @@ def check_layout(svd, st, ld_path, c_files, names):
     if saved:
         report("PASS" if saved[0] == fo + fl else "FAIL",
                f"{rel} SAVED at {saved[0]:#x} follows FLASH (ends {fo + fl:#x})")
-    # The driver's page address formula and its flash erase page number.
+    # The driver's page address formula and its flash erase page number, literals or macros.
+    tok = r"(?:0[xX][0-9A-Fa-f]+|\d+)[uU]?|[A-Za-z_]\w*"
+
+    def const(t):
+        try:
+            return ceval(t, names)
+        except (NotConst, ZeroDivisionError):
+            return None
+
     for path in c_files:
         t = strip_c(open(path, encoding="utf-8").read())
-        mm = re.search(r"(0x[0-9A-Fa-f]+)u?\s*\+\s*\(\s*(\d+)u?\s*\+\s*(\w+)\s*\)\s*\*\s*(\d+)u?", t)
+        mm = None
+        for cand in re.finditer(rf"({tok})\s*\+\s*\(\s*({tok})\s*\+\s*(\w+)\s*\)\s*\*\s*({tok})", t):
+            vals = [const(cand.group(i)) for i in (1, 2, 3, 4)]
+            if None not in (vals[0], vals[1], vals[3]) and vals[2] is None and vals[0] >= 0x08000000:
+                mm, (base, first, _, psize) = cand, vals
+                break
         if not mm:
             continue
         cname = os.path.basename(path)
-        base, first, var, psize = int(mm.group(1), 16), int(mm.group(2)), mm.group(3), int(mm.group(4))
+        var = mm.group(3)
         against(f"{cname} flash base", base, flash_base, "ST's CMSIS FLASH_BASE")
         against(f"{cname} flash page size", psize, page, "ST's HAL FLASH_PAGE_SIZE")
         if saved:
@@ -1351,15 +1240,28 @@ def check_layout(svd, st, ld_path, c_files, names):
             report("PASS" if ok else "FAIL",
                    f"{cname} pages {first}.. at {base + first * psize:#x}, {rel} SAVED at "
                    f"{saved[0]:#x}, {saved[1] // psize} page(s) of {psize}")
-        pnb = re.search(r"\(\s*(\d+)u?\s*\+\s*" + var + r"\s*\)\s*<<\s*(\d+)", t)
-        fields = merged_fields(svd.regs_at("FLASH", 0x14))
+            count = names("HAL_SAVED_PAGES")
+            if count is not None:
+                report("PASS" if count == saved[1] // psize else "FAIL",
+                       f"HAL_SAVED_PAGES = {count}, {rel} SAVED holds {saved[1] // psize}")
+        # FLASH_CR's page number: (first + page) << k, or the PNB field macro of (first + page).
+        pfirst = shift = None
+        pnb = re.search(rf"\(\s*({tok})\s*\+\s*{var}\s*\)\s*<<\s*(\d+)", t)
         if pnb:
-            off, w = fields["PNB"]
-            last = int(pnb.group(1)) + (saved[1] // psize - 1 if saved else 0)
-            ok = int(pnb.group(1)) == first and int(pnb.group(2)) == off and last < (1 << w)
+            pfirst, shift = const(pnb.group(1)), int(pnb.group(2))
+        pnb = pnb or re.search(rf"\bFLASH_CR_PNB\s*\(\s*({tok})\s*\+\s*{var}\s*\)", t)
+        if pnb and shift is None and names.defs.get("FLASH_CR_PNB", (None,))[0]:
+            params_, body, _ = names.defs["FLASH_CR_PNB"]
+            pfirst, shift = const(pnb.group(1)), ceval(body, names, {params_[0]: 1}).bit_length() - 1
+        if pfirst is not None:
+            off, w = merged_fields(svd.regs_at("FLASH", 0x14))["PNB"]
+            last = pfirst + (saved[1] // psize - 1 if saved else 0)
+            ok = pfirst == first and shift == off and last < (1 << w)
             report("PASS" if ok else "FAIL",
-                   f"{cname} FLASH_CR page number {pnb.group(1)}+{var} << {pnb.group(2)}: PNB at bit "
+                   f"{cname} FLASH_CR page number {pfirst}+{var} << {shift}: PNB at bit "
                    f"{off}, last page {last} fits {w} bits, same first page as the address")
+        else:
+            report("FAIL", f"{cname}: no FLASH_CR page number (first page + {var}) found")
         wsize = re.search(r"i\s*\+=\s*(\d+)", t[mm.end():])
         if wsize:
             report("PASS" if wsize.group(1) == "8" else "FAIL",
@@ -1377,8 +1279,11 @@ def check_layout(svd, st, ld_path, c_files, names):
     if st.has("stm32g0xx_hal_flash.h"):
         for key, want in (("FLASH_KEY1", 0x45670123), ("FLASH_KEY2", 0xCDEF89AB)):
             v = st.value(key)
-            found = any(re.search(f"{want:#010X}".replace("0X", "0x"), open(p, encoding="utf-8").read(), re.I)
-                        for p in c_files)
+            # The key written inline, or a macro of that value used by name.
+            pats = [f"{want:#010X}".replace("0X", "0x")]
+            pats += [rf"\b{n}\b" for n, d in names.defs.items() if d[0] is None and names(n) == want]
+            found = any(re.search(pat, strip_c(open(p, encoding="utf-8").read()), re.I)
+                        for p in c_files for pat in pats)
             report("PASS" if v == want and found else "FAIL",
                    f"flash unlock key {want:#010x} in the driver [ST's HAL {key} = {v:#x}]")
 
@@ -1427,6 +1332,10 @@ def main():
         d = parse_defines(p)
         per_file.append((os.path.basename(p), d))
         cdefs.update(d)
+    # The board layer's hal.h only for its constants (HAL_FLASH_PAGE_SIZE); it touches no register.
+    board_hal = os.path.join(a.root, "board", "hal.h")
+    if os.path.isfile(board_hal):
+        cdefs = {**parse_defines(board_hal), **cdefs}
     names = Names(hdr, cdefs)
     m = Map(svd, hdr, names)
     check_header(svd, m, hdr, names, st)

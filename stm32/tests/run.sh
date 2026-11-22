@@ -84,3 +84,8 @@ cc $strict $san -DSAFETY_BENCH -c "$link/link.c" -o "$out/bench_link.o"
 cc $strict $san -DSAFETY_BENCH -c "$here/../../common/co/co_alarm.c" -o "$out/bench_co_alarm.o"
 cc -std=c99 -Wall -Wextra -Werror $san -DSAFETY_BENCH "$here/test_bringup.c" "$out"/bench_*.o -o "$out/test_bringup"
 "$out/test_bringup"
+
+# The driver's host-testable decisions (hal_stm32g0.h): the option-byte check against the ESP32
+# updater's rule.
+c++ -std=c++17 -Wall -Wextra -Werror $san "$here/test_hal.cpp" -o "$out/test_hal"
+"$out/test_hal"

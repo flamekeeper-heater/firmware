@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "../board/analog.h"
+#include "../hal/hal_stm32g0.h"
 
 static uint32_t since(uint32_t now, uint32_t then) { return (uint32_t) (now - then); }
 
@@ -504,15 +505,10 @@ static void opt_line(console *c, uint16_t i) {
       kv(c, "nrst_mode", (int32_t) ((o >> 27) & 3u));
       kv(c, "optverr", (int32_t) ((c->boot.flash_sr >> 15) & 1u));
       break;
-    default: {
-      /* WDG-1: IWDG_SW 0, IWDG_STOP 1, IWDG_STDBY 1, nBOOT_SEL 0, nBOOT1 1, nBOOT0 1. */
-      uint32_t mask = (1u << 16) | (1u << 17) | (1u << 18) | (1u << 24) | (1u << 25) | (1u << 26);
-      uint32_t want = (1u << 17) | (1u << 18) | (1u << 25) | (1u << 26);
-      int ok = (o & mask) == want && !((c->boot.flash_sr >> 15) & 1u);
+    default: /* WDG-1: the driver's own decision (hal_option_faults) */
       put(c, "want iwdg_sw=0 iwdg_stop=1 iwdg_stdby=1 nboot_sel=0 nboot1=1 nboot0=1 optverr=0: ");
-      put(c, ok ? "ok" : "WRONG");
+      put(c, hal_optr_wdg1_ok(o, c->boot.flash_sr) ? "ok" : "WRONG");
       break;
-    }
   }
 }
 
