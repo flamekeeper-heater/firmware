@@ -33,7 +33,7 @@ void Reset_Handler(void) {
 __attribute__((section(".isr_vector"), used)) const uint32_t vectors[16 + 32] = {
     [0] = (uint32_t) (uintptr_t) &_estack,
     [1] = V(Reset_Handler),
-    [2] = V(Default_Handler),  /* NMI */
+    [2] = V(NMI_Handler),      /* NMI: a flash ECC error in a saved page, else as Default */
     [3] = V(Default_Handler),  /* HardFault */
     [11] = V(Default_Handler), /* SVCall */
     [14] = V(Default_Handler), /* PendSV */

@@ -10,7 +10,10 @@
  * The ADC schedule (one ADC for the scan, the glow pulse readings and the pump's overcurrent
  * watchdog) is described above its section below.
  *
- * Not done yet: the CO sensor. */
+ * The CO sensor (CO-9) is CO_ADC on PA11 / IN15, last in the scan, and CO_HEAT_EN on PC6 as a plain
+ * output (CFG-10: no hardware PWM; the MiCS-5524's heater is steady on). C_CO_ADC (100 nF) holds
+ * the 47 k divider up for the short sample time. UNVERIFIED: PA11 is not remapped to PA9
+ * (SYSCFG_CFGR1.PA11_RMP stays 0), and PA9, sharing the pin, stays analog. */
 #include "../board/hal.h"
 
 #include <string.h>
@@ -535,6 +538,24 @@ void hal_uart_write(const uint8_t *d, size_t n) {
 
 /* ---------------------------------------------------------------- flash (the last two pages) */
 
+static volatile uint8_t flash_unreadable; /* a bit per saved page */
+
+/* A double ECC error raises the NMI. In a saved page (a write torn by a power loss): note the
+ * page, clear ECCD and return; the load completes with corrupt data, which the images' CRCs
+ * reject, and the board rewrites the page. Anything else waits for the watchdog, as before.
+ * UNVERIFIED on silicon: that the NMI returns into the load, and ADDR_ECC's scale. */
+void NMI_Handler(void) {
+  uint32_t eccr = FLASH_ECCR;
+  int page = hal_ecc_saved_page(eccr);
+  if (page < 0)
+    for (;;) {
+    }
+  flash_unreadable |= (uint8_t) (1u << page);
+  FLASH_ECCR = (eccr & (1u << 24)) | (1u << 31); /* clear ECCD only, keep ECCCIE */
+}
+
+uint8_t hal_flash_unreadable(uint8_t page) { return (uint8_t) ((flash_unreadable >> page) & 1u); }
+
 static uint32_t page_addr(uint8_t page) { return 0x08000000u + (30u + page) * 2048u; }
 
 size_t hal_flash_read(uint8_t page, uint8_t *out, size_t cap) {
@@ -560,6 +581,34 @@ int hal_flash_write(uint8_t page, const uint8_t *d, size_t n) {
   for (size_t i = 0; i < n; i += 8) {
     uint32_t w[2] = {0xFFFFFFFFu, 0xFFFFFFFFu};
     memcpy(w, d + i, n - i < 8 ? n - i : 8);
+    REG(a + i) = w[0];
+    REG(a + i + 4) = w[1];
+    while (FLASH_SR & (1u << 16)) {
+    }
+  }
+  FLASH_CR = 1u << 31; /* lock */
+  if (FLASH_SR & 0xC3FAu)
+    return -1;
+  flash_unreadable &= (uint8_t) ~(1u << page); /* erased and written afresh */
+  return 0;
+}
+
+const uint8_t *hal_flash_page(uint8_t page) { return (const uint8_t *) page_addr(page); }
+
+/* Double words into an erased part of the page, no erase (the CO sensor's R0 log). */
+int hal_flash_program(uint8_t page, uint16_t offset, const uint8_t *d, size_t n) {
+  if ((offset & 7u) || (n & 7u) || offset + n > 2048u)
+    return -1;
+  while (FLASH_SR & (1u << 16)) {
+  }
+  FLASH_KEYR = 0x45670123u;
+  FLASH_KEYR = 0xCDEF89ABu;
+  FLASH_SR = 0xFFFFu;
+  FLASH_CR = 1u; /* program */
+  uint32_t a = page_addr(page) + offset;
+  for (size_t i = 0; i < n; i += 8) {
+    uint32_t w[2];
+    memcpy(w, d + i, 8);
     REG(a + i) = w[0];
     REG(a + i + 4) = w[1];
     while (FLASH_SR & (1u << 16)) {

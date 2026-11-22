@@ -9,6 +9,7 @@ cflags="-mcpu=cortex-m0plus -mthumb -Os -std=c99 -ffreestanding -ffunction-secti
   -Wall -Wextra -Werror -I$here/hal/include"
 srcs="$here/core/burn.c $here/core/glow.c $here/core/fan.c $here/core/checks.c $here/core/pump.c \
   $here/core/params.c $here/core/plug.c $here/core/safety.c $here/../common/link/link.c \
+  $here/../common/co/co_alarm.c \
   $here/board/analog.c $here/board/board.c $here/board/pump_oc.c \
   $here/hal/hal_stm32g0.c $here/hal/startup.c $here/hal/libc_min.c $here/hal/main.c"
 arm-none-eabi-gcc $cflags $srcs -nostdlib -Wl,--gc-sections -Wl,-T,"$here/hal/stm32g030k8.ld" \

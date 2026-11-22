@@ -24,6 +24,7 @@
 #define FLASH_KEYR REG(FLASH + 0x08)
 #define FLASH_SR REG(FLASH + 0x10)
 #define FLASH_CR REG(FLASH + 0x14)
+#define FLASH_ECCR REG(FLASH + 0x18)
 #define FLASH_OPTR REG(FLASH + 0x20)
 
 /* GPIO */

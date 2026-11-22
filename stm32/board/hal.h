@@ -70,11 +70,22 @@ void hal_uart_write(const uint8_t *data, size_t len);
 
 void hal_iwdg_refresh(void);                 /* WDG-16: only ever from the safety loop pass */
 
-/* Flash pages for the saved parameters and the plug record. Erasing stalls the CPU: the board
- * layer only writes while the heater is off. */
+/* Flash pages for the saved parameters and the plug record (the plug page also holds the CO
+ * sensor's R0 log past the record: board.c). Erasing stalls the CPU: the board layer only writes
+ * while the heater is off. hal_flash_write erases the page and writes an image of up to 256 bytes
+ * from its start; hal_flash_read reads up to 256 bytes from the start. */
 enum { HAL_PAGE_PARAMS = 0, HAL_PAGE_PLUG = 1 };
+#define HAL_FLASH_PAGE_SIZE 2048u
 size_t hal_flash_read(uint8_t page, uint8_t *out, size_t cap);
 int hal_flash_write(uint8_t page, const uint8_t *data, size_t len);
+/* The whole page as memory (erased bytes read 0xFF). */
+const uint8_t *hal_flash_page(uint8_t page);
+/* Programs data into an erased part of the page without erasing it: offset and len in 8-byte
+ * steps. 0 when done. */
+int hal_flash_program(uint8_t page, uint16_t offset, const uint8_t *data, size_t len);
+/* 1 when reading the page hit a double ECC error (a write torn by a power loss) since it was last
+ * written: what was read is garbage. */
+uint8_t hal_flash_unreadable(uint8_t page);
 
 #ifdef __cplusplus
 }

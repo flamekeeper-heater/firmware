@@ -47,7 +47,8 @@ typedef struct {
   uint32_t open_ms;           /* an implausible (open) reading this long is a sensor fault (5 s) */
   uint32_t check_off_ms;      /* heater check: heater off this long once per warm-up (5 s) */
   uint16_t check_drop_pct;    /* ...and the ADC reading must fall at least this much (ASSUMED 30 %) */
-  int16_t cold_c10;           /* below this board temperature the reading is not trusted (-30 C) */
+  int16_t cold_c10;           /* CO-8: below this board temperature the state reads "too cold";
+                                 the readings are still judged and the alarm still acts (-30 C) */
 } co_config;
 
 /* The defaults above, CO fitted. */

@@ -15,5 +15,17 @@ void hal_ms_tick(void);         /* the driver's own millisecond count */
 void TIM3_IRQHandler(void);
 void ADC_IRQHandler(void);
 void USART2_IRQHandler(void);
+void NMI_Handler(void);
+
+/* The NMI's decision (host-tested): for FLASH_ECCR (ECCD bit 31, SYSF_ECC bit 20, ADDR_ECC [13:0]
+ * the failing double word's index in the main flash), the saved page holding a double ECC error,
+ * 0 or 1 (HAL_PAGE_*), or -1 for anything else. UNVERIFIED: ADDR_ECC read as a double-word index. */
+static inline int hal_ecc_saved_page(uint32_t eccr) {
+  uint32_t page;
+  if (!(eccr & (1u << 31)) || (eccr & (1u << 20)))
+    return -1;
+  page = (eccr & 0x3FFFu) * 8u / 2048u;
+  return page == 30u || page == 31u ? (int) (page - 30u) : -1;
+}
 
 #endif /* FLAMEKEEPER_HAL_STM32G0_H */
