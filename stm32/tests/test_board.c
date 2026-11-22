@@ -6,6 +6,7 @@
 
 #include "../board/analog.h"
 #include "../board/board.h"
+#include "../board/pump_oc.h"
 
 static int n_checks = 0, failures = 0;
 #define CHECK(c)                                                  \
@@ -151,6 +152,77 @@ static void test_conversions(void) {
   CHECK(analog_board_c10(100) == ANALOG_UNKNOWN_TEMP);  /* above 125 C */
 }
 
+/* PMP-7's threshold in ADC counts: 3.3 A at 0.45 V/A, against the measured VDDA. */
+static void test_pump_oc_threshold(void) {
+  uint16_t t = analog_pump_oc_raw(3300, 3300);
+  CHECK(t == 1842); /* 1.485 V of 3.3 V */
+  uint16_t back = analog_pump_ma(t, 3300);
+  CHECK(back >= 3290 && back <= 3300);
+  CHECK(analog_pump_oc_raw(3300, 3170) == 1918); /* a low rail: more counts for the same current */
+  CHECK(analog_pump_oc_raw(3300, 3460) == 1757);
+  CHECK(analog_pump_oc_raw(3300, 0) == 1842);    /* no VDDA yet: the nominal rail */
+  CHECK(analog_pump_oc_raw(9000, 3300) == 4094); /* never above full scale: saturation trips */
+}
+
+/* The overcurrent filter against a train of PUMP_ISENSE conversions, one every scan_us, with an
+ * excess of dur_us at a phase: returns the time from the excess's start to the cut, -1 if none. */
+static int oc_train(uint16_t dur_us, uint16_t phase_us, uint16_t scan_us, uint8_t need) {
+  pump_oc f;
+  pump_oc_arm(&f, need);
+  int cut_at = -1;
+  const uint32_t start = 500u + phase_us;
+  for (uint32_t t = 0; t < 3000; t += scan_us) {
+    int above = t >= start && t < start + dur_us;
+    int high = above, low = !above && pump_oc_listening(&f);
+    if ((high || low) && pump_oc_event(&f, high, low)) {
+      CHECK(cut_at < 0); /* once */
+      cut_at = (int) (t - start);
+    }
+  }
+  return cut_at;
+}
+
+static void test_pump_oc_filter(void) {
+  CHECK(pump_oc_need(50, 20) == 2);
+  CHECK(pump_oc_need(60, 20) == 3);
+  CHECK(pump_oc_need(50, 10) == 5);
+  CHECK(pump_oc_need(10, 20) == 1);
+  CHECK(pump_oc_need(0, 20) == 1);
+  CHECK(pump_oc_need(50, 0) == 1);
+  /* Every phase of the scan against the excess: longer than 50 us is always cut, within two scans
+   * of its start; shorter than one scan never is. */
+  const uint16_t scan = 20;
+  uint8_t need = pump_oc_need(50, scan);
+  for (uint16_t ph = 0; ph < scan; ph++) {
+    int c51 = oc_train(51, ph, scan, need), c1000 = oc_train(1000, ph, scan, need);
+    CHECK(c51 >= 0 && c51 <= 2 * scan);
+    CHECK(c1000 >= 0 && c1000 <= 2 * scan);
+    CHECK(oc_train(19, ph, scan, need) < 0);
+    CHECK(oc_train(0, ph, scan, need) < 0);
+  }
+  /* Single conversions above it, never two in a row: glitches, no cut. */
+  pump_oc f;
+  pump_oc_arm(&f, need);
+  int cuts = 0;
+  for (int k = 0; k < 100; k++) {
+    int high = k % 2 == 0, low = !high && pump_oc_listening(&f);
+    if (high || low)
+      cuts += pump_oc_event(&f, high, low);
+  }
+  CHECK(cuts == 0);
+  /* A late interrupt that sees both flags: the high one counts. */
+  pump_oc_arm(&f, need);
+  CHECK(pump_oc_event(&f, 1, 0) == 0);
+  CHECK(pump_oc_listening(&f));
+  CHECK(pump_oc_event(&f, 1, 1) == 1);
+  CHECK(f.cut && !pump_oc_listening(&f));
+  CHECK(pump_oc_event(&f, 1, 0) == 0); /* latched: reported once */
+  pump_oc_arm(&f, need);               /* the next stroke starts clean */
+  CHECK(!f.cut && f.above == 0);
+  /* A low reading while not counting changes nothing. */
+  CHECK(pump_oc_event(&f, 0, 1) == 0 && f.above == 0);
+}
+
 static void test_schedule_and_watchdog(void) {
   chip_reset();
   board b;
@@ -235,6 +307,8 @@ static void test_flash_only_when_off(void) {
 
 int main(void) {
   test_conversions();
+  test_pump_oc_threshold();
+  test_pump_oc_filter();
   test_schedule_and_watchdog();
   test_link();
   test_heartbeat_needs_the_loop();
