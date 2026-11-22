@@ -3,7 +3,7 @@
 
 Usage: python3 -I stm32/tools/check_registers.py --svd PATH/STM32G030.svd [--st-dir DIR] [-q]
 
-It reads hal/stm32g030.h, every hal/*.c, hal/startup.c and the linker script, and checks against
+It reads hal/stm32g030.h, the other hal/*.h and *.c, hal/startup.c and the linker script, and checks against
 the SVD: each peripheral base, each register macro's offset and name, each named bit or field
 macro in the header (PERIPH_REG_FIELD, with optional _Pos/_Msk suffixes, or a field value such as
 RCC_CFGR_SW_PLL), the IRQ numbers and the vector table, every bit constant written inline in the
@@ -41,7 +41,9 @@ PINNED = {
 # Register names where the SVD differs from the reference manual (SVD name -> RM name).
 REG_ALIASES = {("RCC", "PLLSYSCFGR"): "PLLCFGR"}
 # Field names the SVD misspells (SVD name -> RM name).
-FIELD_ALIASES = {("FLASH", "OPTR", "IDWG_SW"): "IWDG_SW"}
+FIELD_ALIASES = {("FLASH", "OPTR", "IDWG_SW"): "IWDG_SW", ("FLASH", "ECCR", "ECCIE"): "ECCCIE"}
+# DMAMUX request names where ST's LL driver numbers the instance.
+LL_DMAMUX_NAMES = {"ADC": "ADC1"}
 # Header base macros whose CMSIS name is not NAME_BASE.
 CMSIS_BASE = {"ADC": "ADC1_BASE", "FLASH": "FLASH_R_BASE", "DMAMUX": "DMAMUX1_BASE"}
 # The STM32G030K8: 64 KB of flash (the "8" in the part number; datasheet DS12991).
@@ -61,6 +63,9 @@ CORE = {
     0xE000E200: ("NVIC", "ISPR", {"SETPEND": (0, 32)}),
     0xE000E280: ("NVIC", "ICPR", {"CLRPEND": (0, 32)}),
 }
+# NVIC_IPR0..7: a byte per interrupt (the M0+ implements bits 7:6 of each; the rest read as 0).
+for _k in range(8):
+    CORE[0xE000E400 + 4 * _k] = ("NVIC", f"IPR{_k}", {f"PRI_{i}": (8 * i, 8) for i in range(4)})
 CORE_EXCEPTIONS = {2: "NMI", 3: "HardFault", 11: "SVCall", 14: "PendSV", 15: "SysTick"}
 
 # What each bit constant written inline in hal/*.c means: (register macro, the constant as the
@@ -471,6 +476,7 @@ class Map:
         self.bases = {}  # macro -> address, for macros naming a peripheral
         self.regs = {}  # macro -> {"param": bool, "offset", "fixed": (periph, addr) | None}
         self.field_fns = {}  # function-like field macro -> [(field label, mask)]
+        self.field_owner = {}  # field macro -> the register macros it belongs to
         for name, (params, body, line) in hdr.items():
             if params is None and name in svd.periphs:
                 v = names(name)
@@ -489,6 +495,13 @@ class Map:
                     report("FAIL", f"stm32g030.h:{line} {name}: cannot evaluate {expr}")
                     continue
                 self.regs[name] = {"param": True, "offset": off, "fixed": None, "line": line}
+                if off in CORE:  # NVIC_IPR(n): the core registers it reaches for small n
+                    fam = []
+                    for n in range(32):
+                        a = ceval(expr, names, {p: n for p in params})
+                        if a in CORE and CORE[a][1].rstrip("0123456789") == CORE[off][1].rstrip("0123456789"):
+                            fam.append(("CORE", a))
+                    self.regs[name]["core"] = fam
             else:
                 try:
                     addr = ceval(expr, names)
@@ -515,6 +528,8 @@ class Map:
         r = self.regs[macro]
         if r["fixed"]:
             return [r["fixed"]]
+        if "core" in r:
+            return r["core"]
         if inst:
             if inst in self.bases:
                 return [(inst, self.bases[inst] + r["offset"])]
@@ -554,6 +569,12 @@ def check_header(svd, m, hdr, names, st):
     for macro, r in sorted(m.regs.items(), key=lambda kv: kv[1]["line"]):
         regname = macro.split("_", 1)[1] if "_" in macro else macro
         insts = m.instances(macro)
+        if "core" in r:
+            names_ = sorted({f"{CORE[a][0]}_{CORE[a][1].rstrip('0123456789')}" for _, a in r["core"]})
+            ok = names_ == [macro]
+            report("PASS" if ok else "FAIL", f"{macro} at {r['offset']:#010x}.. reaches "
+                   f"{len(r['core'])} registers: {', '.join(names_)} (ARMv6-M, built-in table)")
+            continue
         if r["fixed"] and r["fixed"][0] == "CORE":
             c = CORE.get(r["fixed"][1])
             if c and f"{c[0]}_{c[1]}" == macro:
@@ -589,11 +610,33 @@ def check_header(svd, m, hdr, names, st):
             report("PASS", f"{where} in {', '.join(found)}")
 
     print("-- bit and field macros, IRQs, DMAMUX requests, system memory")
+    check_named(svd, m, st, "stm32g030.h", hdr, names, False)
+
+
+def field_regs(m, name):
+    """The register macros a field macro's name puts it in: the longest register macro it starts
+    with, or every channel of a numbered register (DMA_CCR_MINC: DMA_CCR1, DMA_CCR2)."""
     regnames = sorted(m.regs, key=len, reverse=True)
-    for name, (params, body, line) in sorted(hdr.items(), key=lambda kv: kv[1][2]):
+    reg = next((r for r in regnames if name.startswith(r + "_")), None)
+    if reg:
+        return [reg], name[len(reg) + 1:]
+    generic = {}
+    for r in regnames:
+        g = r.rstrip("0123456789")
+        if g != r and name.startswith(g + "_"):
+            generic.setdefault(g, []).append(r)
+    if generic:
+        g = max(generic, key=len)
+        return sorted(generic[g]), name[len(g) + 1:]
+    return [], None
+
+
+def check_named(svd, m, st, fname, defs, names, quiet_unknown):
+    """The named macros of one file: IRQs, DMAMUX requests, system memory, bits and fields."""
+    for name, (params, body, line) in sorted(defs.items(), key=lambda kv: kv[1][2]):
         if name in m.regs or name in m.bases or name == "REG" or not body:
             continue
-        where = f"stm32g030.h:{line} {name}"
+        where = f"{fname}:{line} {name}"
         if name.startswith("IRQ_"):
             check_irq(svd, st, where, name[4:], names(name))
             continue
@@ -604,11 +647,13 @@ def check_header(svd, m, hdr, names, st):
         if mm:
             check_sysmem(st, where, name, int(mm.group(1), 16))
             continue
-        reg = next((r for r in regnames if name.startswith(r + "_")), None)
-        if reg is None:
-            report("NOTE", f"{where}: not a register, base, field, IRQ or DMAMUX name; not checked")
+        regs, rest = field_regs(m, name)
+        if not regs:
+            if not quiet_unknown:
+                report("NOTE", f"{where}: not a register, base, field, IRQ or DMAMUX name; not checked")
             continue
-        check_field_macro(m, st, where, name, reg, name[len(reg) + 1:], params, body, names)
+        m.field_owner[name] = regs
+        check_field_macro(m, st, where, name, regs, rest, params, body, names)
 
 
 def check_irq(svd, st, where, irq, value):
@@ -625,6 +670,7 @@ def check_irq(svd, st, where, irq, value):
 
 
 def check_dmamux(st, where, req, value):
+    req = LL_DMAMUX_NAMES.get(req, req)
     ll = st.value(f"LL_DMAMUX_REQ_{req}") if st.has("stm32g0xx_ll_dmamux.h") else None
     if ll is None:
         report("UNVERIFIED", f"{where} = {value}: the DMAMUX request table is in RM0454, not "
@@ -662,7 +708,7 @@ def find_field(fields, want):
     return None
 
 
-def check_field_macro(m, st, where, name, reg, rest, params, body, names):
+def check_field_macro(m, st, where, name, regs, rest, params, body, names):
     kind = "mask"
     for suf, k in (("_Pos", "pos"), ("_POS", "pos"), ("_SHIFT", "pos"), ("_Msk", "mask"),
                    ("_MSK", "mask"), ("_MASK", "mask")):
@@ -684,7 +730,7 @@ def check_field_macro(m, st, where, name, reg, rest, params, body, names):
         report("FAIL", f"{where}: cannot evaluate {body}")
         return
     results, missing = [], []
-    for periph, addr in m.instances(reg):
+    for reg, periph, addr in [(r, p, a) for r in regs for p, a in m.instances(r)]:
         label, fields = m.fields(periph, addr)
         if not fields:
             continue
@@ -716,10 +762,10 @@ def check_field_macro(m, st, where, name, reg, rest, params, body, names):
         else:
             ok = value == fmask
             results.append((ok, f"{label}.{f} mask {fmask:#x}" + ("" if ok else f", macro says {value:#x}")))
-    if not results or not m.regs[reg]["param"]:
+    if not results or not all(m.regs[r]["param"] for r in regs):
         results += missing  # a family member without the field is fine if another has it
     if not results:
-        report("FAIL", f"{where}: {reg} has no SVD register to check against")
+        report("FAIL", f"{where}: {', '.join(regs)} has no SVD register to check against")
     elif all(ok for ok, _ in results):
         report("PASS", f"{where}: " + "; ".join(sorted({t for _, t in results})))
     else:
@@ -1123,6 +1169,7 @@ def check_sources(m, st, src_files, names):
                     for ok, txt in check_claim(m, st, c, periph, addr):
                         results.setdefault(c["id"], set()).add((ok, txt))
             check_whole_write(m, rel, clean, occ, lines, names)
+            check_field_use(m, rel, clean, occ, lines, aliases)
     print("-- inline constants (INLINE_CLAIMS)")
     for reg, cl in claims.items():
         for c in cl:
@@ -1153,6 +1200,30 @@ def value_reg_fits(m, occ, v):
             if mask & (mask + 1) == 0 and v <= mask:  # contiguous from bit 0
                 return True
     return False
+
+
+def check_field_use(m, rel, toks, occ, lines, aliases):
+    """A field macro written to, or tested against, another register: REG = F..., REG |= F...,
+    REG & F, alias & F."""
+    target = None
+    if occ and toks and toks[0] == occ[0][0]:
+        k = 1
+        if k < len(toks) and toks[k] == "(":
+            k = group_end(toks, k) + 1
+        if k < len(toks) and toks[k] in ("=", "|=", "&="):
+            target = occ[0][0]
+            for t in toks[k + 1:]:
+                own = m.field_owner.get(t)
+                if own and target not in own and not any(o[0] in own for o in occ[1:]):
+                    report("FAIL", f"{rel}:{lines[0]} {t} ({'/'.join(own)}) written to {target}")
+    for j in range(1, len(toks) - 1):
+        if toks[j] != "&":
+            continue
+        reg = toks[j - 1] if toks[j - 1] in m.regs else aliases.get(toks[j - 1], (None,))[0]
+        own = m.field_owner.get(toks[j + 1])
+        if reg and own and reg not in own:
+            report("FAIL", f"{rel}:{lines[min(j, len(lines) - 1)]} {toks[j + 1]} ({'/'.join(own)}) "
+                           f"tested against {reg}")
 
 
 def check_whole_write(m, rel, toks, occ, lines, names):
@@ -1334,6 +1405,8 @@ def main():
     hal = os.path.join(a.root, "hal")
     header = os.path.join(hal, "stm32g030.h")
     c_files = sorted(os.path.join(hal, f) for f in os.listdir(hal) if f.endswith(".c"))
+    h_files = sorted(os.path.join(hal, f) for f in os.listdir(hal)
+                     if f.endswith(".h") and f != "stm32g030.h")
     lds = sorted(os.path.join(hal, f) for f in os.listdir(hal) if f.endswith(".ld"))
 
     print("-- sources")
@@ -1350,13 +1423,17 @@ def main():
         print("   no --st-dir: DMAMUX, system memory and layout facts print UNVERIFIED")
 
     hdr = parse_defines(header)
-    cdefs = {}
-    for p in c_files:
-        cdefs.update(parse_defines(p))
+    cdefs, per_file = {}, []
+    for p in h_files + c_files:
+        d = parse_defines(p)
+        per_file.append((os.path.basename(p), d))
+        cdefs.update(d)
     names = Names(hdr, cdefs)
     m = Map(svd, hdr, names)
     check_header(svd, m, hdr, names, st)
-    srcs = [p for p in c_files if os.path.basename(p) != "startup.c"]
+    for fname, d in per_file:  # field macros defined in the driver's own files
+        check_named(svd, m, st, fname, d, names, True)
+    srcs = h_files + [p for p in c_files if os.path.basename(p) != "startup.c"]
     check_sources(m, st, srcs, names)
     startup = os.path.join(hal, "startup.c")
     if os.path.isfile(startup):
