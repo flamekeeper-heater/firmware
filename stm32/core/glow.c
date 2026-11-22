@@ -40,8 +40,9 @@ static uint64_t pulse_a2us(uint32_t i_ca, uint32_t w_us) {
 }
 
 void glow_init(glow *g, const glow_params *p, uint32_t now_ms) {
+  glow_params keep = *p; /* p may point into g: a restart with its own parameters */
   memset(g, 0, sizeof(*g));
-  g->p = *p;
+  g->p = keep;
   g->last_ms = now_ms;
   /* After a reset the budget starts empty: the burn runs the fan longer before the first glow
    * instead (GLW-21; burn_params.reset_fan_s). */
