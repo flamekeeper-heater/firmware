@@ -111,7 +111,11 @@ static void irq_restore(uint32_t m) { __asm__ volatile("msr primask, %0" : : "r"
 
 /* ---------------------------------------------------------------- timers */
 
-static volatile uint16_t burst[26];
+/* PMP-1: the heartbeat's burst, CCR1 values TIM1's DMA writes one per update (1 ms): HB_BURST
+ * updates at half duty, then 0, so the burst ends in hardware, interrupts or not. Filled once by
+ * timers_init. In RAM, not flash: a flash page erase stalls every flash read, the DMA's too. */
+#define HB_BURST 25
+static volatile uint16_t burst[HB_BURST + 1];
 /* The pump's overcurrent cut (PMP-7) has stopped the heartbeat: no burst until the core has the
  * report (hal_pump_overcurrent), and then holds the heartbeat off itself. */
 static volatile uint8_t hb_blocked;
@@ -141,6 +145,9 @@ static void timers_init(void) {
   TIM_DIER(TIM1) = TIM_DIER_UDE; /* the update's DMA request */
   TIM_EGR(TIM1) = TIM_EGR_UG;
   TIM_CR1(TIM1) = TIM_CR1_CEN | TIM_CR1_ARPE;
+  for (int i = 0; i < HB_BURST; i++)
+    burst[i] = (uint16_t) ((TIM_ARR(TIM1) + 1u) / 2u);
+  burst[HB_BURST] = 0;
   DMAMUX_C0CR = DMAMUX_REQ_TIM1_UP;
   DMA_CPAR1 = (uint32_t) &TIM_CCR1(TIM1);
   /* TIM3, 200 Hz at 1 MHz: CH1 the glow pulse; CH2 and CH3 (no pins) pick the pulse and gap
@@ -180,13 +187,9 @@ void hal_heartbeat(uint8_t mode) {
     mode = HAL_HB_STOPPED;
   uint32_t ccmr = TIM_CCMR1(TIM1) & ~TIM_CCMR1_OC1M;
   if (mode == HAL_HB_BURST) {
-    /* PMP-1: 25 updates of half a period, then 0: the burst ends in hardware, interrupts or not. */
-    for (int i = 0; i < 25; i++)
-      burst[i] = (uint16_t) ((TIM_ARR(TIM1) + 1u) / 2u);
-    burst[25] = 0;
     DMA_CCR1 = 0;
     DMA_CMAR1 = (uint32_t) burst;
-    DMA_CNDTR1 = 26;
+    DMA_CNDTR1 = HB_BURST + 1;
     /* memory to peripheral, memory increment, 16 bit both sides */
     DMA_CCR1 = DMA_CCR_DIR | DMA_CCR_MINC | DMA_CCR_PSIZE_16 | DMA_CCR_MSIZE_16 | DMA_CCR_EN;
     TIM_CCMR1(TIM1) = ccmr | TIM_CCMR1_OC1M_PWM1;
