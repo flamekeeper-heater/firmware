@@ -23,9 +23,31 @@ LinkClient::LinkClient(LinkTransport *transport) : transport_(transport) {
 
 void LinkClient::loop(uint32_t now) {
   this->now_ = now;
+  if (!this->started_) {
+    this->started_ = true;
+    this->heard_ms_ = now;  // silence counts from the start
+  }
+  // The safety-MCU updater has the UART: the link waits, and starts afresh when it is back.
+  if (this->mcu_ != nullptr) {
+    this->mcu_->loop(now);
+    if (this->mcu_->owns_uart()) {
+      if (!this->lent_) {
+        this->lent_ = true;
+        this->down_("updating");
+        this->outstanding_ = false;
+      }
+      return;
+    }
+    if (this->lent_) {
+      this->lent_ = false;
+      this->relink_();
+    }
+  }
   for (int c; (c = this->transport_->read()) >= 0;) {
     if (link_parser_feed(&this->parser_, uint8_t(c)))
       this->on_reply_(this->parser_.buf);
+    if (this->mcu_ != nullptr && this->mcu_->owns_uart())
+      return;  // UPDATE_PREPARE agreed: nothing more on the link
   }
   if (this->outstanding_ && now - this->out_ms_ >= REPLY_TIMEOUT_MS) {
     this->outstanding_ = false;
@@ -34,6 +56,17 @@ void LinkClient::loop(uint32_t now) {
   }
   if (!this->outstanding_)
     this->send_next_(now);
+  if (this->mcu_ != nullptr)
+    this->mcu_->on_link(this->up_, this->info_.version);
+}
+
+// After the updater: the MCU has been reset, so the link starts again with HELLO.
+void LinkClient::relink_() {
+  link_parser_init(&this->parser_, LINK_REPLY);
+  this->down_("updated");
+  this->outstanding_ = false;
+  this->polled_once_ = false;
+  this->heard_ms_ = this->now_;
 }
 
 void LinkClient::send_(uint8_t op, const uint8_t *payload, size_t len, uint16_t id, uint32_t now) {
@@ -142,6 +175,7 @@ void LinkClient::on_reply_(const uint8_t *f) {
     return;  // late or foreign: dropped
   this->outstanding_ = false;
   this->misses_ = 0;
+  this->heard_ms_ = this->now_;
   const uint8_t op = link_frame_op(f), result = link_reply_result(f);
   const uint8_t *p = link_reply_payload(f);
   const size_t n = link_reply_payload_len(f);
@@ -259,6 +293,10 @@ void LinkClient::on_reply_(const uint8_t *f) {
       this->emit_(Event::FAULT_RESET, Result(result), 0,
                   result == LINK_OK ? "fault cleared" : "the heater kept the fault (its cause may still be there)");
       break;
+    case LINK_OP_UPDATE_PREPARE:
+      if (this->mcu_ != nullptr)
+        this->mcu_->prepared(result, p, n);
+      break;
     case LINK_OP_PARAM_DEFAULTS:
       this->emit_(Event::PARAMS_DEFAULTS, Result(result), 0,
                   result == LINK_OK ? "the heater's parameters are back to their defaults"
@@ -280,9 +318,11 @@ void LinkClient::on_reply_(const uint8_t *f) {
 // ---------------------------------------------------------------- Heater
 
 uint32_t LinkClient::capabilities() const {
+  // The heater firmware update also works on an MCU that does not answer (an unfinished update).
+  uint32_t c = this->mcu_ != nullptr && this->mcu_->available() ? cap::FIRMWARE_UPDATE : 0;
   if (!this->up_)
-    return 0;
-  uint32_t c = 0, l = this->info_.capabilities;
+    return c;
+  const uint32_t l = this->info_.capabilities;
   if (l & LINK_CAP_FAN_ONLY)
     c |= cap::FAN_ONLY;
   if (l & LINK_CAP_PRIME)
@@ -321,6 +361,12 @@ void LinkClient::read_status(HeaterStatus &out) const {
         break;
     }
   }
+  if (this->mcu_ != nullptr && this->mcu_->running()) {
+    out.update_running = true;
+    out.update_progress = this->mcu_->progress();
+    out.state = HeaterState::UPDATING;
+    out.control = ControlStatus::UPDATING;
+  }
   if (!out.answering)
     return;
   out.fault = Fault(s.fault);
@@ -351,6 +397,8 @@ Outcome LinkClient::set_mode(Mode mode) {
     this->mode_ = LINK_MODE_OFF;
     return Outcome::ok();
   }
+  if (this->mcu_ != nullptr && this->mcu_->running())
+    return Outcome::refuse(Result::BUSY, "the heater firmware is being updated");
   if (!this->up_ || !this->have_status_)
     return Outcome::refuse(Result::NO_REPLY, this->incompatible_ ? "the safety MCU speaks an unknown link version"
                                                                   : "the heater does not answer");
@@ -431,6 +479,48 @@ Outcome LinkClient::glow_plug_fitted() {
     return Outcome::refuse(Result::NO_REPLY, "the heater does not answer");
   // An MCU without a plug check answers "not supported": nothing to forget, and nothing to show.
   return this->queue_(LINK_OP_GLOW_NEW_PLUG, nullptr, 0);
+}
+
+// ---------------------------------------------------------------- the safety-MCU updater
+
+Outcome LinkClient::start_mcu_job(McuJob job) {
+  if (this->mcu_ == nullptr || (job == McuJob::UPDATE && !this->mcu_->available()))
+    return Outcome::refuse(Result::NOT_SUPPORTED, "this board cannot update the heater's firmware");
+  if (this->mcu_->running())
+    return Outcome::refuse(Result::BUSY, "the heater firmware is being updated");
+  if (this->mode_ != LINK_MODE_OFF)
+    return Outcome::refuse(Result::NOT_OFF, "turn the heater off first");
+  if (this->up_ && this->have_status_) {
+    // The MCU decides: UPDATE_PREPARE only with the heater off and cold.
+    if (this->status_.state != uint8_t(HeaterState::OFF))
+      return Outcome::refuse(Result::NOT_OFF, "the heater is not off yet (wait for the cooldown)");
+    if (this->queue_cmds_.size() >= 16)
+      return Outcome::refuse(Result::BUSY, "too many changes waiting");
+    Outcome o = this->mcu_->begin(job, true, this->now_);
+    if (o.accepted())
+      this->queue_(LINK_OP_UPDATE_PREPARE, nullptr, 0);
+    return o;
+  }
+  // Silent: only this board's own update, agreed to and left unfinished, is taken up again.
+  if (this->mcu_->may_take(this->now_ - this->heard_ms_))
+    return this->mcu_->begin(job, false, this->now_);
+  return Outcome::refuse(Result::NO_REPLY, "the heater does not answer");
+}
+
+const char *LinkClient::firmware_update_text() const {
+  if (this->mcu_ == nullptr || !this->mcu_->available())
+    return "Not available";
+  if (this->mcu_->text()[0] != 0)
+    return this->mcu_->text();
+  const uint8_t *v = this->mcu_->image_version();
+  if (!this->up_)
+    snprintf(this->update_text_, sizeof(this->update_text_), "This build carries %u.%u.%u", v[0], v[1], v[2]);
+  else if (std::memcmp(v, this->info_.version, 3) == 0)
+    snprintf(this->update_text_, sizeof(this->update_text_), "Up to date (%u.%u.%u)", v[0], v[1], v[2]);
+  else
+    snprintf(this->update_text_, sizeof(this->update_text_), "%u.%u.%u available (the heater runs %u.%u.%u)", v[0],
+             v[1], v[2], this->info_.version[0], this->info_.version[1], this->info_.version[2]);
+  return this->update_text_;
 }
 
 Outcome LinkClient::reset_parameters() {

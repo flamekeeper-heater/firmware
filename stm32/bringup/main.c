@@ -9,13 +9,11 @@
 #include "../hal/stm32g030.h"
 #include "console.h"
 
-#define SCB_AIRCR REG(0xE000ED0Cu)
-
 static board b;
 static console con;
 
 void bringup_sys_reset(void) {
-  SCB_AIRCR = 0x05FA0004u; /* SYSRESETREQ */
+  SCB_AIRCR = SCB_AIRCR_VECTKEY_KEY | SCB_AIRCR_SYSRESETREQ;
   for (;;) {
   }
 }

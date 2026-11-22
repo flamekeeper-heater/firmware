@@ -51,7 +51,12 @@ static struct {
   double plug_ohm;
   /* what happened */
   uint16_t pending_glow_us;
-  uint16_t glow_raw;
+  uint32_t glow_next_ms;
+  /* the pump's overcurrent watchdog (PMP-7) */
+  uint8_t oc_armed, oc_report, pump_forced;
+  uint16_t oc_threshold;
+  uint32_t oc_cuts;
+  uint8_t co_heater;
   uint32_t glow_pulses, glow_bad, glow_last_us;
   int pump_was_on;
   uint32_t strokes, stroke_start, stroke_len_min, stroke_len_max, stroke_gap_min, last_stroke_end;
@@ -70,7 +75,7 @@ void hal_adc_scan(uint16_t raw[HAL_ADC_COUNT]) {
   raw[HAL_ADC_GLOW_I] = 0;
   raw[HAL_ADC_PUMP_V] = counts(pump_powered() ? chip.vin / 19.0 : 0.02);
   raw[HAL_ADC_FAN_I] = counts(motor_i() * chip.fan_duty / 1000.0 * 0.015);
-  raw[HAL_ADC_PUMP_I] = counts(pump_powered() && chip.pump_duty && !chip.pump_open ? 1.2 * 0.45 : 0);
+  raw[HAL_ADC_PUMP_I] = counts(pump_powered() && chip.pump_duty && !chip.pump_forced && !chip.pump_open ? 1.2 * 0.45 : 0);
   raw[HAL_ADC_NTC] = chip.ntc_raw;
   raw[HAL_ADC_BOARD] = chip.board_raw;
   raw[HAL_ADC_VIN] = counts(chip.vin * 6.8 / 106.8);
@@ -78,17 +83,58 @@ void hal_adc_scan(uint16_t raw[HAL_ADC_COUNT]) {
   raw[HAL_ADC_CO] = counts(1.0);
 }
 uint16_t hal_vrefint_cal(void) { return (uint16_t) (VREFINT / 3.0 * 4095.0 + 0.5); }
-uint16_t hal_glow_pulse_raw(void) {
-  uint16_t r = chip.glow_raw;
-  chip.glow_raw = 0;
+/* The glow timer: a period every 5 ms; the pulse the planner set last goes out in it, with whatever
+ * enable and heartbeat there are, and its reading comes with the period. */
+uint8_t bringup_chip_glow_period(hal_glow_sample *g) {
+  if ((int32_t) (chip.now - chip.glow_next_ms) < 0)
+    return 0;
+  chip.glow_next_ms = chip.now + 5;
+  g->pulse_i = 0;
+  g->gap_i = 0;
+  g->gap_vin = counts(chip.vin * 6.8 / 106.8);
+  if (chip.pending_glow_us) {
+    chip.glow_pulses++;
+    chip.glow_last_us = chip.pending_glow_us;
+    int on = chip.glow_en && hb_ok();
+    if (!on || (uint32_t) (chip.now - chip.hb_start_ms) < 20u)
+      chip.glow_bad++;
+    g->pulse_i = on ? counts(chip.vin / chip.plug_ohm * 0.009) : 0;
+    chip.pending_glow_us = 0;
+  }
+  return 1;
+}
+uint8_t hal_pump_overcurrent(void) {
+  uint8_t r = chip.oc_report;
+  chip.oc_report = 0;
   return r;
+}
+void bringup_chip_pump_oc_arm(uint8_t on, uint16_t threshold_raw, uint16_t hold_us) {
+  (void) hold_us;
+  if (on && !chip.oc_armed && !chip.oc_report)
+    chip.pump_forced = 0; /* a new stroke: PUMP_CMD back to its PWM */
+  chip.oc_armed = on;
+  chip.oc_threshold = threshold_raw;
+}
+void bringup_chip_co_heater(uint8_t on) { chip.co_heater = on; }
+const uint8_t *hal_flash_page(uint8_t page) {
+  static uint8_t erased[HAL_FLASH_PAGE_SIZE];
+  (void) page;
+  memset(erased, 0xFF, sizeof(erased));
+  return erased;
+}
+int hal_flash_program(uint8_t page, uint16_t offset, const uint8_t *data, size_t len) {
+  (void) page, (void) offset, (void) data, (void) len;
+  return 0;
+}
+uint8_t hal_flash_unreadable(uint8_t page) {
+  (void) page;
+  return 0;
 }
 uint16_t hal_pump_peak_raw(void) {
   uint16_t r = chip.test_pulse_us && pump_powered() && !chip.pump_open ? counts(0.4 * 0.45) : 0;
   chip.test_pulse_us = 0;
   return r;
 }
-uint8_t hal_pump_overcurrent(void) { return 0; }
 uint16_t hal_hall_rpm(void) { return chip.rpm < 50 ? 0 : (uint16_t) chip.rpm; }
 uint8_t hal_overheat_n(void) { return chip.latch_armed; }
 uint8_t hal_pump_hs_flt_n(void) { return 1; }
@@ -111,7 +157,6 @@ void hal_latch_reset(uint8_t level) {
     chip.latch_armed = 1;
   chip.latch_level = level;
 }
-void hal_co_heater(uint8_t on) { (void) on; }
 void hal_uart_write(const uint8_t *d, size_t n) {
   if (n >= 7 && d[0] == LINK_REPLY) { /* a link reply, whole */
     memcpy(chip.link_tx, d, n);
@@ -149,18 +194,17 @@ static void model_ms(void) {
   chip.rpm += (target - chip.rpm) * 0.003;
   if (chip.fan_blocked)
     chip.rpm = 0;
-  /* The glow pulse the planner set last: it goes out now, with whatever enable and heartbeat. */
-  if (chip.pending_glow_us) {
-    chip.glow_pulses++;
-    chip.glow_last_us = chip.pending_glow_us;
-    int on = chip.glow_en && hb_ok();
-    if (!on || (uint32_t) (chip.now - chip.hb_start_ms) < 20u)
-      chip.glow_bad++;
-    chip.glow_raw = on ? counts(chip.vin / chip.plug_ohm * 0.009) : 0;
-    chip.pending_glow_us = 0;
+  /* PMP-7: the armed watchdog cuts a stroke whose current is above its threshold: PUMP_CMD low
+   * and the heartbeat stopped, by itself, then the report. */
+  uint16_t i_raw = counts(pump_powered() && chip.pump_duty && !chip.pump_forced && !chip.pump_open ? 1.2 * 0.45 : 0);
+  if (chip.oc_armed && !chip.pump_forced && i_raw > chip.oc_threshold) {
+    chip.pump_forced = 1;
+    chip.hb_mode = HAL_HB_STOPPED;
+    chip.oc_report = 1;
+    chip.oc_cuts++;
   }
   /* The pump: strokes and their spacing; PUMP_CMD high only on an armed high side. */
-  int on = chip.pump_duty > 0;
+  int on = chip.pump_duty > 0 && !chip.pump_forced;
   if (on) {
     chip.pump_duty_seen = chip.pump_duty;
     chip.last_pump_on_ms = chip.now;
@@ -575,6 +619,67 @@ static void test_pump(void) {
   CHECK(chip.strokes == s0);
 }
 
+/* The overcurrent cut (PMP-7) on the bench: armed for every stroke, and acting on a lowered
+ * threshold for one stroke, which then goes back. */
+static void test_pump_oc(void) {
+  boot(12.6, OPTR_OK, 0);
+  run(1000);
+  cmd("pump 2 200");
+  run(2000);
+  CHECK(said("* pump done") && chip.oc_cuts == 0 && con.oc_arms == 2);
+  cmd("io");
+  CHECK(said("pump_oc_armed=0") && said("pump_oc_ma=3300") && said("pump_oc_raw=184"));
+  cmd("pump oc 3300");
+  CHECK(said("err") && b.s.pump.p.oc_ma == 3300);
+  cmd("pump oc 99");
+  CHECK(said("err"));
+  /* Below the coil's 1.2 A: the cut acts, the stroke ends, the pump faults until a fault reset. */
+  uint32_t strokes = chip.strokes;
+  cmd("pump oc 500");
+  CHECK(said("ok") && b.s.pump.p.oc_ma == 500);
+  run(2000);
+  CHECK(said("* pump_oc fault fault overcurrent (the cut acted)"));
+  CHECK(chip.oc_cuts == 1 && chip.strokes <= strokes + 1); /* cut in its first millisecond */
+  CHECK(b.s.pump.p.oc_ma == 3300); /* back */
+  CHECK(!hb_ok() && b.s.pump.fault == PUMP_FAULT_OVERCURRENT);
+  cmd("pump 1");
+  CHECK(said("err a fault needs clearing"));
+  cmd("clear");
+  CHECK(said("ok") && b.s.pump.p.oc_ma == 3300);
+  /* Above the coil's current: no cut, said so. */
+  cmd("pump oc 2000");
+  run(2000);
+  CHECK(said("* pump_oc done (NO CUT)") && chip.oc_cuts == 1 && b.s.pump.p.oc_ma == 3300);
+  /* stop in the middle puts the threshold back too. */
+  cmd("pump oc 500");
+  run(5);
+  cmd("stop");
+  run(50);
+  CHECK(b.s.pump.p.oc_ma == 3300 && !con.bench.out);
+}
+
+/* ---------------------------------------------------------------- the CO sensor */
+
+static void test_co(void) {
+  boot(12.6, OPTR_OK, 0);
+  run(1000);
+  cmd("co");
+  CHECK(said("co warming_up") && said("fitted=1") && said("param_0x52=1") && said("raw=1241"));
+  CHECK(said("heat_wanted=1") && said("heat_en=1") && chip.co_heater == 1);
+  cmd("co heater off 2");
+  CHECK(said("ok"));
+  run(100);
+  CHECK(chip.co_heater == 0 && con.co_wanted == 1);
+  cmd("co");
+  CHECK(said("heat_en=0") && said("held_off_s="));
+  run(2000);
+  CHECK(said("* co heater back") && chip.co_heater == 1);
+  cmd("co heater off 61");
+  CHECK(said("err"));
+  cmd("co heater on 5");
+  CHECK(said("err"));
+}
+
 /* ---------------------------------------------------------------- the glow probe */
 
 static uint16_t board_raw_for(int16_t c10) {
@@ -601,6 +706,9 @@ static void test_glow(void) {
   run(600);
   CHECK(said("* glow done") && said("i=25.") && said("r_mohm=50") && said("cold_type=12"));
   CHECK(chip.glow_pulses == 1 && chip.glow_last_us == 150); /* one 150 us probe */
+  cmd("glow read");
+  CHECK(said("glow last_with_pulse pulse_raw=") && said("pulse_A=25.") && said("gap_A=0.00") && said("gap_vin=12."));
+  CHECK(con.glow_periods > 100);
   CHECK(chip.glow_bad == 0);   /* with GLOW_EN, on a heartbeat that had run 20 ms (GLW-7) */
   CHECK(!chip.glow_en && !hb_ok());
   run(1000);
@@ -713,6 +821,8 @@ int main(void) {
   test_hb();
   test_pump();
   test_glow();
+  test_pump_oc();
+  test_co();
   test_watchdog();
   test_runs();
   printf("bringup: %d checks, %d failures\n", n_checks, failures);

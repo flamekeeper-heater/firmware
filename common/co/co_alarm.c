@@ -175,7 +175,7 @@ void co_step(co_alarm *c, uint32_t now, uint16_t adc, int16_t board_c10) {
   else if (c->alarm)
     c->state = CO_ALARM;
   else if (board_c10 != CO_UNKNOWN_TEMP && board_c10 < k->cold_c10)
-    c->state = CO_TOO_COLD; /* still judged (the safe side) */
+    c->state = CO_TOO_COLD; /* CO-8: shown, and still judged: the alarm still acts */
   else if (c->learned_ms < k->learn_ms)
     c->state = CO_LEARNING;
   else

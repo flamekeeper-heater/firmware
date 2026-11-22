@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "../../common/co/co_alarm.h"
 #include "../../common/link/link.h"
 #include "burn.h"
 #include "checks.h"
@@ -40,6 +41,9 @@ typedef struct {
   pump pump;
   params params;
   plug plug;
+  co_alarm co;            /* the CO alarm, present as the CO-fitted parameter says (CO-1) */
+  uint32_t co_r0_saved;   /* the R0 flash holds (0: none) */
+  uint32_t co_r0_saved_ms; /* when it was written (or the reset) */
   uint8_t plug_judged;    /* the current start's plug-type verdict is in */
   uint8_t plug_refused;   /* PLUG_REFUSE_* for the sequencer, 0 none */
   uint8_t plug_warning;   /* the last start ran with a plug-type warning (12 V supply) */
@@ -114,6 +118,21 @@ void safety_load_plug(safety *s, const uint8_t *image, size_t len);
 /* "New glow plug fitted": the plug's remembered type check no longer holds. */
 static inline void safety_new_glow_plug(safety *s) { plug_new_plug(&s->plug); }
 
+/* The CO alarm (common/co/). Once a second: the CO_ADC count, taken with CO_HEAT_EN as
+ * safety_co_heater says, and the board temperature in 0.1 C (BURN_UNKNOWN_TEMP if not known). An
+ * alarm stops the heater with the CO fault, a sensor fault with the CO sensor fault (CO-2); both
+ * latch until FAULT_RESET finds the cause gone. */
+void safety_co_step(safety *s, uint32_t now, uint16_t adc, int16_t board_c10);
+/* What CO_HEAT_EN should be now: on from power-up, off for the heater check and when not fitted. */
+static inline uint8_t safety_co_heater(const safety *s) { return co_heater_on(&s->co); }
+/* CO-7: the clean-air R0 from flash, once at boot (0: none). */
+void safety_load_co_r0(safety *s, uint32_t r0_ohm);
+/* The R0 worth writing to flash now, or 0: once learnt in clean, trusted air, then after a change
+ * of at least 1/16, at most once an hour (flash wear). Call safety_co_r0_saved once written. */
+uint32_t safety_co_r0_to_save(const safety *s);
+void safety_co_r0_saved(safety *s, uint32_t r0_ohm);
+#define SAFETY_CO_R0_SAVE_MIN_MS (60u * 60u * 1000u)
+
 /* What the millisecond step asks of the hardware. */
 typedef struct {
   uint8_t heartbeat;      /* CHECKS_HB_* */
@@ -121,6 +140,7 @@ typedef struct {
   uint8_t latch_reset;    /* LATCH_RESET level */
   uint16_t pump_pulse_us; /* a self-test's single pump pulse */
   uint16_t pump_duty;     /* PUMP_CMD duty for this millisecond, permille (0 = low) */
+  uint8_t pump_oc_armed;  /* the pump's overcurrent watchdog guards this millisecond (PMP-7) */
 } safety_io;
 
 /* Every millisecond: the self-tests while one runs (the power-up test by itself after a reset,

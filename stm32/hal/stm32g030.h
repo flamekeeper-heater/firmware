@@ -1,5 +1,6 @@
-/* The STM32G030's registers this firmware uses, from the reference manual (RM0444). Written by
- * hand to avoid a vendor HAL: only what hal_stm32g0.c touches. UNVERIFIED on silicon. */
+/* The STM32G030's registers this firmware uses (reference manual RM0454). Written by hand to avoid
+ * a vendor HAL: only what hal_stm32g0.c touches. Checked against ST's SVD by
+ * tools/check_registers.py (run it after any change here or in hal/); UNVERIFIED on silicon. */
 #ifndef FLAMEKEEPER_STM32G030_H
 #define FLAMEKEEPER_STM32G030_H
 
@@ -16,7 +17,7 @@
 #define RCC_AHBENR REG(RCC + 0x38)
 #define RCC_APBENR1 REG(RCC + 0x3C)
 #define RCC_APBENR2 REG(RCC + 0x40)
-#define RCC_CSR REG(RCC + 0x94)
+#define RCC_CSR REG(RCC + 0x60)
 
 /* FLASH */
 #define FLASH 0x40022000u
@@ -24,6 +25,7 @@
 #define FLASH_KEYR REG(FLASH + 0x08)
 #define FLASH_SR REG(FLASH + 0x10)
 #define FLASH_CR REG(FLASH + 0x14)
+#define FLASH_ECCR REG(FLASH + 0x18)
 #define FLASH_OPTR REG(FLASH + 0x20)
 
 /* GPIO */
@@ -101,7 +103,77 @@
 #define SYST_RVR REG(0xE000E014u)
 #define SYST_CVR REG(0xE000E018u)
 #define NVIC_ISER REG(0xE000E100u)
+#define SCB_AIRCR REG(0xE000ED0Cu) /* the bring-up image's software reset */
+#define SCB_AIRCR_SYSRESETREQ (1u << 2)
+#define SCB_AIRCR_VECTKEY_Pos 16u
+#define SCB_AIRCR_VECTKEY_Msk (0xFFFFu << SCB_AIRCR_VECTKEY_Pos)
+#define SCB_AIRCR_VECTKEY_KEY (0x05FAu << SCB_AIRCR_VECTKEY_Pos) /* a write without it is ignored */
 #define IRQ_TIM3 16u
 #define IRQ_USART2 28u
+
+/* The ADC schedule (hal_stm32g0.c): the scan by DMA, the analog watchdogs, the glow timer's gap
+ * compare, interrupt priorities. Offsets from RM0454 sections 9.6, 10.6, 14.12. */
+#define ADC_IER REG(ADC + 0x04)
+#define ADC_AWD1TR REG(ADC + 0x20)
+#define ADC_AWD2TR REG(ADC + 0x24)
+#define ADC_AWD2CR REG(ADC + 0xA0)
+#define DMA_ISR REG(DMA1 + 0x00)
+#define DMA_IFCR REG(DMA1 + 0x04)
+#define DMA_CCR2 REG(DMA1 + 0x1C)
+#define DMA_CNDTR2 REG(DMA1 + 0x20)
+#define DMA_CPAR2 REG(DMA1 + 0x24)
+#define DMA_CMAR2 REG(DMA1 + 0x28)
+#define DMAMUX_C1CR REG(0x40020804u)
+#define DMAMUX_REQ_ADC 5u
+#define TIM_CCR3(t) REG((t) + 0x3C)
+#define NVIC_IPR(n) REG(0xE000E400u + 4u * (n)) /* word access only on the M0+ */
+#define IRQ_ADC 12u
+
+/* Bits, named REGISTER_FIELD (checked by tools/check_registers.py against the SVD). The older code
+ * writes its bits inline; each of those has an entry in the checker instead. */
+#define ADC_ISR_ADRDY (1u << 0)
+#define ADC_ISR_EOS (1u << 3)
+#define ADC_ISR_OVR (1u << 4)
+#define ADC_ISR_AWD1 (1u << 7)
+#define ADC_ISR_AWD2 (1u << 8)
+#define ADC_ISR_CCRDY (1u << 13)
+#define ADC_IER_AWD1IE (1u << 7)
+#define ADC_IER_AWD2IE (1u << 8)
+#define ADC_CR_ADSTART (1u << 2)
+#define ADC_CR_ADSTP (1u << 4)
+#define ADC_CR_ADVREGEN (1u << 28)
+#define ADC_CFGR1_DMAEN (1u << 0)
+#define ADC_CFGR1_DMACFG (1u << 1) /* DMA circular */
+#define ADC_CFGR1_CONT (1u << 13)
+#define ADC_CFGR1_AWD1SGL (1u << 22)
+#define ADC_CFGR1_AWD1EN (1u << 23)
+#define ADC_CFGR1_AWD1CH(ch) ((uint32_t) (ch) << 26)
+#define ADC_AWD1TR_LT1(raw) ((uint32_t) (raw) << 0)
+#define ADC_AWD1TR_HT1(raw) ((uint32_t) (raw) << 16)
+#define ADC_AWD2TR_LT2(raw) ((uint32_t) (raw) << 0)
+#define ADC_AWD2TR_HT2(raw) ((uint32_t) (raw) << 16)
+#define ADC_AWD2CR_AWD2CH6 (1u << 6)
+#define DMA_ISR_TEIF2 (1u << 7)
+#define DMA_IFCR_CGIF2 (1u << 4)
+#define DMA_IFCR_CTCIF2 (1u << 5)
+#define DMA_IFCR_CHTIF2 (1u << 6)
+#define DMA_IFCR_CTEIF2 (1u << 7)
+#define DMA_CCR_EN (1u << 0)
+#define DMA_CCR_CIRC (1u << 5)
+#define DMA_CCR_MINC (1u << 7)
+#define DMA_CCR_PSIZE_16 (1u << 8)
+#define DMA_CCR_MSIZE_16 (1u << 10)
+#define TIM_DIER_CC2IE (1u << 2)
+#define TIM_DIER_CC3IE (1u << 3)
+#define TIM_SR_CC2IF (1u << 2)
+#define TIM_SR_CC3IF (1u << 3)
+#define FLASH_ECCR_ADDR_ECC 0x3FFFu /* the failing double word's index in the flash */
+#define FLASH_ECCR_SYSF_ECC (1u << 20)
+#define FLASH_ECCR_ECCCIE (1u << 24)
+#define FLASH_ECCR_ECCD (1u << 31)
+#define FLASH_SR_BSY1 (1u << 16)
+#define FLASH_SR_CFGBSY (1u << 18) /* FLASH_CR in use by a program or erase */
+#define FLASH_OPTR_IWDG_STOP (1u << 17)  /* 0: the IWDG frozen in stop mode */
+#define FLASH_OPTR_IWDG_STDBY (1u << 18) /* 0: the IWDG frozen in standby */
 
 #endif /* FLAMEKEEPER_STM32G030_H */

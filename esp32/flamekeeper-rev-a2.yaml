@@ -6,8 +6,8 @@
 # shared ones (packages/flamekeeper.yaml).
 #
 # Board rules this file keeps:
-# * STM_NRST (IO23) and STM_BOOT (IO14) are not configured: only the safety-MCU updater may drive
-#   them.
+# * STM_NRST (IO23) and STM_BOOT (IO14) are inputs with no pull: only the safety-MCU updater drives
+#   them, after UPDATE_PREPARE (safety_link below).
 # * Logs go to the USB Serial/JTAG port; UART0 stays free for the debug header.
 # * The buzzer stays silent unless the safety MCU reports VIN present not
 #   configured until the link exists.
@@ -76,6 +76,14 @@ uart:
 safety_link:
   id: heater_bus
   uart_id: link_uart
+  # The safety MCU's reset and BOOT0 lines, for updating it through its ROM bootloader (DESIGN.md).
+  reset_pin: GPIO23   # STM_NRST, driven open drain
+  boot_pin: GPIO14    # STM_BOOT
+  # The safety MCU firmware this build installs ("Update heater firmware"); build it first with
+  # stm32/build.sh. The version is the one its HELLO reports.
+  # mcu_firmware:
+  #   file: ../stm32/build/safety.bin
+  #   version: 0.1.0
 
 flamekeeper:
   # The label PIN comes from the board key production burns into eFuse key block 5 (purpose

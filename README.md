@@ -103,6 +103,7 @@ Needs `arm-none-eabi-gcc` (no vendor HAL or C library). It has not run on a chip
 ```bash
 stm32/build.sh           # stm32/build/safety.elf and .bin, and the flash and RAM use
 stm32/build.sh bringup   # the bring-up image: stm32/build/bringup.elf and .bin
+python3 -I stm32/tools/check_registers.py --svd STM32G030.svd   # the register map against ST's SVD
 ```
 
 The bring-up image is for a new board's first power-up, not for a heater in use: the same firmware

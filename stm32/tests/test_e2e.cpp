@@ -1,6 +1,6 @@
 // End to end: the ESP32's real link client (esp32/components/flamekeeper/link_client.*) talks over
 // a byte wire to this safety core, which runs the heater model. A whole heat cycle, the dead-man
-// when the ESP32 stops talking, and an MCU reset in the middle of a run.
+// when the ESP32 stops talking, an MCU reset in the middle of a run, and the CO alarm.
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -45,9 +45,15 @@ struct Bench : LinkTransport {
   int glow_en = 0;
   double pump_i = 0;  // the pump coil's current, A (6 Ohm, 2 ms)
   uint32_t stroke_ms_total = 0;
+  uint32_t stroke_ms_unguarded = 0;  // PUMP_CMD driven without the overcurrent watchdog armed
   int max_heartbeat_gap_in_burn = 0;
   std::deque<uint8_t> to_esp;
   LinkClient client{this};
+  // The CO sensor: R0 300 k in clean air; the air as Rs / R0 (x 1000); unheated it reads 5 x higher.
+  // co_adc >= 0 holds the reading there (an open sensor, or none fitted).
+  uint32_t co_ratio = 1000;
+  int co_adc = -1;
+  int16_t board_c10 = 350;
 
   Bench() {
     heater_model_init(&m, 10);
@@ -71,11 +77,12 @@ struct Bench : LinkTransport {
     in.supply_cv = m.supply_cv;
     in.overheat_latch = 0;
     in.co_alarm = 0;
+    in.co_fault = 0;
     in.glow_fault = 0;
     in.fan_fault = 0;
     in.precheck = 0;
     in.pump_fault = 0;
-    in.board_c10 = 350;  // a cool board: no derate
+    in.board_c10 = board_c10;  // a cool board: no derate
     in.plug_refused = 0;
     return in;
   }
@@ -136,6 +143,8 @@ struct Bench : LinkTransport {
     pump_i += (v / 6.0 - pump_i) * 0.393;
     if (out.pump_duty)
       stroke_ms_total++;
+    if (out.pump_duty && !out.pump_oc_armed)
+      stroke_ms_unguarded++;
     hb_running_ms = out.heartbeat == CHECKS_HB_RUNNING ? hb_running_ms + 1 : 0;
     if (out.latch_reset)
       latch_armed = 1;
@@ -154,6 +163,8 @@ struct Bench : LinkTransport {
     heater_model_step(&m, TICK, o->fan_rpm, o->pump_cHz, (uint16_t) (plug_heat > 0.5 ? 90 : 0));
     now += TICK;
     burn_inputs in = inputs();
+    if (now % SEC == 0)
+      safety_co_step(&s, now, co_reading(), board_c10);
     safety_step(&s, now, &in);
     // The fan stage: the model's fan follows its target; the shunt reads about 4.3 A at full
     // speed, times the duty.
@@ -164,6 +175,12 @@ struct Bench : LinkTransport {
     fan_duty = safety_fan_step(&s, now, &fm);
     if (esp_alive)
       client.loop(now);
+  }
+  uint16_t co_reading() const {
+    if (co_adc >= 0)
+      return (uint16_t) co_adc;
+    uint64_t rs = 300000ull * co_ratio / 1000u * (safety_co_heater(&s) ? 1u : 5u);
+    return (uint16_t) ((uint64_t) CO_ADC_FULL * CO_LOAD_OHM / (CO_LOAD_OHM + rs));
   }
   void run(uint32_t ms) {
     for (uint32_t t = 0; t < ms; t += TICK)
@@ -233,6 +250,7 @@ static void test_heat_cycle() {
   CHECK(hs.plug_warning);  // the flag reached the ESP32
   CHECK(b.s.pump.strokes > 100);  // real strokes through the run
   CHECK(b.stroke_ms_total == b.s.pump.strokes * 38);
+  CHECK(b.stroke_ms_unguarded == 0);  // PMP-7: armed for every stroke
   CHECK(b.s.glow.fault == GLOW_FAULT_NONE);
 }
 
@@ -353,6 +371,160 @@ static void test_plug_cold_check() {
   CHECK(b.s.plug.rec.verified_type == 0);
 }
 
+// ---------------------------------------------------------------- the CO alarm
+
+static uint8_t co_state(const Bench &b) { return b.client.raw_detail().co_state; }
+
+static void test_co_alarm_stops_and_latches() {
+  Bench b;
+  b.run(2 * MIN);
+  CHECK(co_state(b) == CO_WARMING_UP);
+  CHECK(safety_co_heater(&b.s));                   // heated from power-up (CO-5)
+  CHECK(b.client.info().capabilities & LINK_CAP_CO);
+  b.run(12 * MIN);                                 // warm-up, heater check, learning
+  CHECK(co_state(b) == CO_OK);
+  CHECK(b.client.raw_detail().co_ppm == 0);        // clean air
+  b.client.set_power_demand(50);
+  CHECK(b.client.set_mode(Mode::HEAT).accepted());
+  CHECK(b.run_until_state(BURN_STATE_HEATING, 5 * MIN));
+  // About 1200 ppm: the alarm after 10 s, the run burns off and cools down.
+  b.co_ratio = 8;
+  b.run(12 * SEC);
+  CHECK(b.s.burn.fault == BURN_FAULT_CO && b.s.burn.fault_latched);
+  CHECK(b.s.burn.step == BURN_STEP_BURN_OFF);
+  CHECK(safety_outputs(&b.s)->pump_cHz == 0);
+  b.run(1 * SEC);
+  CHECK(co_state(b) == CO_ALARM);
+  CHECK(b.client.raw_detail().co_ppm > 1000 && b.client.raw_detail().co_ppm <= 2140);  // about 1200
+  CHECK(b.client.raw_status().fault == BURN_FAULT_CO);
+  CHECK(b.client.raw_status().flags & LINK_STATUS_FAULT_LATCHED);
+  esphome::flamekeeper::HeaterStatus hs;
+  b.client.read_status(hs);
+  CHECK(hs.fault == esphome::flamekeeper::Fault::CO);
+  CHECK(b.run_until_state(BURN_STATE_OFF, 25 * MIN));
+  // Clean air again: still latched; a reset is refused until the air has been clean a minute.
+  b.co_ratio = 1000;
+  b.run(30 * SEC);
+  CHECK(b.client.reset_fault().accepted());  // sent: the MCU decides
+  b.run(1 * SEC);
+  CHECK(b.s.burn.fault_latched && co_state(b) == CO_ALARM);
+  b.run(35 * SEC);
+  b.client.reset_fault();
+  b.run(2 * SEC);
+  CHECK(!b.s.burn.fault_latched && b.s.burn.fault == BURN_FAULT_NONE);
+  CHECK(co_state(b) == CO_OK);
+  b.client.set_mode(Mode::OFF);
+  b.run(1 * SEC);
+  CHECK(b.client.set_mode(Mode::HEAT).accepted());
+  CHECK(b.run_until_state(BURN_STATE_STARTING, 2 * SEC));
+}
+
+static void test_co_sensor_fault() {
+  Bench b;
+  b.run(14 * MIN);
+  CHECK(co_state(b) == CO_OK);
+  b.client.set_power_demand(50);
+  CHECK(b.client.set_mode(Mode::HEAT).accepted());
+  CHECK(b.run_until_state(BURN_STATE_HEATING, 5 * MIN));
+  // The sensor goes open (CO-3): a sensor fault after 5 s, with the heater-safe action (CO-2).
+  b.co_adc = 10;
+  b.run(7 * SEC);
+  CHECK(b.s.burn.fault == BURN_FAULT_CO_SENSOR && b.s.burn.fault_latched);
+  CHECK(b.s.burn.step == BURN_STEP_BURN_OFF);
+  b.run(1 * SEC);
+  CHECK(co_state(b) == CO_SENSOR_FAULT);
+  CHECK(b.client.raw_detail().co_ppm == LINK_UNKNOWN_U16);
+  esphome::flamekeeper::HeaterStatus hs;
+  b.client.read_status(hs);
+  CHECK(hs.fault == esphome::flamekeeper::Fault::CO_SENSOR);
+  CHECK(b.run_until_state(BURN_STATE_OFF, 25 * MIN));
+  b.client.reset_fault();
+  b.run(2 * SEC);
+  CHECK(b.s.burn.fault_latched);  // still open
+  b.co_adc = -1;
+  b.run(3 * SEC);
+  b.client.reset_fault();
+  b.run(2 * SEC);
+  CHECK(!b.s.burn.fault_latched);
+  // The reset runs the heater check again (heater off 5 s), then the sensor reads on.
+  b.run(10 * SEC);
+  CHECK(b.s.co.checked && co_state(b) == CO_OK);
+}
+
+static void test_co_not_fitted() {
+  // CO_FITTED is a parameter (CO-1): off, nothing reads the sensor, whatever the pin says.
+  Bench b;
+  b.co_adc = 0;  // no sensor on the board: R_CO_LOAD pulls CO_ADC to ground
+  b.run(10 * SEC);
+  CHECK(b.client.param_set(0x52, 0).accepted());
+  b.run(1 * SEC);
+  CHECK(b.client.param_apply(true).accepted());
+  b.run(1 * SEC);
+  CHECK(b.s.burn.p.co_fitted == 0);
+  CHECK(!safety_co_heater(&b.s));
+  b.run(15 * MIN);
+  CHECK(co_state(b) == CO_NOT_FITTED);
+  CHECK(b.s.burn.fault == BURN_FAULT_NONE);
+  b.client.set_power_demand(50);
+  CHECK(b.client.set_mode(Mode::HEAT).accepted());
+  CHECK(b.run_until_state(BURN_STATE_HEATING, 5 * MIN));
+  // Fitted again (only with the heater off): a board without the sensor is a sensor fault, never
+  // "absent" (CO-2).
+  b.client.set_mode(Mode::OFF);
+  CHECK(b.run_until_state(BURN_STATE_OFF, 25 * MIN));
+  b.client.param_set(0x52, 1);
+  b.run(1 * SEC);
+  b.client.param_apply(true);
+  b.run(1 * SEC);
+  CHECK(safety_co_heater(&b.s));
+  b.run(4 * MIN);
+  CHECK(co_state(b) == CO_SENSOR_FAULT);
+  CHECK(b.s.burn.fault == BURN_FAULT_CO_SENSOR);
+}
+
+static void test_co_warm_up_and_cold() {
+  Bench b;
+  b.co_ratio = 8;  // CO from the start: readings in the warm-up are ignored (CO-5)
+  b.run(170 * SEC);
+  CHECK(co_state(b) == CO_WARMING_UP);
+  CHECK(b.s.burn.fault == BURN_FAULT_NONE);
+  b.co_ratio = 1000;
+  b.run(11 * MIN);
+  CHECK(co_state(b) == CO_OK);
+  // CO-8: below -30 C it shows "too cold", and the alarm still acts.
+  b.board_c10 = -350;
+  b.run(2 * SEC);
+  CHECK(co_state(b) == CO_TOO_COLD);
+  b.co_ratio = 8;
+  b.run(12 * SEC);
+  CHECK(b.s.burn.fault == BURN_FAULT_CO && b.s.burn.fault_latched);
+}
+
+static void test_co_r0_kept() {
+  // CO-7: R0 learnt in clean air is offered for flash once, then only after a real change.
+  Bench b;
+  b.run(13 * MIN);
+  CHECK(co_state(b) == CO_LEARNING);
+  CHECK(safety_co_r0_to_save(&b.s) == 0);
+  b.run(1 * MIN);
+  CHECK(co_state(b) == CO_OK);
+  uint32_t r0 = safety_co_r0_to_save(&b.s);
+  CHECK(r0 > 290000 && r0 < 310000);
+  safety_co_r0_saved(&b.s, r0);
+  CHECK(safety_co_r0_to_save(&b.s) == 0);
+  b.co_ratio = 1200;  // drier air: R0 rises 20 %, saved only an hour after the last save
+  b.run(5 * MIN);
+  CHECK(safety_co_r0_to_save(&b.s) == 0);
+  b.run(60 * MIN);
+  CHECK(safety_co_r0_to_save(&b.s) > r0);
+  // After a reset with R0 from flash: no learning time, OK right after the warm-up and check.
+  Bench c;
+  safety_load_co_r0(&c.s, r0);
+  c.run(3 * MIN + 10 * SEC);
+  CHECK(co_state(c) == CO_OK);
+  CHECK(c.s.co.r0 >= r0);
+}
+
 int main() {
   test_plug_cold_check();
   test_parameters();
@@ -360,6 +532,11 @@ int main() {
   test_heat_cycle();
   test_dead_man();
   test_mcu_reset_mid_run();
+  test_co_alarm_stops_and_latches();
+  test_co_sensor_fault();
+  test_co_not_fitted();
+  test_co_warm_up_and_cold();
+  test_co_r0_kept();
   std::printf("e2e: %d checks, %d failures\n", n_checks, failures);
   return failures ? 1 : 0;
 }

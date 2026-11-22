@@ -16,6 +16,7 @@ int bench_interlocks_ok(const safety *s) {
 }
 
 static int burn_off(const safety *s) { return s->burn.step == BURN_STEP_OFF; }
+static int is_pump(uint8_t out) { return out == BENCH_ACT_PUMP || out == BENCH_ACT_PUMP_OC; }
 
 static void push(bench *bn, uint8_t action, uint8_t end) {
   bench_event e;
@@ -121,6 +122,18 @@ int bench_pump(bench *bn, safety *s, uint32_t now, uint16_t strokes, uint16_t cH
   return start_out(bn, s, now, BENCH_ACT_PUMP, PH_PRECHECK, limit);
 }
 
+int bench_pump_oc(bench *bn, safety *s, uint32_t now, uint16_t ma) {
+  if (ma < BENCH_PUMP_OC_MIN_MA || ma >= s->pump.p.oc_ma)
+    return BENCH_E_RANGE; /* lowered only: the cut never guards less than its setting */
+  int r = bench_pump(bn, s, now, 1, BENCH_PUMP_DEFAULT_CHZ);
+  if (r)
+    return r;
+  bn->out = BENCH_ACT_PUMP_OC;
+  bn->oc_saved = s->pump.p.oc_ma;
+  s->pump.p.oc_ma = ma;
+  return BENCH_OK;
+}
+
 int bench_glow(bench *bn, safety *s, uint32_t now) {
   int r = out_free(bn, s);
   if (r)
@@ -153,12 +166,16 @@ static void end_fan(bench *bn, uint8_t end, uint8_t fault) {
 static void end_out(bench *bn, safety *s, uint8_t end) {
   push(bn, bn->out, end);
   bench_event *e = last(bn);
-  if (bn->out == BENCH_ACT_PUMP) {
+  if (bn->oc_saved) {
+    s->pump.p.oc_ma = bn->oc_saved; /* the cut's own threshold again */
+    bn->oc_saved = 0;
+  }
+  if (is_pump(bn->out)) {
     e->a = bn->pump_done;
     e->b = bn->pump_done ? bn->peak_min : 0;
     e->c = bn->peak_max;
   }
-  if (bn->out == BENCH_ACT_PUMP || bn->out == BENCH_ACT_HB)
+  if (is_pump(bn->out) || bn->out == BENCH_ACT_HB)
     e->fault = s->pump.fault;
   else if (bn->out == BENCH_ACT_GLOW)
     e->fault = s->glow.fault;
@@ -177,7 +194,7 @@ static void pump_tail(bench *bn, uint32_t now, int stopped) {
 void bench_stop(bench *bn, safety *s, uint32_t now) {
   if (bn->fan)
     end_fan(bn, BENCH_END_STOPPED, 0);
-  if (bn->out == BENCH_ACT_PUMP && (bn->phase == PH_RUN || bn->phase == PH_TAIL))
+  if (is_pump(bn->out) && (bn->phase == PH_RUN || bn->phase == PH_TAIL))
     pump_tail(bn, now, 1);
   else if (bn->out)
     end_out(bn, s, BENCH_END_STOPPED);
@@ -217,7 +234,7 @@ static void step_out(bench *bn, safety *s, uint32_t now) {
       end_out(bn, s, BENCH_END_DONE);
       return;
     }
-    bn->phase = bn->out == BENCH_ACT_PUMP ? PH_RUN : PH_ARM;
+    bn->phase = is_pump(bn->out) ? PH_RUN : PH_ARM;
     bn->phase_ms = now;
     bn->strokes0 = s->pump.strokes;
     return;
@@ -229,7 +246,7 @@ static void step_out(bench *bn, safety *s, uint32_t now) {
     return;
   }
 
-  if (bn->out == BENCH_ACT_PUMP) {
+  if (is_pump(bn->out)) {
     if (bn->phase == PH_RUN) {
       /* A stroke that just ended: its peak. The rate drops once the last one is over, never inside
        * a stroke (that would cut it short). */
@@ -303,7 +320,7 @@ void bench_ms(bench *bn, safety *s, uint32_t now) {
   }
 
   if (bn->out) {
-    if (s->pump.fault != PUMP_FAULT_NONE && (bn->out == BENCH_ACT_PUMP || bn->out == BENCH_ACT_HB) &&
+    if (s->pump.fault != PUMP_FAULT_NONE && (is_pump(bn->out) || bn->out == BENCH_ACT_HB) &&
         bn->phase != PH_PRECHECK) {
       end_out(bn, s, BENCH_END_FAULT);
     } else if (s->glow.fault != GLOW_FAULT_NONE && bn->out == BENCH_ACT_GLOW) {
@@ -311,8 +328,8 @@ void bench_ms(bench *bn, safety *s, uint32_t now) {
     } else if (bn->out == BENCH_ACT_GLOW && !bn->fan && bn->phase != PH_READ) {
       end_out(bn, s, BENCH_END_NO_AIR);
     } else if (bn->out != BENCH_ACT_HB && reached(now, bn->out_end_ms) &&
-               !(bn->out == BENCH_ACT_PUMP && bn->phase == PH_TAIL)) {
-      if (bn->out == BENCH_ACT_PUMP && bn->phase == PH_RUN)
+               !(is_pump(bn->out) && bn->phase == PH_TAIL)) {
+      if (is_pump(bn->out) && bn->phase == PH_RUN)
         pump_tail(bn, now, 2);
       else
         end_out(bn, s, BENCH_END_TIMEOUT);
@@ -325,9 +342,9 @@ void bench_ms(bench *bn, safety *s, uint32_t now) {
   s->bench.fan_duty = bn->fan == BENCH_ACT_FAN_DUTY ? bn->fan_value : 0;
   s->bench.fan_rpm = bn->fan == BENCH_ACT_FAN_RPM ? bn->fan_value : 0;
   int hb = bn->out == BENCH_ACT_HB ||
-           ((bn->out == BENCH_ACT_PUMP || bn->out == BENCH_ACT_GLOW) && bn->phase != PH_PRECHECK && bn->phase != 0);
+           ((is_pump(bn->out) || bn->out == BENCH_ACT_GLOW) && bn->phase != PH_PRECHECK && bn->phase != 0);
   s->bench.heartbeat = (uint8_t) hb;
-  s->bench.pump_cHz = bn->out == BENCH_ACT_PUMP && bn->phase == PH_RUN ? bn->pump_cHz : 0;
+  s->bench.pump_cHz = is_pump(bn->out) && bn->phase == PH_RUN ? bn->pump_cHz : 0;
   if (bn->out != BENCH_ACT_GLOW)
     s->bench.glow_probe = 0;
 }

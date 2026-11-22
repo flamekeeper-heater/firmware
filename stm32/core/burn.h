@@ -60,6 +60,7 @@ enum {
   BURN_FAULT_SENSOR = 9,
   BURN_FAULT_START = 10,
   BURN_FAULT_CO = 11,
+  BURN_FAULT_CO_SENSOR = 14, /* CO-2: the CO sensor's reading is not plausible */
 };
 
 /* Why a run stopped, beyond the fault code (link_status.fault_detail). */
@@ -84,6 +85,7 @@ enum {
   BURN_WHY_PUMP_STAGE = 17,     /* overcurrent, current between strokes, open coil, high side */
   BURN_WHY_BOARD_HOT = 18,      /* the board stayed too hot even at the lowest power */
   BURN_WHY_PLUG_TYPE = 19,      /* the glow plug is not the type set, or its check is missing */
+  BURN_WHY_CO_SENSOR = 20,      /* the CO sensor reads open, or failed its heater check */
 };
 
 typedef struct {
@@ -153,6 +155,7 @@ typedef struct {
   uint8_t fuel_up_percent_s, air_down_percent_s;
 
   uint8_t plug_v;              /* the glow plug fitted: 12 or 24 (V) */
+  uint8_t co_fitted;           /* CO-1: the CO sensor is fitted; the only authority on its presence */
 } burn_params;
 
 void burn_params_default(burn_params *p);
@@ -164,6 +167,7 @@ typedef struct {
   uint16_t supply_cv;      /* 0.01 V */
   uint8_t overheat_latch;  /* 1: the hardware overheat latch has tripped (OVERHEAT_N low) */
   uint8_t co_alarm;        /* 1: the CO alarm is on */
+  uint8_t co_fault;        /* 1: the CO sensor has a fault (CO-2: an alarm, the same action) */
   uint8_t glow_fault;      /* 1: the glow stage failed (low side stuck on, repeated trips) */
   uint8_t fan_fault;       /* the fan stage's fault (fan.h FAN_FAULT_*), 0 none */
   uint8_t precheck;        /* the pre-start self-test: BURN_PRECHECK_* */
@@ -195,7 +199,7 @@ typedef struct {
   uint8_t running_power;   /* power the heater runs at now, % */
   uint8_t fault, why;
   uint8_t attempt;
-  uint8_t fault_latched;   /* needs burn_fault_reset() (hardware latch, CO) */
+  uint8_t fault_latched;   /* needs burn_fault_reset() (hardware latch, CO, CO sensor) */
   uint32_t step_ms;        /* when this step began */
   uint32_t fan_low_ms;     /* when the fan was first seen below the stall speed (0 = not low) */
   uint8_t fan_low;

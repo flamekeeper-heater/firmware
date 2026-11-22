@@ -24,6 +24,42 @@ void hal_iwdg_refresh(void) {
     bringup_chip_iwdg_refresh();
 }
 
+uint8_t hal_glow_period(hal_glow_sample *g) {
+  uint8_t r = bringup_chip_glow_period(g);
+  if (r && tap) {
+    tap->glow_last = *g;
+    tap->glow_periods++;
+    if (g->pulse_i) {
+      tap->glow_pulse = *g;
+      tap->glow_pulse_ms = tap->now;
+    }
+  }
+  return r;
+}
+
+void hal_pump_oc_arm(uint8_t on, uint16_t threshold_raw, uint16_t hold_us) {
+  if (tap) {
+    if (on && !tap->oc_on)
+      tap->oc_arms++;
+    tap->oc_on = on;
+    tap->oc_threshold_raw = threshold_raw;
+    tap->oc_hold_us = hold_us;
+  }
+  bringup_chip_pump_oc_arm(on, threshold_raw, hold_us);
+}
+
+/* CO_HEAT_EN as the board asks, unless "co heater off" holds it low (the safe side). */
+void hal_co_heater(uint8_t on) {
+  uint8_t pin = on;
+  if (tap) {
+    tap->co_wanted = on;
+    if (tap->co_off)
+      pin = 0;
+    tap->co_pin = pin;
+  }
+  bringup_chip_co_heater(pin);
+}
+
 /* ---------------------------------------------------------------- output */
 
 static uint16_t out_used(const console *c) {
@@ -137,7 +173,9 @@ static const char *const BENCH_ERR[] = {"ok",
                                         "interlocks: power-up self-test, option bytes or no starts",
                                         "a fault needs clearing first (clear)",
                                         "no airflow: start a fan action at the glow's minimum speed"};
-static const char *const ACTION[] = {"none", "fan_duty", "fan_rpm", "hb", "pump", "glow", "precheck"};
+static const char *const ACTION[] = {"none", "fan_duty", "fan_rpm", "hb", "pump", "glow", "precheck", "pump_oc"};
+static const char *const CO_STATE[] = {"not_fitted", "warming_up", "learning", "ok", "alarm", "sensor_fault",
+                                       "too_cold"};
 static const char *const END[] = {"?", "done", "stopped", "timeout", "failed", "fault", "burn_started", "no_probe",
                                   "no_air"};
 static const char *const ADC_NAME[HAL_ADC_COUNT] = {"glow_v", "glow_i", "pump_v", "fan_i", "pump_i",
@@ -282,6 +320,9 @@ static const char *const HELP[] = {
     "hb <s>                      heartbeat alone, 1-60 s",
     "pump <n> [<cHz>]            n strokes 1-20 at 10-600 cHz (100)",
     "glow                        one probe pulse (needs a fan action)",
+    "glow read                   the glow period's in-pulse and gap readings",
+    "pump oc <mA>                one stroke with the overcurrent cut lowered",
+    "co | co heater off <s>      the CO alarm; CO_HEAT_EN held low 1-60 s",
     "precheck                    the pre-start self-test alone",
     "run fan|heat <power> <s>    the burn sequencer, 1-3600 s",
     "run prime <s>               priming",
@@ -364,6 +405,8 @@ static void info_line(console *c, uint16_t i) {
       put(c, " glow ");
       put(c, NAME(GLOW_FAULT, s->glow.fault));
       kv(c, "glow_budget_a2s", (int32_t) glow_bucket_a2s(&s->glow));
+      put(c, " co ");
+      put(c, NAME(CO_STATE, s->co.state));
       break;
     default:
       put(c, "vdda_mv ");
@@ -710,6 +753,76 @@ static void io_line(console *c) {
   kv(c, "glow_en", b->glow_en_test || b->glow_en_planner);
   kv(c, "glow_budget_a2s", (int32_t) glow_bucket_a2s(&s->glow));
   nl(c);
+  put(c, "io");
+  kv(c, "pump_oc_armed", c->oc_on);
+  kv(c, "pump_oc_ma", s->pump.p.oc_ma);
+  kv(c, "pump_oc_raw", c->oc_threshold_raw);
+  kv(c, "pump_oc_hold_us", c->oc_hold_us);
+  kv(c, "pump_oc_arms", (int32_t) c->oc_arms);
+  kv(c, "co_heat_en", c->co_pin);
+  kv(c, "co_heat_wanted", c->co_wanted);
+  nl(c);
+}
+
+static void glow_sample_line(console *c, const char *what, const hal_glow_sample *g) {
+  uint16_t v = c->b->vdda_mv;
+  put(c, what);
+  kv(c, "pulse_raw", g->pulse_i);
+  kvf(c, "pulse_A", analog_glow_ca(g->pulse_i, v), 2);
+  kv(c, "gap_raw", g->gap_i);
+  kvf(c, "gap_A", analog_glow_ca(g->gap_i, v), 2);
+  kv(c, "gap_vin_raw", g->gap_vin);
+  kvf(c, "gap_vin", analog_vin_cv(g->gap_vin, v), 2);
+  nl(c);
+}
+
+static void glow_read(console *c) {
+  put(c, "glow periods=");
+  put_u(c, c->glow_periods);
+  kv(c, "last_pulse_ms_ago", c->glow_pulse_ms ? (int32_t) since(c->now, c->glow_pulse_ms) : -1);
+  nl(c);
+  glow_sample_line(c, "glow last", &c->glow_last);
+  glow_sample_line(c, "glow last_with_pulse", &c->glow_pulse);
+}
+
+static void co_lines(console *c) {
+  const safety *s = &c->b->s;
+  const co_alarm *a = &s->co;
+  uint16_t raw = c->b->raw[HAL_ADC_CO];
+  put(c, "co ");
+  put(c, NAME(CO_STATE, a->state));
+  kv(c, "fitted", a->cfg.fitted);
+  kv(c, "param_0x52", s->burn.p.co_fitted);
+  kv(c, "raw", raw);
+  uint32_t rs = co_rs_ohm(raw);
+  if (rs == 0xFFFFFFFFu)
+    put(c, " rs=open");
+  else
+    kv(c, "rs_ohm", (int32_t) (rs > 0x7FFFFFFFu ? 0x7FFFFFFFu : rs));
+  nl(c);
+  put(c, "co");
+  kv(c, "r0_ohm", (int32_t) a->r0);
+  kv(c, "r0_saved_ohm", (int32_t) s->co_r0_saved);
+  if (a->ratio == 0xFFFFu)
+    put(c, " ratio=unknown");
+  else
+    kvf(c, "ratio", a->ratio, 3);
+  if (a->ppm == CO_UNKNOWN_PPM)
+    put(c, " ppm=unknown");
+  else
+    kv(c, "ppm", a->ppm);
+  nl(c);
+  put(c, "co");
+  kv(c, "alarm", a->alarm);
+  kv(c, "fault", a->fault);
+  kv(c, "heater_checked", a->checked);
+  kv(c, "checking", a->checking);
+  kv(c, "learned_s", (int32_t) (a->learned_ms / 1000u));
+  kv(c, "heat_wanted", c->co_wanted);
+  kv(c, "heat_en", c->co_pin);
+  if (c->co_off)
+    kv(c, "held_off_s", (int32_t) ((c->co_off_end_ms - c->now) / 1000u));
+  nl(c);
 }
 
 static void watch_line(console *c) {
@@ -791,6 +904,23 @@ static const char *execute(console *c, char *line) {
   }
   if (eq(w0, "flash"))
     return cmd_flash(c, &ws);
+  if (eq(w0, "glow") && ws.n == 2 && eq(ws.w[1], "read")) {
+    glow_read(c);
+    return NULL;
+  }
+  if (eq(w0, "co") && ws.n == 1) {
+    co_lines(c);
+    return NULL;
+  }
+  if (eq(w0, "co")) {
+    if (ws.n != 4 || !eq(ws.w[1], "heater") || !eq(ws.w[2], "off") || !num(ws.w[3], 1, CONSOLE_CO_OFF_MAX_S, &v))
+      return "usage: co | co heater off <s 1-60>";
+    if (s->burn.step != BURN_STEP_OFF || c->run)
+      return "not off";
+    c->co_off = 1;
+    c->co_off_end_ms = c->now + v * 1000u;
+    return NULL;
+  }
   if (eq(w0, "par"))
     return cmd_par(c, &ws);
   if (eq(w0, "tune"))
@@ -832,6 +962,11 @@ static const char *execute(console *c, char *line) {
     if (ws.n != 2 || !num(ws.w[1], 1, BENCH_HB_MAX_S, &v))
       return "usage: hb <s 1-60>";
     return busy ? busy : bench_result(bench_hb(&c->bench, s, c->now, (uint16_t) v));
+  }
+  if (eq(w0, "pump") && ws.n == 3 && eq(ws.w[1], "oc")) {
+    if (!num(ws.w[2], BENCH_PUMP_OC_MIN_MA, 0xFFFFu, &v) || v >= s->pump.p.oc_ma)
+      return "usage: pump oc <mA from 100 to below the cut's setting>";
+    return busy ? busy : bench_result(bench_pump_oc(&c->bench, s, c->now, (uint16_t) v));
   }
   if (eq(w0, "pump")) {
     v2 = BENCH_PUMP_DEFAULT_CHZ;
@@ -879,7 +1014,10 @@ static void bench_event_line(console *c, const bench_event *e) {
     put_0x(c, e->fail, 4);
     BITS(c, e->fail, CHECK_FAIL);
   }
-  if (e->action == BENCH_ACT_PUMP) {
+  if (e->action == BENCH_ACT_PUMP_OC)
+    put(c, e->end == BENCH_END_FAULT && e->fault == PUMP_FAULT_OVERCURRENT ? " (the cut acted)"
+                                                                            : " (NO CUT)");
+  if (e->action == BENCH_ACT_PUMP || e->action == BENCH_ACT_PUMP_OC) {
     kv(c, "strokes", e->a);
     kv(c, "peak_min_ma", e->b);
     kv(c, "peak_max_ma", e->c);
@@ -953,6 +1091,14 @@ void console_ms(console *c, uint32_t now) {
 
   bench_ms(&c->bench, s, now);
   run_ms(c);
+  /* "co heater off" ends on time, or when the burn leaves off. */
+  if (c->co_off && ((int32_t) (now - c->co_off_end_ms) >= 0 || s->burn.step != BURN_STEP_OFF)) {
+    c->co_off = 0;
+    if (out_free(c) >= 160) {
+      put(c, "* co heater back");
+      nl(c);
+    }
+  }
   if (!c->job)
     events(c);
   if (c->watch_ms && since(now, c->watch_last) >= c->watch_ms && !c->job) {

@@ -7,8 +7,10 @@
  *          start current limit, the stall and stuck-on checks
  *   hb     the heartbeat alone (re-armed by completed loop passes only, as in a run)
  *   pump   n strokes through the pump driver: the pre-start self-test first, then the heartbeat,
- *          the driver's arming wait, stroke length, rate cap and current checks; PUMP_CMD low,
- *          the decay wait, then the heartbeat stops (PMP-10)
+ *          the driver's arming wait, stroke length, rate cap and current checks, the overcurrent
+ *          cut (PMP-7); PUMP_CMD low, the decay wait, then the heartbeat stops (PMP-10)
+ *   pump_oc  one such stroke with the overcurrent cut's threshold lowered for it (never raised),
+ *          to see the cut act on a dummy load; the threshold goes back when the action ends
  *   glow   one probe pulse through the glow planner: needs a fan action turning at the glow's
  *          minimum speed; the pre-start self-test, the heartbeat for 50 ms, then the core lets the
  *          planner issue exactly one probe
@@ -39,6 +41,7 @@ extern "C" {
 #define BENCH_PUMP_MAX_STROKES 20u
 #define BENCH_PUMP_MIN_CHZ 10u
 #define BENCH_PUMP_DEFAULT_CHZ 100u
+#define BENCH_PUMP_OC_MIN_MA 100u
 #define BENCH_PRECHECK_MAX_MS 3000u /* the pre-start self-test (its own timeout is 2 s) */
 #define BENCH_GLOW_ARM_MS 50u       /* heartbeat before the probe (GLW-7: at least 20 ms) */
 #define BENCH_GLOW_PROBE_MAX_MS 300u /* no probe within this: given up */
@@ -62,6 +65,7 @@ enum {
   BENCH_ACT_PUMP = 4,
   BENCH_ACT_GLOW = 5,
   BENCH_ACT_PRECHECK = 6,
+  BENCH_ACT_PUMP_OC = 7,
 };
 
 /* How an action ended. */
@@ -99,6 +103,7 @@ typedef struct {
   uint32_t strokes0;
   uint8_t was_stroking;
   uint8_t stopping;     /* the pump's tail after a stop */
+  uint16_t oc_saved;    /* pump_oc: the cut's own threshold, back at the end (0: not lowered) */
   bench_event ev[BENCH_EVENTS];
   uint8_t ev_n;
 } bench;
@@ -109,6 +114,8 @@ void bench_init(bench *bn);
 int bench_fan(bench *bn, safety *s, uint32_t now, uint8_t action, uint16_t value, uint16_t seconds);
 int bench_hb(bench *bn, safety *s, uint32_t now, uint16_t seconds);
 int bench_pump(bench *bn, safety *s, uint32_t now, uint16_t strokes, uint16_t cHz);
+/* One stroke with the cut at ma (BENCH_PUMP_OC_MIN_MA up to below the setting). */
+int bench_pump_oc(bench *bn, safety *s, uint32_t now, uint16_t ma);
 int bench_glow(bench *bn, safety *s, uint32_t now);
 int bench_precheck(bench *bn, safety *s, uint32_t now);
 /* Every action ends now (the pump with its decay wait, PMP-10). */

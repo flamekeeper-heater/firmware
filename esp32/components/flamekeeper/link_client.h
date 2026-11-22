@@ -27,6 +27,34 @@ class LinkTransport {
   virtual int read() = 0;
 };
 
+// What the safety-MCU updater does (mcu_update.h).
+enum class McuJob : uint8_t {
+  UPDATE,         // install the firmware image this build carries
+  READ_OPTIONS,   // read the option bytes
+  WRITE_OPTIONS,  // write the option bits WDG-1 asks for (UNVERIFIED, WDG-13)
+};
+
+// The safety-MCU updater, as the link client sees it: the link client asks the MCU (UPDATE_PREPARE)
+// and lends it the UART while owns_uart().
+class McuUpdater {
+ public:
+  virtual ~McuUpdater() = default;
+  virtual bool available() const = 0;              // an image to install
+  virtual const uint8_t *image_version() const = 0;  // ...and its version (major, minor, patch)
+  // Whether the MCU may be taken without asking: see mcu_update.h.
+  virtual bool may_take(uint32_t silent_ms) const = 0;
+  // prepare: UPDATE_PREPARE has been queued, and prepared() brings its answer.
+  virtual Outcome begin(McuJob job, bool prepare, uint32_t now) = 0;
+  virtual void prepared(uint8_t result, const uint8_t *payload, size_t len) = 0;
+  // Every loop while the link has the UART: whether it is up, and the version HELLO reported.
+  virtual void on_link(bool up, const uint8_t version[3]) = 0;
+  virtual void loop(uint32_t now) = 0;
+  virtual bool owns_uart() const = 0;
+  virtual bool running() const = 0;  // from begin() until done or failed
+  virtual float progress() const = 0;  // %
+  virtual const char *text() const = 0;
+};
+
 class LinkClient : public Heater {
  public:
   static const uint32_t POLL_MS = 100;
@@ -57,11 +85,17 @@ class LinkClient : public Heater {
   // Clears a latched fault on the MCU (a user reset).
   Outcome reset_fault() override;
   Outcome glow_plug_fitted() override;
+  // The safety-MCU updater, if this board has one (the board's reset and boot lines, and an image).
+  void set_mcu_updater(McuUpdater *updater) { this->mcu_ = updater; }
+  // Starts a job of the updater: with the heater off, after UPDATE_PREPARE (see mcu_update.h).
+  Outcome start_mcu_job(McuJob job);
 
   // --- Heater ---
   uint32_t capabilities() const override;
   void read_status(HeaterStatus &out) const override;
   const char *firmware_text() const override { return this->info_.text; }
+  Outcome start_firmware_update() override { return this->start_mcu_job(McuJob::UPDATE); }
+  const char *firmware_update_text() const override;
   Outcome set_mode(Mode mode) override;
   Outcome set_heat_mode(HeatMode mode) override;
   Outcome set_power_demand(uint8_t percent) override;
@@ -99,6 +133,7 @@ class LinkClient : public Heater {
   void send_next_(uint32_t now);
   void on_reply_(const uint8_t *frame);
   void down_(const char *why);
+  void relink_();
   Param *param_(uint16_t id);
   const Param *param_(uint16_t id) const;
   bool params_ready_() const;
@@ -125,6 +160,13 @@ class LinkClient : public Heater {
   uint32_t last_param_ms_{0};
   bool polled_once_{false};
   std::deque<Request> queue_cmds_;
+  uint32_t heard_ms_{0};  // the last valid reply (or the first loop, before any)
+  bool started_{false};
+
+  // the safety-MCU updater
+  McuUpdater *mcu_{nullptr};
+  bool lent_{false};  // the UART is the updater's
+  mutable char update_text_[96]{};
 
   // what the MCU told us
   link_info info_{};

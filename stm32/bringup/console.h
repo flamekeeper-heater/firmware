@@ -11,6 +11,8 @@
  *     apart from its own events, so an ESP32 on the link only resynchronises.
  * Commands that drive a stage are the bench actions of bench.h (single, time-limited, through the
  * core's own stage drivers) and runs of the real burn sequencer through the link's POLL handler.
+ * The console also watches, without changing them, the glow period's timed readings, the pump
+ * overcurrent watchdog's arming and the CO heater pin; it may only hold that pin off, for a while.
  *
  * Every command line is echoed as "> line" and answered with lines ending in "ok" or "err ...";
  * unasked lines start with "* ". Output leaves at most CONSOLE_TX_PER_MS bytes a millisecond (the
@@ -31,6 +33,12 @@
  *   hb <s>                       the heartbeat alone, 1-60 s
  *   pump <n> [<cHz>]             n pump strokes (1-20) at cHz (10-600, default 100)
  *   glow                         one glow probe pulse (a fan action must be turning)
+ *   glow read                    the glow period's timed readings: in the pulse, in the gap
+ *   pump oc <mA>                 one stroke with the overcurrent cut lowered to <mA> (100 up to
+ *                                its setting): with a dummy load, the cut must stop the stroke
+ *   co                           the CO alarm: state, reading, Rs, R0 (live and saved), ratio
+ *   co heater off <s>            CO_HEAT_EN held low, 1-60 s (the safe side; the alarm may then
+ *                                see a sensor fault: clear)
  *   precheck                     the pre-start self-test alone
  *   run fan|heat <power> <s>     the burn sequencer, as the ESP32 asks it, 1-3600 s
  *   run prime <s>                priming
@@ -59,6 +67,7 @@ extern "C" {
 #define CONSOLE_TX_PER_MS 8
 #define CONSOLE_RUN_MAX_S 3600u
 #define CONSOLE_POLL_MS 100u
+#define CONSOLE_CO_OFF_MAX_S 60u
 
 /* What the start-up code read before anything changed it. */
 typedef struct {
@@ -92,6 +101,16 @@ typedef struct {
   uint8_t wdg_stopped;  /* hal_iwdg_refresh does nothing: the watchdog resets the chip */
   uint8_t hang_asked, reset_asked;
   uint8_t hang;         /* the main loop must stop here (with every timer still running) */
+  /* What the taps saw. */
+  hal_glow_sample glow_last;   /* the last glow period's readings (raw) */
+  hal_glow_sample glow_pulse;  /* the last period that had an in-pulse reading */
+  uint32_t glow_periods, glow_pulse_ms;
+  uint8_t oc_on;               /* the pump's overcurrent watchdog is armed now */
+  uint16_t oc_threshold_raw, oc_hold_us;
+  uint32_t oc_arms;            /* strokes it guarded (arming edges) */
+  uint8_t co_pin, co_wanted;   /* CO_HEAT_EN as driven, and as the board asked */
+  uint32_t co_off_end_ms;
+  uint8_t co_off;              /* "co heater off" holds the pin low until co_off_end_ms */
 } console;
 
 /* After board_init. Prints the boot line. */
@@ -101,12 +120,16 @@ void console_ms(console *c, uint32_t now);
 /* One received byte (the UART tap below calls it for every byte the board reads). */
 void console_feed(console *c, uint8_t byte);
 
-/* The console defines hal_uart_getc() (every byte goes to console_feed, then to the link) and
- * hal_iwdg_refresh() (skipped after "wdg stop") over these, which the chip provides: on the STM32
+/* The console defines hal_uart_getc() (every byte goes to console_feed, then to the link),
+ * hal_iwdg_refresh() (skipped after "wdg stop"), hal_glow_period() and hal_pump_oc_arm() (noted,
+ * passed on unchanged) and hal_co_heater() (passed on, or held low) over these, which the chip provides: on the STM32
  * the driver's own functions, renamed at compile time (build.sh bringup), in the tests the fake
  * chip. */
 int bringup_chip_uart_getc(void);
 void bringup_chip_iwdg_refresh(void);
+uint8_t bringup_chip_glow_period(hal_glow_sample *g);
+void bringup_chip_pump_oc_arm(uint8_t on, uint16_t threshold_raw, uint16_t hold_us);
+void bringup_chip_co_heater(uint8_t on);
 void bringup_sys_reset(void);
 void bringup_sys_read(uint32_t addr, uint8_t *out, size_t n); /* main flash, read only */
 

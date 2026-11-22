@@ -55,7 +55,7 @@ platforms.
 - A dropped Bluetooth or Wi-Fi connection changes nothing on the heater.
 - Only runs started from Home Assistant stop when Home Assistant is unreachable (15 minutes).
 - The ESP32 never drives the safety MCU's reset and boot pins except to update it, and only after
-  the MCU agrees (heater off and cold).
+  the MCU agrees (heater off and cold), or to finish its own update that the MCU agreed to.
 
 ## Link to the safety MCU
 
@@ -174,9 +174,11 @@ and while priming.
 `stm32/core/pump.*` turns the fuel rate into strokes, one millisecond at a time: 38 ms strokes at a
 12 V equivalent duty whatever the supply, at most 6 Hz (10 Hz priming), the first only once the
 heartbeat has run 20 ms with the high side reporting no fault. It stops the pump and the heartbeat
-for the hardware overcurrent cut, current still flowing 10 ms after a stroke or appearing between
-strokes, and a stroke with no current rise (an open coil). A high-side fault gets one heartbeat
-restart per run; a second locks out.
+for the overcurrent cut, current still flowing 10 ms after a stroke or appearing between strokes,
+and a stroke with no current rise (an open coil). A high-side fault gets one heartbeat restart per
+run; a second locks out. The overcurrent cut is the ADC's watchdog, armed from a stroke's first
+pulse until 10 ms after its last: above 3.3 A on two scans in a row (40 us), its interrupt sets
+PUMP_CMD low and stops the heartbeat itself, then the driver latches the fault.
 
 `stm32/core/plug.*` checks the glow plug's type against its setting before a start heats it (a
 12 V plug on a 24 V supply would overheat), from the resistance the first glow probe measures. On
@@ -197,20 +199,32 @@ pump's 6 Hz ceiling are not settings.
 `stm32/board/` runs the core on the chip through a small hardware interface (`hal.h`): the ADC
 counts become volts, amps and temperatures (the thermistor curves are generated tables, since the
 chip has no maths library), and a 1 ms tick schedules the self-tests and pump strokes (1 ms), the
-glow planner (5 ms) and the safety loop pass (10 ms). Only a completed pass re-arms the heartbeat's
-burst and refreshes the watchdog. Saved data goes to flash only with the heater off.
+glow planner (once per 5 ms glow period) and the safety loop pass (10 ms). Only a completed pass
+re-arms the heartbeat's burst and refreshes the watchdog. Saved data goes to flash only with the
+heater off.
+
+**The ADC schedule.** The one ADC scans every channel back to back, for ever, into a DMA buffer
+(20 us a scan), and nothing else starts a conversion: the main loop copies the buffer each
+millisecond; the glow timer picks GLOW_ISENSE 105-125 us into each pulse (settled, inside the
+shortest 150 us pulse) and GLOW_ISENSE and VIN in the gap just before the next pulse, and the
+planner runs on those once per period; the analog watchdogs watch every PUMP_ISENSE conversion
+during strokes. A stopped ADC is restarted from its first channel, so no reading lands in another
+channel's place.
 
 `stm32/hal/` is that interface on the STM32G030's registers (no vendor HAL, no C library), with the
 start-up code, the linker script and `main`. It is built, but has not run on a chip yet: the clock
-tree, the alternate functions, the DMA request for the heartbeat burst, the ADC order and the flash
-programming all need checking on the first board or a NUCLEO-G031K8. Not done yet: the pump's
-overcurrent watchdog (PMP-7) and the CO sensor.
+tree, the alternate functions, the DMA requests, the ADC order, scan time and pick instants, the
+overcurrent cut's latency and the flash programming all need checking on the first board or a
+NUCLEO-G031K8.
 
 `stm32/bringup/` is the bring-up image (`build.sh bringup`): the production start-up, board layer
 and core, plus a text console on the link UART that sits between the board layer and the chip's
-UART read and watchdog refresh. It shows the raw and converted readings, the reset reason, the
-option bytes and flash pages, and runs bench actions: a fixed fan duty or speed, the heartbeat
-alone, a few pump strokes, one glow probe pulse, the pre-start self-test, runs of the sequencer
+UART read and watchdog refresh (and watches the glow period's timed readings, the pump cut's
+arming and the CO heater pin). It shows the raw and converted readings, the reset reason, the
+option bytes, flash pages and the CO alarm, and runs bench actions: a fixed fan duty or speed, the
+heartbeat alone, a few pump strokes, one stroke with the overcurrent cut's threshold lowered (to see
+it act on a dummy load), one glow probe pulse, the CO heater held off, the pre-start self-test, runs
+of the sequencer
 through the link's POLL handler, and the watchdog tests. Each action is asked for explicitly and
 time-limited, and reaches the stages only through the core's bench requests (compiled in only with
 `SAFETY_BENCH`), which the core honours only while the burn is off and no self-test runs, through
@@ -227,8 +241,21 @@ The C6 build verifies every update against the key in its running image's signat
 repository, and `keys/` holds its public half. `tools/release.sh` builds, signs and writes the
 release manifest.
 
-The safety MCU is updated by the ESP32 through the STM32's ROM bootloader on the same UART, after
-`UPDATE_PREPARE`.
+**The safety MCU** is updated by the ESP32 with the image its own build carries (`mcu_update.*` on
+`stm32_boot.*`, Home Assistant's "Update heater firmware"):
+
+- `UPDATE_PREPARE` first: only with the heater off and cold, and the MCU then refuses starts until
+  it resets. The ESP32 holds STM_BOOT high, pulses STM_NRST, and talks to the STM32's ROM
+  bootloader on the same UART at 8E1 (ST AN3155). This needs the option bytes' nBOOT_SEL at 0.
+- It checks the chip id (0x466) and reads the option bytes, erases only the image's pages (never
+  pages 30 and 31: the saved parameters and the plug record), reads every 256-byte block back, and
+  writes page 0 last, so a half-written image has no vector table and never runs. Go starts it; it
+  is done when HELLO reports the new version.
+- A failure before the erase restarts the old firmware. After it, the MCU waits in its bootloader
+  with every output off, and the update can be run again: the ESP32 remembers it over a restart
+  and takes the MCU without `UPDATE_PREPARE` once it has been silent for 5 s.
+- Writing the option bytes (the watchdog in hardware, boot from the BOOT0 pin) is a separate step,
+  not part of an update, and not yet proven on a chip.
 
 ## CO alarm
 
@@ -237,14 +264,24 @@ It warms the sensor up, learns its clean-air resistance, and alarms on the resis
 alarm the MCU stops the heater and latches the fault; an implausible reading latches a sensor fault
 and refuses starts. It is not a certified CO alarm.
 
+The safety core owns it and the board feeds it a reading a second, with the sensor's heater on from
+power-up (off a few seconds once per warm-up, to check it). Whether a sensor is fitted is the
+"CO sensor fitted" parameter alone, on by default; a sensor fault ends a run like the alarm, with
+its own fault code. Below -30 C the state reads "too cold" and the alarm still acts. The learnt
+clean-air resistance is kept in a small log in the plug record's flash page, so the page is rarely
+erased. DETAIL carries the state and a rough ppm reading.
+
 ## Tests
 
 - `esp32/components/flamekeeper/tests/run.sh`: the core on the host, with sanitizers, against a
-  simulated heater and a simulated safety MCU.
+  simulated heater and a simulated safety MCU, and the safety-MCU updater against a simulated STM32
+  ROM bootloader (NACKs, page erase, option bytes, lost bytes, a power loss mid-write).
 - `stm32/tests/run.sh`: the safety core (`stm32/core/`): the burn sequencer against a heater model
   (whole cycles, every way a run ends, the glow caps and the airflow rule), and end to end with the
   ESP32's real link client over a byte wire (dead-man, an MCU reset mid-run).
 - `common/*/tests/run.sh`: the link codec and the CO alarm.
+- `stm32/tools/check_registers.py`: the driver's register map (`stm32/hal/`: bases, offsets, every
+  bit it writes, IRQ numbers, the flash layout) against ST's SVD for the STM32G030; usage at its top.
 - `esp32/tools/boot_test.sh`: boots a compiled image in Espressif's QEMU and fails on a crash or a
   restart. A C6 build checks its own signature at start-up, so pass the signed app with `--app`.
   The C6's log goes to USB Serial/JTAG, which QEMU does not emulate, so a clean C6 run ends with
