@@ -50,6 +50,11 @@ CMSIS_BASE = {"ADC": "ADC1_BASE", "FLASH": "FLASH_R_BASE", "DMAMUX": "DMAMUX1_BA
 FLASH_SIZE_K8 = 64 * 1024
 # RM0454 (option bytes); no ST header carries it, so it stays UNVERIFIED by this tool.
 OPTION_BYTES = 0x1FFF7800
+# Header constants that are neither registers nor fields, checked against ST's headers by value:
+# macro -> (ST file, ST macro).
+ST_CONSTANTS = {"FLASH_KEY1": ("stm32g0xx_hal_flash.h", "FLASH_KEY1"),
+                "FLASH_KEY2": ("stm32g0xx_hal_flash.h", "FLASH_KEY2"),
+                "FLASH_MEM_BASE": ("stm32g030xx.h", "FLASH_BASE")}
 
 # Cortex-M0+ system registers (ARMv6-M Architecture Reference Manual): not in ST's SVD.
 CORE = {
@@ -168,16 +173,6 @@ INLINE_CLAIMS = [
     ("USART_CR1", "1u << 3", "TE", "bit"),
     ("USART_CR1", "1u << 2", "RE", "bit"),
     ("USART_CR1", "1u", "UE", "mask"),
-    # flash programming
-    ("FLASH_SR", "0x83FBu", "EOP|OPERR|PROGERR|WRPERR|PGAERR|SIZERR|PGSERR|MISERR|FASTERR|OPTVERR",
-     "mask"),
-    ("FLASH_SR", "0x83FAu", "OPERR|PROGERR|WRPERR|PGAERR|SIZERR|PGSERR|MISERR|FASTERR|OPTVERR",
-     "mask"),
-    ("FLASH_CR", "1u << 1", "PER", "bit"),
-    ("FLASH_CR", "x << 3", "PNB", "bit"),
-    ("FLASH_CR", "1u << 16", "STRT", "bit"),
-    ("FLASH_CR", "1u", "PG", "mask"),
-    ("FLASH_CR", "1u << 31", "LOCK", "bit"),
     # clock enables
     ("RCC_IOPENR", "7u", "GPIOAEN|GPIOBEN|GPIOCEN", "mask"),
     ("RCC_AHBENR", "1u", "DMA1EN", "mask"),
@@ -644,13 +639,45 @@ def check_named(svd, m, st, fname, defs, names, quiet_unknown):
         if mm:
             check_sysmem(st, where, name, int(mm.group(1), 16))
             continue
+        if name in ST_CONSTANTS:
+            check_st_constant(st, where, names(name), *ST_CONSTANTS[name])
+            continue
         regs, rest = field_regs(m, name)
         if not regs:
             if not quiet_unknown:
                 report("NOTE", f"{where}: not a register, base, field, IRQ or DMAMUX name; not checked")
             continue
         m.field_owner[name] = regs
+        if params is None and check_composite(m, where, name, regs, body, names):
+            continue
         check_field_macro(m, st, where, name, regs, rest, params, body, names)
+
+
+def check_composite(m, where, name, regs, body, names):
+    """A mask named for a set of flags: an OR of field macros already checked, each of the same
+    register (FLASH_SR_ERRORS = FLASH_SR_OPERR | ...). True if the body is such an OR."""
+    parts = re.fullmatch(r"\(?\s*([A-Za-z_]\w*(?:\s*\|\s*[A-Za-z_]\w*)+)\s*\)?", body)
+    if not parts:
+        return False
+    parts = [x.strip() for x in parts.group(1).split("|")]
+    foreign = [x for x in parts if not set(m.field_owner.get(x, [])) & set(regs)]
+    if foreign:
+        report("FAIL", f"{where}: {', '.join(foreign)} not a checked field of {', '.join(regs)}")
+    else:
+        report("PASS", f"{where} = {names(name):#x}: {' | '.join(parts)}")
+    return True
+
+
+def check_st_constant(st, where, value, fn, ref):
+    v = st.value(ref) if st.has(fn) else None
+    if value is None:
+        report("FAIL", f"{where}: cannot evaluate")
+    elif v is None:
+        report("UNVERIFIED", f"{where} = {value:#x}: {fn} not given")
+    elif v == value:
+        report("PASS", f"{where} = {value:#x} [ST's {ref}]")
+    else:
+        report("FAIL", f"{where} = {value:#x}, ST's {ref} = {v:#x}")
 
 
 def check_irq(svd, st, where, irq, value):
@@ -1336,14 +1363,27 @@ def check_layout(svd, st, ld_path, c_files, names):
     if saved:
         report("PASS" if saved[0] == fo + fl else "FAIL",
                f"{rel} SAVED at {saved[0]:#x} follows FLASH (ends {fo + fl:#x})")
-    # The driver's page address formula and its flash erase page number.
+    # The driver's page address formula and its flash erase page number, literals or macros.
+    tok = r"(?:0[xX][0-9A-Fa-f]+|\d+)[uU]?|[A-Za-z_]\w*"
+
+    def const(t):
+        try:
+            return ceval(t, names)
+        except (NotConst, ZeroDivisionError):
+            return None
+
     for path in c_files:
         t = strip_c(open(path, encoding="utf-8").read())
-        mm = re.search(r"(0x[0-9A-Fa-f]+)u?\s*\+\s*\(\s*(\d+)u?\s*\+\s*(\w+)\s*\)\s*\*\s*(\d+)u?", t)
+        mm = None
+        for cand in re.finditer(rf"({tok})\s*\+\s*\(\s*({tok})\s*\+\s*(\w+)\s*\)\s*\*\s*({tok})", t):
+            vals = [const(cand.group(i)) for i in (1, 2, 3, 4)]
+            if None not in (vals[0], vals[1], vals[3]) and vals[2] is None and vals[0] >= 0x08000000:
+                mm, (base, first, _, psize) = cand, vals
+                break
         if not mm:
             continue
         cname = os.path.basename(path)
-        base, first, var, psize = int(mm.group(1), 16), int(mm.group(2)), mm.group(3), int(mm.group(4))
+        var = mm.group(3)
         against(f"{cname} flash base", base, flash_base, "ST's CMSIS FLASH_BASE")
         against(f"{cname} flash page size", psize, page, "ST's HAL FLASH_PAGE_SIZE")
         if saved:
@@ -1351,15 +1391,28 @@ def check_layout(svd, st, ld_path, c_files, names):
             report("PASS" if ok else "FAIL",
                    f"{cname} pages {first}.. at {base + first * psize:#x}, {rel} SAVED at "
                    f"{saved[0]:#x}, {saved[1] // psize} page(s) of {psize}")
-        pnb = re.search(r"\(\s*(\d+)u?\s*\+\s*" + var + r"\s*\)\s*<<\s*(\d+)", t)
-        fields = merged_fields(svd.regs_at("FLASH", 0x14))
+            count = names("HAL_SAVED_PAGES")
+            if count is not None:
+                report("PASS" if count == saved[1] // psize else "FAIL",
+                       f"HAL_SAVED_PAGES = {count}, {rel} SAVED holds {saved[1] // psize}")
+        # FLASH_CR's page number: (first + page) << k, or the PNB field macro of (first + page).
+        pfirst = shift = None
+        pnb = re.search(rf"\(\s*({tok})\s*\+\s*{var}\s*\)\s*<<\s*(\d+)", t)
         if pnb:
-            off, w = fields["PNB"]
-            last = int(pnb.group(1)) + (saved[1] // psize - 1 if saved else 0)
-            ok = int(pnb.group(1)) == first and int(pnb.group(2)) == off and last < (1 << w)
+            pfirst, shift = const(pnb.group(1)), int(pnb.group(2))
+        pnb = pnb or re.search(rf"\bFLASH_CR_PNB\s*\(\s*({tok})\s*\+\s*{var}\s*\)", t)
+        if pnb and shift is None and names.defs.get("FLASH_CR_PNB", (None,))[0]:
+            params_, body, _ = names.defs["FLASH_CR_PNB"]
+            pfirst, shift = const(pnb.group(1)), ceval(body, names, {params_[0]: 1}).bit_length() - 1
+        if pfirst is not None:
+            off, w = merged_fields(svd.regs_at("FLASH", 0x14))["PNB"]
+            last = pfirst + (saved[1] // psize - 1 if saved else 0)
+            ok = pfirst == first and shift == off and last < (1 << w)
             report("PASS" if ok else "FAIL",
-                   f"{cname} FLASH_CR page number {pnb.group(1)}+{var} << {pnb.group(2)}: PNB at bit "
+                   f"{cname} FLASH_CR page number {pfirst}+{var} << {shift}: PNB at bit "
                    f"{off}, last page {last} fits {w} bits, same first page as the address")
+        else:
+            report("FAIL", f"{cname}: no FLASH_CR page number (first page + {var}) found")
         wsize = re.search(r"i\s*\+=\s*(\d+)", t[mm.end():])
         if wsize:
             report("PASS" if wsize.group(1) == "8" else "FAIL",
@@ -1377,8 +1430,11 @@ def check_layout(svd, st, ld_path, c_files, names):
     if st.has("stm32g0xx_hal_flash.h"):
         for key, want in (("FLASH_KEY1", 0x45670123), ("FLASH_KEY2", 0xCDEF89AB)):
             v = st.value(key)
-            found = any(re.search(f"{want:#010X}".replace("0X", "0x"), open(p, encoding="utf-8").read(), re.I)
-                        for p in c_files)
+            # The key written inline, or a macro of that value used by name.
+            pats = [f"{want:#010X}".replace("0X", "0x")]
+            pats += [rf"\b{n}\b" for n, d in names.defs.items() if d[0] is None and names(n) == want]
+            found = any(re.search(pat, strip_c(open(p, encoding="utf-8").read()), re.I)
+                        for p in c_files for pat in pats)
             report("PASS" if v == want and found else "FAIL",
                    f"flash unlock key {want:#010x} in the driver [ST's HAL {key} = {v:#x}]")
 
@@ -1427,6 +1483,10 @@ def main():
         d = parse_defines(p)
         per_file.append((os.path.basename(p), d))
         cdefs.update(d)
+    # The board layer's hal.h only for its constants (HAL_FLASH_PAGE_SIZE); it touches no register.
+    board_hal = os.path.join(a.root, "board", "hal.h")
+    if os.path.isfile(board_hal):
+        cdefs = {**parse_defines(board_hal), **cdefs}
     names = Names(hdr, cdefs)
     m = Map(svd, hdr, names)
     check_header(svd, m, hdr, names, st)

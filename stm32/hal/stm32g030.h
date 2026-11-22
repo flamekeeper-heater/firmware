@@ -171,8 +171,32 @@
 #define FLASH_ECCR_SYSF_ECC (1u << 20)
 #define FLASH_ECCR_ECCCIE (1u << 24)
 #define FLASH_ECCR_ECCD (1u << 31)
+#define FLASH_SR_EOP (1u << 0)
+#define FLASH_SR_OPERR (1u << 1)
+#define FLASH_SR_PROGERR (1u << 3)
+#define FLASH_SR_WRPERR (1u << 4)
+#define FLASH_SR_PGAERR (1u << 5)
+#define FLASH_SR_SIZERR (1u << 6)
+#define FLASH_SR_PGSERR (1u << 7)
+#define FLASH_SR_MISERR (1u << 8)
+#define FLASH_SR_FASTERR (1u << 9)
+#define FLASH_SR_OPTVERR (1u << 15) /* the option bytes failed to load */
 #define FLASH_SR_BSY1 (1u << 16)
 #define FLASH_SR_CFGBSY (1u << 18) /* FLASH_CR in use by a program or erase */
+/* Every error flag, OPERR..FASTERR and OPTVERR (all rc_w1), and those with EOP: the clear. */
+#define FLASH_SR_ERRORS (FLASH_SR_OPERR | FLASH_SR_PROGERR | FLASH_SR_WRPERR | FLASH_SR_PGAERR | \
+                         FLASH_SR_SIZERR | FLASH_SR_PGSERR | FLASH_SR_MISERR | FLASH_SR_FASTERR | \
+                         FLASH_SR_OPTVERR)
+#define FLASH_SR_CLEAR (FLASH_SR_EOP | FLASH_SR_ERRORS)
+#define FLASH_CR_PG (1u << 0)
+#define FLASH_CR_PER (1u << 1)
+#define FLASH_CR_PNB(page) ((uint32_t) (page) << 3)
+#define FLASH_CR_STRT (1u << 16)
+#define FLASH_CR_LOCK (1u << 31)
+/* FLASH_KEYR's unlock sequence, and where the main flash starts (checked against ST's headers). */
+#define FLASH_KEY1 0x45670123u
+#define FLASH_KEY2 0xCDEF89ABu
+#define FLASH_MEM_BASE 0x08000000u
 #define FLASH_OPTR_IWDG_STOP (1u << 17)  /* 0: the IWDG frozen in stop mode */
 #define FLASH_OPTR_IWDG_STDBY (1u << 18) /* 0: the IWDG frozen in standby */
 

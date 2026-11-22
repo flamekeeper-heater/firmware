@@ -552,11 +552,13 @@ void NMI_Handler(void) {
 
 uint8_t hal_flash_unreadable(uint8_t page) { return (uint8_t) ((flash_unreadable >> page) & 1u); }
 
-static uint32_t page_addr(uint8_t page) { return 0x08000000u + (30u + page) * 2048u; }
+static uint32_t page_addr(uint8_t page) {
+  return FLASH_MEM_BASE + (HAL_SAVED_PAGE_FIRST + page) * HAL_FLASH_PAGE_SIZE;
+}
 
 size_t hal_flash_read(uint8_t page, uint8_t *out, size_t cap) {
   const uint8_t *p = (const uint8_t *) page_addr(page);
-  size_t n = cap < 256u ? cap : 256u;
+  size_t n = cap < HAL_FLASH_IMAGE_MAX ? cap : HAL_FLASH_IMAGE_MAX;
   memcpy(out, p, n);
   return n;
 }
@@ -564,34 +566,49 @@ size_t hal_flash_read(uint8_t page, uint8_t *out, size_t cap) {
 /* ST's sequence (RM0454, and HAL's FLASH_WaitForLastOperation): before touching FLASH_CR and after
  * each erase or double word, wait for BSY1, then for CFGBSY (FLASH_CR still taken by the
  * operation) unless an error flag is up, which ST's HAL does not wait past either; the caller
- * reads the errors at the end. */
+ * reads the errors at the end (flash_lock_result). */
 static void flash_wait(void) {
   while (FLASH_SR & FLASH_SR_BSY1) {
   }
-  while ((FLASH_SR & (FLASH_SR_CFGBSY | 0x83FAu)) == FLASH_SR_CFGBSY) {
+  while ((FLASH_SR & (FLASH_SR_CFGBSY | FLASH_SR_ERRORS)) == FLASH_SR_CFGBSY) {
   }
 }
 
-int hal_flash_write(uint8_t page, const uint8_t *d, size_t n) {
-  if (n > 256u)
-    return -1;
+/* Unlocks FLASH_CR once the flash is idle, and clears EOP and any old errors. */
+static void flash_unlock(void) {
   flash_wait();
-  FLASH_KEYR = 0x45670123u;
-  FLASH_KEYR = 0xCDEF89ABu;
-  FLASH_SR = 0x83FBu; /* clear old errors and EOP */
-  FLASH_CR = (1u << 1) | ((30u + page) << 3) | (1u << 16); /* erase the page */
-  flash_wait();
-  FLASH_CR = 1u; /* program, 64 bits at a time */
-  uint32_t a = page_addr(page);
+  FLASH_KEYR = FLASH_KEY1;
+  FLASH_KEYR = FLASH_KEY2;
+  FLASH_SR = FLASH_SR_CLEAR;
+}
+
+/* n bytes from d to addr (erased, double-word aligned), 64 bits at a time; a last partial double
+ * word is padded with 0xFF. */
+static void flash_program_dwords(uint32_t addr, const uint8_t *d, size_t n) {
+  FLASH_CR = FLASH_CR_PG;
   for (size_t i = 0; i < n; i += 8) {
     uint32_t w[2] = {0xFFFFFFFFu, 0xFFFFFFFFu};
     memcpy(w, d + i, n - i < 8 ? n - i : 8);
-    REG(a + i) = w[0];
-    REG(a + i + 4) = w[1];
+    REG(addr + i) = w[0];
+    REG(addr + i + 4) = w[1];
     flash_wait();
   }
-  FLASH_CR = 1u << 31; /* lock */
-  if (FLASH_SR & 0x83FAu) /* OPERR..FASTERR, OPTVERR */
+}
+
+/* Locks FLASH_CR again: 0, or -1 if any operation since flash_unlock raised an error. */
+static int flash_lock_result(void) {
+  FLASH_CR = FLASH_CR_LOCK;
+  return (FLASH_SR & FLASH_SR_ERRORS) ? -1 : 0;
+}
+
+int hal_flash_write(uint8_t page, const uint8_t *d, size_t n) {
+  if (n > HAL_FLASH_IMAGE_MAX)
+    return -1;
+  flash_unlock();
+  FLASH_CR = FLASH_CR_PER | FLASH_CR_PNB(HAL_SAVED_PAGE_FIRST + page) | FLASH_CR_STRT; /* erase */
+  flash_wait();
+  flash_program_dwords(page_addr(page), d, n);
+  if (flash_lock_result())
     return -1;
   flash_unreadable &= (uint8_t) ~(1u << page); /* erased and written afresh */
   return 0;
@@ -601,23 +618,11 @@ const uint8_t *hal_flash_page(uint8_t page) { return (const uint8_t *) page_addr
 
 /* Double words into an erased part of the page, no erase (the CO sensor's R0 log). */
 int hal_flash_program(uint8_t page, uint16_t offset, const uint8_t *d, size_t n) {
-  if ((offset & 7u) || (n & 7u) || offset + n > 2048u)
+  if ((offset & 7u) || (n & 7u) || offset + n > HAL_FLASH_PAGE_SIZE)
     return -1;
-  flash_wait();
-  FLASH_KEYR = 0x45670123u;
-  FLASH_KEYR = 0xCDEF89ABu;
-  FLASH_SR = 0x83FBu; /* clear EOP and the error flags */
-  FLASH_CR = 1u; /* program */
-  uint32_t a = page_addr(page) + offset;
-  for (size_t i = 0; i < n; i += 8) {
-    uint32_t w[2];
-    memcpy(w, d + i, 8);
-    REG(a + i) = w[0];
-    REG(a + i + 4) = w[1];
-    flash_wait();
-  }
-  FLASH_CR = 1u << 31; /* lock */
-  return (FLASH_SR & 0x83FAu) ? -1 : 0; /* OPERR..FASTERR, OPTVERR */
+  flash_unlock();
+  flash_program_dwords(page_addr(page) + offset, d, n);
+  return flash_lock_result();
 }
 
 /* ---------------------------------------------------------------- start-up */
