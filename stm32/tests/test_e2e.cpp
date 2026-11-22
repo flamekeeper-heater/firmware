@@ -271,7 +271,57 @@ static void test_mcu_reset_mid_run() {
   CHECK(b.client.raw_status().state == BURN_STATE_OFF);  // an MCU reset never starts the heater
 }
 
+static void test_parameters() {
+  Bench b;
+  b.run(10 * SEC);  // the client describes the table, then fetches each help text
+  CHECK(b.client.param_count() == PARAM_COUNT);
+  esphome::flamekeeper::ParamInfo info;
+  CHECK(b.client.param_info(0, info));
+  CHECK(std::strcmp(info.name, "Pump min") == 0);
+  CHECK(info.id == 0x01 && info.decimals == 2 && info.max == 400);
+  CHECK(std::strlen(b.client.param_help(0x11)) > 10);
+  esphome::flamekeeper::ParamValue v;
+  CHECK(b.client.param_get(0x11, v) && v.known && v.value == 4500);
+
+  // Staged, then applied with the heater off: the sequencer runs with it.
+  CHECK(b.client.param_set(0x11, 5000).accepted());
+  b.run(1 * SEC);
+  CHECK(b.s.burn.p.fan_max_rpm == 4500);
+  CHECK(b.client.raw_status().flags & LINK_STATUS_PARAMS_STAGED);
+  CHECK(b.client.param_apply(true).accepted());
+  b.run(1 * SEC);
+  CHECK(b.s.burn.p.fan_max_rpm == 5000);
+  CHECK(safety_params_save_pending(&b.s));
+  uint8_t img[PARAMS_IMAGE_MAX];
+  size_t n = params_pack(&b.s.params, img, sizeof(img));
+  safety_params_saved(&b.s);
+  CHECK(n > 0);
+
+  // Out of range from the app: refused by the board.
+  b.client.param_set(0x02, 900);  // 9 Hz
+  b.run(1 * SEC);
+  CHECK(b.s.params.staged_mask == 0);
+
+  // While the heater runs, an apply is refused and the change stays staged.
+  b.run(120 * SEC);  // the glow budget after power-on
+  b.client.set_power_demand(50);
+  b.client.set_mode(Mode::HEAT);
+  CHECK(b.run_until_state(BURN_STATE_STARTING, 2 * SEC));
+  b.client.param_set(0x10, 2000);
+  b.run(500);
+  b.client.param_apply(false);
+  b.run(1 * SEC);
+  CHECK(b.s.burn.p.fan_min_rpm == 1800);
+  CHECK(b.s.params.staged_mask != 0);
+
+  // After a reset the saved image comes back.
+  Bench c;
+  safety_load_params(&c.s, img, n);
+  CHECK(c.s.burn.p.fan_max_rpm == 5000);
+}
+
 int main() {
+  test_parameters();
   test_glow_rests_after_reset();
   test_heat_cycle();
   test_dead_man();

@@ -12,6 +12,7 @@
 #include "checks.h"
 #include "fan.h"
 #include "glow.h"
+#include "params.h"
 #include "pump.h"
 
 #ifdef __cplusplus
@@ -25,7 +26,7 @@ extern "C" {
 /* What this firmware can do today (link Info capabilities). */
 #define SAFETY_CAPABILITIES                                                                     \
   (LINK_CAP_FAN_ONLY | LINK_CAP_PRIME | LINK_CAP_PRIME_STOP | LINK_CAP_SUPPLY_PRESENT |        \
-   LINK_CAP_OVERHEAT_LATCH | LINK_CAP_DEADMAN)
+   LINK_CAP_OVERHEAT_LATCH | LINK_CAP_DEADMAN | LINK_CAP_PARAMETERS)
 
 /* Supply present (link Status flag): above this the power stages have a supply, 0.01 V. */
 #define SAFETY_SUPPLY_PRESENT_CV 600u
@@ -36,6 +37,7 @@ typedef struct {
   fan fan;
   checks chk;
   pump pump;
+  params params;
   uint16_t hb_running_ms; /* the heartbeat as last asked: running this long (0 = not) */
   uint8_t power_up_started;
   uint8_t precheck_started; /* the pre-start test of the current start has begun */
@@ -79,6 +81,13 @@ glow_cmd safety_glow_period(safety *s, uint32_t now, glow_meas *m);
 /* One pass of the fan stage: the speed the sequencer wants, as a PWM duty (permille), from that
  * pass's fan readings. Call it every pass, after safety_step. */
 uint16_t safety_fan_step(safety *s, uint32_t now, const fan_meas *m);
+
+/* The saved parameter image from flash, once at boot before any start (ignored when invalid). */
+void safety_load_params(safety *s, const uint8_t *image, size_t len);
+/* 1 when the parameters changed and should be written (params_pack); call safety_params_saved
+ * once they are. */
+static inline int safety_params_save_pending(const safety *s) { return s->params.save_pending; }
+static inline void safety_params_saved(safety *s) { s->params.save_pending = 0; }
 
 /* What the millisecond step asks of the hardware. */
 typedef struct {

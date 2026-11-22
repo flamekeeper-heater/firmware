@@ -10,7 +10,7 @@ static void on_info(void *ctx, link_info *out) {
   out->version[1] = SAFETY_VERSION_MINOR;
   out->version[2] = SAFETY_VERSION_PATCH;
   out->capabilities = SAFETY_CAPABILITIES;
-  out->param_count = 0;
+  out->param_count = (uint8_t) PARAM_COUNT;
   out->reset_reason = s->reset_reason;
   out->checks = s->checks;
   strncpy(out->text, "Flamekeeper safety 0.1.0", LINK_TEXT_MAX);
@@ -38,6 +38,8 @@ static void fill_status(safety *s, link_status *o) {
     o->flags |= LINK_STATUS_DEADMAN_STOP;
   if (starts_refused(s))
     o->flags |= LINK_STATUS_NO_STARTS;
+  if (s->params.staged_mask)
+    o->flags |= LINK_STATUS_PARAMS_STAGED;
   o->start_ack = s->gate.last;
   o->start_result = s->start_result;
   o->power = b->running_power;
@@ -83,6 +85,89 @@ static void on_detail(void *ctx, link_detail *out) {
   *out = s->detail;
 }
 
+/* ---------------------------------------------------------------- parameters */
+
+static int on_param_describe(void *ctx, uint8_t index, link_param_desc *out) {
+  (void) ctx;
+  if (index >= PARAM_COUNT)
+    return LINK_OUT_OF_RANGE;
+  const param_def *d = &PARAM_TABLE[index];
+  out->index = index;
+  out->count = (uint8_t) PARAM_COUNT;
+  out->id = d->id;
+  out->flags = d->flags;
+  out->unit = d->unit;
+  out->decimals = d->decimals;
+  out->min = d->min, out->max = d->max, out->step = d->step;
+  out->group = d->group;
+  out->level = d->level;
+  strncpy(out->name, d->name, LINK_PARAM_NAME_MAX);
+  out->name[LINK_PARAM_NAME_MAX] = 0;
+  return LINK_OK;
+}
+
+static int on_param_get(void *ctx, uint16_t id, link_param_value *out) {
+  safety *s = (safety *) ctx;
+  const param_def *d = params_find(id);
+  if (d == NULL)
+    return LINK_OUT_OF_RANGE;
+  size_t i = (size_t) (d - PARAM_TABLE);
+  out->id = id;
+  out->value = params_value(&s->params, i);
+  out->flags = LINK_PARAM_KNOWN;
+  out->staged = out->value;
+  if (s->params.staged_mask & (1u << i)) {
+    out->flags |= LINK_PARAM_STAGED;
+    out->staged = s->params.staged[i];
+  }
+  return LINK_OK;
+}
+
+static int on_param_set(void *ctx, uint16_t id, int32_t value) {
+  return params_set(&((safety *) ctx)->params, id, value);
+}
+
+/* The sequencer takes new parameters only while the heater is off. */
+static int heater_off(const safety *s) { return s->burn.step == BURN_STEP_OFF; }
+
+static int on_param_apply(void *ctx, uint8_t save) {
+  safety *s = (safety *) ctx;
+  int r = params_apply(&s->params, heater_off(s), save);
+  if (r == LINK_OK)
+    s->burn.p = s->params.live;
+  return r;
+}
+
+static int on_param_discard(void *ctx) {
+  params_discard(&((safety *) ctx)->params);
+  return LINK_OK;
+}
+
+static int on_param_defaults(void *ctx) {
+  safety *s = (safety *) ctx;
+  if (!heater_off(s))
+    return LINK_NOT_OFF;
+  params_defaults(&s->params);
+  s->burn.p = s->params.live;
+  return LINK_OK;
+}
+
+static int on_param_help(void *ctx, uint16_t id, const char **text) {
+  (void) ctx;
+  const param_def *d = params_find(id);
+  if (d == NULL)
+    return LINK_OUT_OF_RANGE;
+  *text = d->help;
+  return LINK_OK;
+}
+
+void safety_load_params(safety *s, const uint8_t *image, size_t len) {
+  if (params_unpack(&s->params, image, len) && heater_off(s))
+    s->burn.p = s->params.live;
+}
+
+/* ---------------------------------------------------------------- faults */
+
 static int on_fault_reset(void *ctx) {
   safety *s = (safety *) ctx;
   /* The stages' own faults clear with a user reset too, once the burn agrees. */
@@ -126,6 +211,8 @@ void safety_init(safety *s, const burn_params *p, const glow_params *gp, const f
   s->in = *in;
   s->reset_reason = reset_reason;
   s->checks = checks;
+  params_init(&s->params);
+  s->params.live = *p;
   burn_init(&s->burn, p, now, in);
   glow_init(&s->glow, gp, now);
   fan_init(&s->fan, fp, now);
@@ -141,6 +228,13 @@ void safety_init(safety *s, const burn_params *p, const glow_params *gp, const f
   s->mcu.detail = on_detail;
   s->mcu.fault_reset = on_fault_reset;
   s->mcu.update_prepare = on_update_prepare;
+  s->mcu.param_describe = on_param_describe;
+  s->mcu.param_get = on_param_get;
+  s->mcu.param_set = on_param_set;
+  s->mcu.param_apply = on_param_apply;
+  s->mcu.param_discard = on_param_discard;
+  s->mcu.param_defaults = on_param_defaults;
+  s->mcu.param_help = on_param_help;
   s->mcu.client_major = &s->client_major;
 }
 

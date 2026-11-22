@@ -171,6 +171,14 @@ for the hardware overcurrent cut, current still flowing 10 ms after a stroke or 
 strokes, and a stroke with no current rise (an open coil). A high-side fault gets one heartbeat
 restart per run; a second locks out.
 
+`stm32/core/params.*` is the heater's parameter table, which the apps show through the link: the
+pump and fan ranges, the start-up and shut-down timings, the glow power and the overheat limits,
+each with a name, unit, range, step and help text. Changes are staged, then applied together only
+with the heater off, after a check of the rules between them (no minimum above its maximum);
+"apply and save" has the hardware layer write the table to flash (with a version and a CRC; an
+invalid image leaves the defaults). The glow time caps, the glow's minimum fan speed and the
+pump's 6 Hz ceiling are not settings.
+
 `stm32/core/safety.*` joins them all to the link: the start-number rule, the dead-man, the status and
 the update handshake.
 
