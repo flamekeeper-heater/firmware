@@ -28,6 +28,7 @@ typedef struct {
   uint16_t i_high_ca, w_high_us;           /* above i_high: at most w_high per pulse */
   uint16_t i_very_high_ca, w_very_high_us; /* above i_very_high: at most w_very_high */
   uint8_t margin_percent;    /* added to the predicted current */
+  uint16_t min_reading_ca;   /* a pulse reading below this is no reading: only probes follow */
   uint16_t p_max_w, p_low_supply_w;
   uint16_t low_supply_cv;    /* below it, p_low_supply_w */
   uint16_t start_v_cv;       /* gentle start: the plug's rms voltage at the beginning, 0.01 V */

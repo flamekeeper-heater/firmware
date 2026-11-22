@@ -42,3 +42,10 @@ c++ -std=c++17 -Wall -Wextra -Werror $san "$here/test_e2e.cpp" "$fk/link_client.
   "$fk/tuning.cpp" "$fk/thermostat.cpp" "$out/safety.o" "$out/burn.o" "$out/glow.o" "$out/fan.o" "$out/checks.o" "$out/pump.o" "$out/params.o" "$out/plug.o" "$out/link.o" "$out/heater_model.o" \
   -o "$out/test_e2e"
 "$out/test_e2e"
+
+# The board layer against a fake chip.
+cc $strict $san -c "$here/../board/analog.c" -o "$out/analog.o"
+cc $strict $san -c "$here/../board/board.c" -o "$out/board.o"
+cc -std=c99 -Wall -Wextra -Werror $san "$here/test_board.c" "$out/board.o" "$out/analog.o" "$out/safety.o" "$out/burn.o" \
+  "$out/glow.o" "$out/fan.o" "$out/checks.o" "$out/pump.o" "$out/params.o" "$out/plug.o" "$out/link.o" -o "$out/test_board"
+"$out/test_board"

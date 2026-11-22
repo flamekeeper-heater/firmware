@@ -12,7 +12,7 @@ This repository holds the ESP32 firmware (ESPHome on ESP-IDF) and the C code sha
 safety MCU (the link protocol between the two, and the CO alarm).
 
 > **Status: in development.** The rev A2 board has not been produced yet, the safety MCU firmware
-> is only its core so far (no hardware layer yet), and the app protocol may still change. The install steps below
+> has not run on a chip yet, and the app protocol may still change. The install steps below
 > have not been tried on a real board.
 
 ## What it does
@@ -35,7 +35,7 @@ safety MCU (the link protocol between the two, and the CO alarm).
 | `esp32/components/` | The ESPHome components. `flamekeeper/` is the core: plain C++ with host tests. |
 | `esp32/tools/` | Signing, release, network flashing and a QEMU boot test. |
 | `esp32/keys/` | The project's public release key. |
-| `stm32/` | The safety MCU firmware: so far its core (`core/`: the burn sequencer, the glow pulse planner, the fan controller, the pump stroke driver, the interlock self-tests, the glow plug type check, the parameter table and the link glue), host-tested against a heater model. |
+| `stm32/` | The safety MCU firmware: its core (`core/`: the burn sequencer, the glow pulse planner, the fan controller, the pump stroke driver, the interlock self-tests, the glow plug type check, the parameter table and the link glue), host-tested against a heater model; the board layer (`board/`) and the STM32G030 driver (`hal/`), not yet run on a chip. |
 | `common/` | C99 shared with the safety MCU: the link codec (`link/`) and the CO alarm (`co/`). |
 | [PROTOCOL.md](PROTOCOL.md) | The app protocol, over Bluetooth LE and Wi-Fi. |
 | [DESIGN.md](DESIGN.md) | How the firmware is put together, and the link to the safety MCU. |
@@ -95,6 +95,14 @@ that key. To go back to official releases, flash an official image over USB.
 
 Holding BOOT for 10 seconds while the board runs is a factory reset: every paired phone, setting
 and network is forgotten. The firmware and its signing key stay.
+
+## Safety MCU firmware
+
+Needs `arm-none-eabi-gcc` (no vendor HAL or C library). It has not run on a chip yet.
+
+```bash
+stm32/build.sh   # stm32/build/safety.elf and .bin, and the flash and RAM use
+```
 
 ## Tests
 

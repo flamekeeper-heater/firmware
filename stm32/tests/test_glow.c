@@ -261,6 +261,23 @@ static void test_heat_budget(void) {
   CHECK(glow_bucket_a2s(&r.g) == 0);
 }
 
+static void test_no_reading_no_long_pulses(void) {
+  /* The current sense reads nothing (a dead line, a missed sample): only 150 us probes, ever. */
+  glow g;
+  glow_params p;
+  glow_params_default(&p);
+  glow_init(&g, &p, 0);
+  g.bucket_a2us = 0;
+  uint16_t longest = 0;
+  for (uint32_t t = 0; t < 5000; t += 5) {
+    glow_meas m = {2600, 0, 0, 1, 300, 0}; /* 26 V, a reading of 0 A */
+    glow_cmd c = glow_period(&g, t, 90, &m);
+    if (c.width_us > longest)
+      longest = c.width_us;
+  }
+  CHECK(longest == 150);
+}
+
 static void test_reset_starts_full(void) {
   glow g;
   glow_params p;
@@ -285,6 +302,7 @@ int main(void) {
   test_high_side_trips();
   test_airflow_and_board();
   test_heat_budget();
+  test_no_reading_no_long_pulses();
   test_reset_starts_full();
   printf("glow: %d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;

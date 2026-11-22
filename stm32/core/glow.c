@@ -15,6 +15,7 @@ void glow_params_default(glow_params *p) {
   p->i_very_high_ca = 10000;
   p->w_very_high_us = 300;
   p->margin_percent = 10;
+  p->min_reading_ca = 50;
   p->p_max_w = 90;
   p->p_low_supply_w = 75;
   p->low_supply_cv = 1100;
@@ -64,7 +65,9 @@ glow_cmd glow_period(glow *g, uint32_t now_ms, uint16_t power_w, const glow_meas
   if (g->last_width_us > 0) {
     if (g->last_width_us >= p->min_pulse_us) {
       g->i_ca = m->pulse_ca;
-      g->have_reading = 1;
+      /* A pulse with (almost) no current is no reading: a dead sense line or a missed sample
+       * would otherwise plan long pulses for a plug that may draw 100 A. Only probes follow. */
+      g->have_reading = m->pulse_ca >= p->min_reading_ca;
     }
     uint64_t add = pulse_a2us(g->i_ca, g->last_width_us);
     g->bucket_a2us += add;

@@ -188,6 +188,18 @@ with the heater off, after a check of the rules between them (no minimum above i
 invalid image leaves the defaults). The glow time caps, the glow's minimum fan speed and the
 pump's 6 Hz ceiling are not settings.
 
+`stm32/board/` runs the core on the chip through a small hardware interface (`hal.h`): the ADC
+counts become volts, amps and temperatures (the thermistor curves are generated tables, since the
+chip has no maths library), and a 1 ms tick schedules the self-tests and pump strokes (1 ms), the
+glow planner (5 ms) and the safety loop pass (10 ms). Only a completed pass re-arms the heartbeat's
+burst and refreshes the watchdog. Saved data goes to flash only with the heater off.
+
+`stm32/hal/` is that interface on the STM32G030's registers (no vendor HAL, no C library), with the
+start-up code, the linker script and `main`. It is built, but has not run on a chip yet: the clock
+tree, the alternate functions, the DMA request for the heartbeat burst, the ADC order and the flash
+programming all need checking on the first board or a NUCLEO-G031K8. Not done yet: the pump's
+overcurrent watchdog (PMP-7) and the CO sensor.
+
 `stm32/core/safety.*` joins them all to the link: the start-number rule, the dead-man, the status and
 the update handshake.
 
