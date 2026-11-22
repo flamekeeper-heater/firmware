@@ -167,7 +167,6 @@ INLINE_CLAIMS = [
     ("USART_CR1", "1u << 2", "RE", "bit"),
     ("USART_CR1", "1u", "UE", "mask"),
     # flash programming
-    ("FLASH_SR", "1u << 16", "BSY1", "bit"),
     ("FLASH_SR", "0x83FBu", "EOP|OPERR|PROGERR|WRPERR|PGAERR|SIZERR|PGSERR|MISERR|FASTERR|OPTVERR",
      "mask"),
     ("FLASH_SR", "0x83FAu", "OPERR|PROGERR|WRPERR|PGAERR|SIZERR|PGSERR|MISERR|FASTERR|OPTVERR",

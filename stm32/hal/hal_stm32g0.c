@@ -561,17 +561,26 @@ size_t hal_flash_read(uint8_t page, uint8_t *out, size_t cap) {
   return n;
 }
 
+/* ST's sequence (RM0454, and HAL's FLASH_WaitForLastOperation): before touching FLASH_CR and after
+ * each erase or double word, wait for BSY1, then for CFGBSY (FLASH_CR still taken by the
+ * operation) unless an error flag is up, which ST's HAL does not wait past either; the caller
+ * reads the errors at the end. */
+static void flash_wait(void) {
+  while (FLASH_SR & FLASH_SR_BSY1) {
+  }
+  while ((FLASH_SR & (FLASH_SR_CFGBSY | 0x83FAu)) == FLASH_SR_CFGBSY) {
+  }
+}
+
 int hal_flash_write(uint8_t page, const uint8_t *d, size_t n) {
   if (n > 256u)
     return -1;
-  while (FLASH_SR & (1u << 16)) {
-  }
+  flash_wait();
   FLASH_KEYR = 0x45670123u;
   FLASH_KEYR = 0xCDEF89ABu;
   FLASH_SR = 0x83FBu; /* clear old errors and EOP */
   FLASH_CR = (1u << 1) | ((30u + page) << 3) | (1u << 16); /* erase the page */
-  while (FLASH_SR & (1u << 16)) {
-  }
+  flash_wait();
   FLASH_CR = 1u; /* program, 64 bits at a time */
   uint32_t a = page_addr(page);
   for (size_t i = 0; i < n; i += 8) {
@@ -579,8 +588,7 @@ int hal_flash_write(uint8_t page, const uint8_t *d, size_t n) {
     memcpy(w, d + i, n - i < 8 ? n - i : 8);
     REG(a + i) = w[0];
     REG(a + i + 4) = w[1];
-    while (FLASH_SR & (1u << 16)) {
-    }
+    flash_wait();
   }
   FLASH_CR = 1u << 31; /* lock */
   if (FLASH_SR & 0x83FAu) /* OPERR..FASTERR, OPTVERR */
@@ -595,8 +603,7 @@ const uint8_t *hal_flash_page(uint8_t page) { return (const uint8_t *) page_addr
 int hal_flash_program(uint8_t page, uint16_t offset, const uint8_t *d, size_t n) {
   if ((offset & 7u) || (n & 7u) || offset + n > 2048u)
     return -1;
-  while (FLASH_SR & (1u << 16)) {
-  }
+  flash_wait();
   FLASH_KEYR = 0x45670123u;
   FLASH_KEYR = 0xCDEF89ABu;
   FLASH_SR = 0x83FBu; /* clear EOP and the error flags */
@@ -607,8 +614,7 @@ int hal_flash_program(uint8_t page, uint16_t offset, const uint8_t *d, size_t n)
     memcpy(w, d + i, 8);
     REG(a + i) = w[0];
     REG(a + i + 4) = w[1];
-    while (FLASH_SR & (1u << 16)) {
-    }
+    flash_wait();
   }
   FLASH_CR = 1u << 31; /* lock */
   return (FLASH_SR & 0x83FAu) ? -1 : 0; /* OPERR..FASTERR, OPTVERR */
