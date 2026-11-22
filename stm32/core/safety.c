@@ -179,7 +179,9 @@ static int on_param_help(void *ctx, uint16_t id, const char **text) {
 void safety_load_plug(safety *s, const uint8_t *image, size_t len) { plug_unpack(&s->plug, image, len); }
 
 void safety_load_params(safety *s, const uint8_t *image, size_t len) {
-  if (params_unpack(&s->params, image, len) && heater_off(s))
+  /* At boot, before any start: the sequencer may already be cooling down after a reset with a hot
+   * heat exchanger, and does that with the saved values too. */
+  if (params_unpack(&s->params, image, len))
     s->burn.p = s->params.live;
 }
 
