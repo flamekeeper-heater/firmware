@@ -43,6 +43,27 @@ c++ -std=c++17 -Wall -Wextra -Werror $san "$here/test_e2e.cpp" "$fk/link_client.
   -o "$out/test_e2e"
 "$out/test_e2e"
 
+# The link fuzzer's seeds and a few hundred mutations, and the soak's regressions and one seed (33:
+# fan stalls and a lockout, the dead-man, MCU resets). stress.sh runs the long versions. Built with
+# -O1, since they run hours of simulated time, in two lanes at once.
+o1="$san -O1"
+mkdir -p "$out/o1"
+(
+  for f in burn glow fan checks pump params plug safety; do
+    cc $strict $o1 -c "$core/$f.c" -o "$out/o1/$f.o"
+  done
+  cc $strict $o1 -c "$link/link.c" -o "$out/o1/link.o"
+  c++ -std=c++17 -Wall -Wextra -Werror $o1 -c "$here/fuzz_link.cpp" -o "$out/fuzz_link.o"
+) &
+lane=$!
+c++ -std=c++17 -Wall -Wextra -Werror $o1 -c "$fk/link_client.cpp" -o "$out/o1/link_client.o"
+c++ -std=c++17 -Wall -Wextra -Werror $o1 -c "$here/test_soak.cpp" -o "$out/test_soak.o"
+wait $lane
+c++ $o1 "$out/fuzz_link.o" "$out"/o1/*.o -o "$out/fuzz_link"
+c++ $o1 "$out/test_soak.o" "$out"/o1/*.o "$out/heater_model.o" -o "$out/test_soak"
+"$out/fuzz_link" --iters 300
+"$out/test_soak" --seeds 33
+
 # The board layer against a fake chip.
 cc $strict $san -c "$here/../board/analog.c" -o "$out/analog.o"
 cc $strict $san -c "$here/../board/board.c" -o "$out/board.o"

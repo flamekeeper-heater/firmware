@@ -234,6 +234,15 @@ and refuses starts. It is not a certified CO alarm.
 - `stm32/tests/run.sh`: the safety core (`stm32/core/`): the burn sequencer against a heater model
   (whole cycles, every way a run ends, the glow caps and the airflow rule), and end to end with the
   ESP32's real link client over a byte wire (dead-man, an MCU reset mid-run).
+- Stress, also in `stm32/tests/run.sh` with fixed seeds: `fuzz_link.cpp` fuzzes both ends of the
+  link (the parser, the server dispatch and the safety core behind it, the link client and the
+  record decoders), and `test_soak.cpp` runs the whole safety MCU for hours of simulated time per
+  seed under random user actions, link loss and noise, MCU resets and injected faults, checking the
+  safety rules after every call (no glow without airflow, the glow caps, fuel only with the
+  heartbeat and air, no start without a new start number, latched faults, the dead-man, ...).
+  `stm32/tests/stress.sh [fuzz|soak]` runs the long versions (`SOAK_SEEDS`, `SOAK_HOURS`,
+  `FUZZ_ITERS`; libFuzzer when the compiler has it), and `test_soak --shrink SEED` cuts a failing
+  seed down to a regression test.
 - `common/*/tests/run.sh`: the link codec and the CO alarm.
 - `esp32/tools/boot_test.sh`: boots a compiled image in Espressif's QEMU and fails on a crash or a
   restart. A C6 build checks its own signature at start-up, so pass the signed app with `--app`.
