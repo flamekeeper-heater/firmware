@@ -94,18 +94,8 @@ void board_init(board *b, uint32_t now, uint8_t reset_reason, uint8_t option_fau
   b->vrefint_cal = hal_vrefint_cal();
   hal_adc_scan(b->raw);
   b->vdda_mv = analog_vdda_mv(b->raw[HAL_ADC_VREF], b->vrefint_cal);
-  burn_params bp;
-  glow_params gp;
-  fan_params fp;
-  checks_params cp;
-  pump_params pp;
-  burn_params_default(&bp);
-  glow_params_default(&gp);
-  fan_params_default(&fp);
-  checks_params_default(&cp);
-  pump_params_default(&pp);
   burn_inputs in = read_inputs(b);
-  safety_init(&b->s, &bp, &gp, &fp, &cp, &pp, now, &in, reset_reason, option_faults);
+  safety_init(&b->s, now, &in, reset_reason, option_faults);
   load(b);
   b->last_glow_ms = b->last_loop_ms = b->last_co_ms = now;
   hal_co_heater(safety_co_heater(&b->s)); /* CO-5: heated whenever the board is awake, if fitted */

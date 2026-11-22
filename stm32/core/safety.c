@@ -111,9 +111,12 @@ static void on_detail(void *ctx, link_detail *out) {
 
 /* ---------------------------------------------------------------- the CO alarm */
 
-/* CO-1: the CO-fitted parameter alone says whether the sensor is there (a change, heater off only,
- * starts the alarm afresh: co_set_fitted). */
-static void co_follow_params(safety *s) { co_set_fitted(&s->co, s->burn.p.co_fitted); }
+/* The table's parameters take effect: the sequencer runs on them, and the CO-fitted parameter alone
+ * says whether the sensor is there (CO-1; a change, heater off only, starts the alarm afresh). */
+static void take_params(safety *s) {
+  s->burn.p = s->params.live;
+  co_set_fitted(&s->co, s->burn.p.co_fitted);
+}
 
 void safety_co_step(safety *s, uint32_t now, uint16_t adc, int16_t board_c10) {
   co_step(&s->co, now, adc, board_c10);
@@ -203,10 +206,8 @@ static int on_param_apply(void *ctx, uint8_t save) {
   if (s->co.alarm && co_unfit_staged(s))
     return LINK_REFUSED;
   int r = params_apply(&s->params, heater_off(s), save);
-  if (r == LINK_OK) {
-    s->burn.p = s->params.live;
-    co_follow_params(s);
-  }
+  if (r == LINK_OK)
+    take_params(s);
   return r;
 }
 
@@ -220,8 +221,7 @@ static int on_param_defaults(void *ctx) {
   if (!heater_off(s))
     return LINK_NOT_OFF;
   params_defaults(&s->params);
-  s->burn.p = s->params.live;
-  co_follow_params(s);
+  take_params(s);
   return LINK_OK;
 }
 
@@ -246,10 +246,8 @@ void safety_load_plug(safety *s, const uint8_t *image, size_t len) { plug_unpack
 void safety_load_params(safety *s, const uint8_t *image, size_t len) {
   /* At boot, before any start: the sequencer may already be cooling down after a reset with a hot
    * heat exchanger, and does that with the saved values too. */
-  if (params_unpack(&s->params, image, len)) {
-    s->burn.p = s->params.live;
-    co_follow_params(s);
-  }
+  if (params_unpack(&s->params, image, len))
+    take_params(s);
 }
 
 /* ---------------------------------------------------------------- faults */
@@ -297,29 +295,37 @@ static int on_update_prepare(void *ctx, uint8_t *method) {
   return LINK_OK;
 }
 
-void safety_init(safety *s, const burn_params *p, const glow_params *gp, const fan_params *fp,
-                 const checks_params *cp, const pump_params *pp, uint32_t now, const burn_inputs *in,
-                 uint8_t reset_reason, uint8_t checks) {
+void safety_init(safety *s, uint32_t now, const burn_inputs *in, uint8_t reset_reason, uint8_t checks) {
   memset(s, 0, sizeof(*s));
   s->now = now;
   s->in = *in;
   s->reset_reason = reset_reason;
   s->checks = checks;
+  /* Every stage's own figures are its defaults; the sequencer's are the parameter table's. */
+  union {
+    plug_params plug;
+    glow_params glow;
+    fan_params fan;
+    checks_params chk;
+    pump_params pump;
+    co_config co;
+  } d;
+  plug_params_default(&d.plug);
+  plug_init(&s->plug, &d.plug, now);
+  glow_params_default(&d.glow);
+  glow_init(&s->glow, &d.glow, now);
+  fan_params_default(&d.fan);
+  fan_init(&s->fan, &d.fan, now);
+  checks_params_default(&d.chk);
+  checks_init(&s->chk, &d.chk, now);
+  pump_params_default(&d.pump);
+  pump_init(&s->pump, &d.pump);
   params_init(&s->params);
-  plug_params pl;
-  plug_params_default(&pl);
-  plug_init(&s->plug, &pl, now);
-  s->params.live = *p;
-  burn_init(&s->burn, p, now, in);
-  co_config co;
-  co_default_config(&co);
-  co.fitted = p->co_fitted ? 1u : 0u;
-  co_init(&s->co, &co);
+  burn_init(&s->burn, &s->params.live, now, in);
+  co_default_config(&d.co);
+  d.co.fitted = s->params.live.co_fitted ? 1u : 0u;
+  co_init(&s->co, &d.co);
   s->co_r0_saved_ms = now;
-  glow_init(&s->glow, gp, now);
-  fan_init(&s->fan, fp, now);
-  checks_init(&s->chk, cp, now);
-  pump_init(&s->pump, pp);
   link_parser_init(&s->parser, LINK_REQUEST);
   link_start_gate_init(&s->gate);
   link_deadman_init(&s->deadman);

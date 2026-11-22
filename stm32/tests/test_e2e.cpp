@@ -58,18 +58,8 @@ struct Bench : LinkTransport {
 
   Bench() {
     heater_model_init(&m, 10);
-    burn_params p;
-    burn_params_default(&p);
-    glow_params gp;
-    glow_params_default(&gp);
-    fan_params fp;
-    fan_params_default(&fp);
-    checks_params cp;
-    checks_params_default(&cp);
-    pump_params pp;
-    pump_params_default(&pp);
     burn_inputs in = inputs();
-    safety_init(&s, &p, &gp, &fp, &cp, &pp, now, &in, LINK_RESET_POWER_ON, 0);
+    safety_init(&s, now, &in, LINK_RESET_POWER_ON, 0);
   }
   burn_inputs inputs() const {
     burn_inputs in;
@@ -285,18 +275,8 @@ static void test_mcu_reset_mid_run() {
   CHECK(b.run_until_state(BURN_STATE_HEATING, 5 * MIN));
   b.run(5 * MIN);
   // The safety MCU resets (watchdog): hot heat exchanger, the ESP32 still asking for heat.
-  burn_params p;
-  burn_params_default(&p);
-  glow_params gp;
-  glow_params_default(&gp);
-  fan_params fp;
-  fan_params_default(&fp);
-  checks_params cp;
-  checks_params_default(&cp);
-  pump_params pp;
-  pump_params_default(&pp);
   burn_inputs in = b.inputs();
-  safety_init(&b.s, &p, &gp, &fp, &cp, &pp, b.now, &in, LINK_RESET_WATCHDOG, 0);
+  safety_init(&b.s, b.now, &in, LINK_RESET_WATCHDOG, 0);
   b.latch_armed = 0;  // a reset leaves the latch tripped until the power-up test re-arms it
   CHECK(b.s.burn.step == BURN_STEP_COOLDOWN);
   CHECK(b.run_until_state(BURN_STATE_COOLING, 5 * SEC));

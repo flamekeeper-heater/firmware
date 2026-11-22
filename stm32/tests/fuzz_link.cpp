@@ -430,18 +430,8 @@ struct Core {
   uint16_t rpm = 0;
 
   Core() {
-    burn_params p;
-    burn_params_default(&p);
-    glow_params gp;
-    glow_params_default(&gp);
-    fan_params fp;
-    fan_params_default(&fp);
-    checks_params cp;
-    checks_params_default(&cp);
-    pump_params pp;
-    pump_params_default(&pp);
     burn_inputs in = inputs();
-    safety_init(&s, &p, &gp, &fp, &cp, &pp, now, &in, LINK_RESET_POWER_ON, 0);
+    safety_init(&s, now, &in, LINK_RESET_POWER_ON, 0);
   }
   burn_inputs inputs() const {
     burn_inputs in;
@@ -784,20 +774,10 @@ struct Capture : LinkTransport {
   std::deque<uint8_t> to_esp;
   std::vector<uint8_t> pending;
   Capture() {
-    burn_params p;
-    burn_params_default(&p);
-    glow_params gp;
-    glow_params_default(&gp);
-    fan_params fp;
-    fan_params_default(&fp);
-    checks_params cp;
-    checks_params_default(&cp);
-    pump_params pp;
-    pump_params_default(&pp);
     burn_inputs in;
     std::memset(&in, 0, sizeof(in));
     in.hx_c10 = 200, in.supply_cv = 1260, in.board_c10 = 300;
-    safety_init(&s, &p, &gp, &fp, &cp, &pp, 0, &in, LINK_RESET_POWER_ON, 0);
+    safety_init(&s, 0, &in, LINK_RESET_POWER_ON, 0);
   }
   void send(const uint8_t *data, size_t len) override {
     requests.emplace_back(data, data + len);

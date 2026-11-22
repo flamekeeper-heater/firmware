@@ -83,10 +83,9 @@ typedef struct {
 #endif
 } safety;
 
-/* reset_reason and checks come from the start-up code. */
-void safety_init(safety *s, const burn_params *p, const glow_params *gp, const fan_params *fp,
-                 const checks_params *cp, const pump_params *pp, uint32_t now, const burn_inputs *in,
-                 uint8_t reset_reason, uint8_t checks);
+/* After a reset, with every stage on its defaults (safety_load_params then brings the saved
+ * parameters). in: the first measurements; reset_reason and checks come from the start-up code. */
+void safety_init(safety *s, uint32_t now, const burn_inputs *in, uint8_t reset_reason, uint8_t checks);
 
 /* One received byte. When it completes a request, the reply is written to reply (LINK_FRAME_MAX
  * bytes) and its length returned; otherwise 0. */
