@@ -59,15 +59,12 @@ class SafetyLink : public Component, public uart::UARTDevice, public fk::BootPor
   }
   void loop() override {
     fk::LinkClient::loop(millis());
-    // The bootloader exchange goes faster with the loop at full speed.
-    const bool busy = this->updater_.running();
-    if (busy != this->fast_) {
-      this->fast_ = busy;
-      if (busy)
-        this->high_freq_.start();
-      else
-        this->high_freq_.stop();
-    }
+    // The bootloader exchange goes faster with the loop at full speed (start() and stop() only
+    // count a change).
+    if (this->updater_.running())
+      this->high_freq_.start();
+    else
+      this->high_freq_.stop();
     const char *text = this->updater_.text();
     if (std::strcmp(text, this->logged_) != 0 && std::strncmp(text, "Writing", 7) != 0) {
       ESP_LOGI(TAG, "Heater firmware update: %s", text);
@@ -127,7 +124,6 @@ class SafetyLink : public Component, public uart::UARTDevice, public fk::BootPor
   InternalGPIOPin *boot_pin_{nullptr};
   ESPPreferenceObject pref_;
   HighFrequencyLoopRequester high_freq_;
-  bool fast_{false};
   char logged_[96]{};
 };
 
