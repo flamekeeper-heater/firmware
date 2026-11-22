@@ -13,6 +13,7 @@ int hal_ms_elapsed(void);       /* 1 once per millisecond (SysTick's count flag)
 void hal_ms_tick(void);         /* the driver's own millisecond count */
 
 void TIM3_IRQHandler(void);
+void ADC_IRQHandler(void);
 void USART2_IRQHandler(void);
 
 #endif /* FLAMEKEEPER_HAL_STM32G0_H */

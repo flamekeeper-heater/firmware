@@ -41,6 +41,14 @@ static struct {
   uint8_t flash[2][256];
   size_t flash_len[2];
   uint32_t flash_writes;
+  /* The pump's overcurrent watchdog (PMP-7). */
+  uint8_t oc_armed, oc_report;
+  uint16_t oc_threshold, oc_hold_us;
+  uint32_t stroke_ms, stroke_ms_unguarded;
+  /* The glow timer (TIM3): a period every 5 ms with its readings, while it runs. */
+  uint8_t tim3_stopped;
+  uint32_t glow_next_ms, glow_cmds;
+  double glow_pulse_a, glow_gap_a;
 } chip;
 
 static int hb_ok(void) {
@@ -53,7 +61,7 @@ void hal_adc_scan(uint16_t raw[HAL_ADC_COUNT]) {
   raw[HAL_ADC_GLOW_I] = 0;
   raw[HAL_ADC_PUMP_V] = counts(pump_on ? chip.vin / 19.0 : 0.02);
   raw[HAL_ADC_FAN_I] = 0;
-  raw[HAL_ADC_PUMP_I] = 0;
+  raw[HAL_ADC_PUMP_I] = counts(pump_on && chip.pump_duty ? 1.0 * 0.45 : 0); /* a 1 A stroke */
   raw[HAL_ADC_NTC] = chip.ntc_raw;
   raw[HAL_ADC_BOARD] = chip.board_raw;
   raw[HAL_ADC_VIN] = counts(chip.vin * 6.8 / 106.8);
@@ -61,13 +69,30 @@ void hal_adc_scan(uint16_t raw[HAL_ADC_COUNT]) {
   raw[HAL_ADC_CO] = counts(1.0);
 }
 uint16_t hal_vrefint_cal(void) { return (uint16_t) (VREFINT / 3.0 * 4095.0 + 0.5); }
-uint16_t hal_glow_pulse_raw(void) { return 0; }
+uint8_t hal_glow_period(hal_glow_sample *g) {
+  if (chip.tim3_stopped || (int32_t) (chip.now - chip.glow_next_ms) < 0)
+    return 0;
+  chip.glow_next_ms += 5;
+  g->pulse_i = counts(chip.glow_pulse_a * 0.009);
+  g->gap_i = counts(chip.glow_gap_a * 0.009);
+  g->gap_vin = counts(chip.vin * 6.8 / 106.8);
+  return 1;
+}
 uint16_t hal_pump_peak_raw(void) {
   uint16_t r = chip.test_pulse_us && hb_ok() && chip.latch_armed ? counts(0.4 * 0.45) : 0;
   chip.test_pulse_us = 0;
   return r;
 }
-uint8_t hal_pump_overcurrent(void) { return 0; }
+uint8_t hal_pump_overcurrent(void) {
+  uint8_t r = chip.oc_report;
+  chip.oc_report = 0;
+  return r;
+}
+void hal_pump_oc_arm(uint8_t on, uint16_t threshold_raw, uint16_t hold_us) {
+  chip.oc_armed = on;
+  chip.oc_threshold = threshold_raw;
+  chip.oc_hold_us = hold_us;
+}
 uint16_t hal_hall_rpm(void) { return 0; }
 uint8_t hal_overheat_n(void) { return chip.latch_armed; }
 uint8_t hal_pump_hs_flt_n(void) { return 1; }
@@ -78,7 +103,10 @@ void hal_heartbeat(uint8_t mode) {
     chip.burst_ms = chip.now;
 }
 void hal_glow_en(uint8_t on) { chip.glow_en = on; }
-void hal_glow_next_pulse_us(uint16_t us) { chip.glow_us = us; }
+void hal_glow_next_pulse_us(uint16_t us) {
+  chip.glow_us = us;
+  chip.glow_cmds++;
+}
 void hal_fan_duty(uint16_t p) { chip.fan_duty = p; }
 void hal_pump_duty(uint16_t p) { chip.pump_duty = p; }
 void hal_pump_test_pulse_us(uint16_t us) { chip.test_pulse_us = us; }
@@ -119,6 +147,10 @@ static void run(board *b, uint32_t ms) {
   for (uint32_t i = 0; i < ms; i++) {
     chip.now++;
     board_ms(b, chip.now);
+    if (chip.pump_duty > 0) {
+      chip.stroke_ms++;
+      chip.stroke_ms_unguarded += !chip.oc_armed;
+    }
   }
 }
 
@@ -287,6 +319,65 @@ static void test_heartbeat_needs_the_loop(void) {
   CHECK(!hb_ok());
 }
 
+/* PMP-7 through the board: the watchdog armed for every stroke with the threshold in counts; its
+ * cut reported by the chip latches the pump fault and stops the heartbeat. */
+static void test_pump_overcurrent(void) {
+  chip_reset();
+  board b;
+  board_init(&b, chip.now, LINK_RESET_POWER_ON, 0);
+  esp32_polls(&b, 1000);
+  CHECK(!chip.oc_armed && chip.stroke_ms == 0);
+  b.s.burn.step = BURN_STEP_PRIMING; /* strokes at once, no start sequence */
+  b.s.burn.step_ms = chip.now;
+  esp32_polls(&b, 500);
+  CHECK(chip.stroke_ms >= 38);
+  CHECK(chip.stroke_ms_unguarded == 0);
+  CHECK(chip.oc_threshold >= 1835 && chip.oc_threshold <= 1850); /* 3.3 A at 0.45 V/A, 3.3 V */
+  CHECK(chip.oc_hold_us == 50);
+  CHECK(b.s.pump.fault == PUMP_FAULT_NONE);
+  /* Wait for a stroke, then the watchdog's interrupt cuts it. */
+  for (int k = 0; k < 200 && chip.pump_duty == 0; k++)
+    run(&b, 1);
+  CHECK(chip.pump_duty > 0 && chip.oc_armed);
+  chip.oc_report = 1;
+  run(&b, 1);
+  CHECK(b.s.pump.fault == PUMP_FAULT_OVERCURRENT);
+  CHECK(chip.pump_duty == 0 && !chip.oc_armed);
+  CHECK(chip.hb_mode == HAL_HB_STOPPED);
+  esp32_polls(&b, 100);
+  CHECK(chip.hb_mode == HAL_HB_STOPPED && chip.pump_duty == 0); /* latched */
+  CHECK(b.s.pump.fault == PUMP_FAULT_OVERCURRENT);
+}
+
+/* GLW-6 through the board: the planner steps once per glow period, on the timer's readings; if
+ * the timer's periods stop it still steps every 10 ms, so GLOW_EN keeps following the burn. */
+static void test_glow_periods(void) {
+  chip_reset();
+  board b;
+  board_init(&b, chip.now, LINK_RESET_POWER_ON, 0);
+  run(&b, 1000);
+  uint32_t n = chip.glow_cmds;
+  run(&b, 1000);
+  CHECK(chip.glow_cmds - n == 200);
+  chip.tim3_stopped = 1;
+  n = chip.glow_cmds;
+  run(&b, 1000);
+  CHECK(chip.glow_cmds - n >= 99 && chip.glow_cmds - n <= 101);
+  chip.tim3_stopped = 0;
+  chip.glow_next_ms = chip.now + 1;
+  run(&b, 10);
+  /* The in-pulse reading reaches the planner for the pulse it planned. */
+  chip.glow_pulse_a = 40.0;
+  b.s.glow.last_width_us = 150; /* as if a probe went out this period */
+  run(&b, 5);
+  CHECK(b.s.glow.i_ca >= 3950 && b.s.glow.i_ca <= 4050);
+  /* Current in the gap with the high side on: the low side is stuck on (GLW-6). */
+  chip.glow_gap_a = 10.0;
+  b.s.glow.on = 1;
+  run(&b, 5);
+  CHECK(b.s.glow.fault == GLOW_FAULT_STUCK_LOW_SIDE);
+}
+
 static void test_flash_only_when_off(void) {
   chip_reset();
   board b;
@@ -312,6 +403,8 @@ int main(void) {
   test_schedule_and_watchdog();
   test_link();
   test_heartbeat_needs_the_loop();
+  test_pump_overcurrent();
+  test_glow_periods();
   test_flash_only_when_off();
   printf("board: %d checks, %d failures\n", n_checks, failures);
   return failures ? 1 : 0;

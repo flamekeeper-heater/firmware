@@ -38,6 +38,7 @@ __attribute__((section(".isr_vector"), used)) const uint32_t vectors[16 + 32] = 
     [11] = V(Default_Handler), /* SVCall */
     [14] = V(Default_Handler), /* PendSV */
     [15] = V(Default_Handler), /* SysTick (polled, never enabled) */
+    [16 + 12] = V(ADC_IRQHandler),
     [16 + 16] = V(TIM3_IRQHandler),
     [16 + 28] = V(USART2_IRQHandler),
 };
