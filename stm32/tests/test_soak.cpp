@@ -81,6 +81,9 @@ enum Kind : uint8_t {
   F_FAN_STALL, F_FAN_STUCK_ON, F_SENSOR_OPEN, F_SUPPLY, F_OVERHEAT_LATCH, F_GLOW_TRIPS, F_GLOW_LS,
   F_PUMP_OPEN, F_PUMP_LS, F_PUMP_HS, F_PUMP_OC, F_BOARD_HOT, F_NO_IGNITION, F_FLAME_OUT, F_CO,
   E_RESET,    // the ESP32 restarts: a fresh link client
+  F_CO_OPEN,  // the CO sensor reads open
+  F_CO_HEATER, // the CO sensor's heater is dead: its check fails
+  U_CO_FITTED, // a: the CO-fitted parameter, applied and saved
   KINDS
 };
 const char *const KIND_NAMES[KINDS] = {
@@ -88,9 +91,10 @@ const char *const KIND_NAMES[KINDS] = {
     "U_FAULT_RESET", "U_NEW_PLUG", "L_SILENT", "L_GARBAGE", "L_GARBAGE_ESP", "L_DROP", "M_RESET",
     "F_FAN_STALL", "F_FAN_STUCK_ON", "F_SENSOR_OPEN", "F_SUPPLY", "F_OVERHEAT_LATCH", "F_GLOW_TRIPS",
     "F_GLOW_LS", "F_PUMP_OPEN", "F_PUMP_LS", "F_PUMP_HS", "F_PUMP_OC", "F_BOARD_HOT", "F_NO_IGNITION",
-    "F_FLAME_OUT", "F_CO", "E_RESET"};
+    "F_FLAME_OUT", "F_CO", "E_RESET", "F_CO_OPEN", "F_CO_HEATER", "U_CO_FITTED"};
 
-// One scheduled event. Faults: a = 1 on, 0 off (F_SUPPLY: the supply, 0.01 V; F_BOARD_HOT: 0.1 C).
+// One scheduled event. Faults: a = 1 on, 0 off (F_SUPPLY: the supply, 0.01 V; F_BOARD_HOT: 0.1 C;
+// F_CO: the sensor's Rs / R0 in 1/1000, 1000 clean air).
 struct Ev {
   uint32_t t;
   uint8_t kind;
@@ -100,12 +104,13 @@ struct Ev {
 struct Stats {
   uint64_t sim_ms = 0;
   uint32_t starts = 0, running = 0, stalls = 0, lockouts = 0, deadman = 0, resets = 0, latched = 0,
-           fault_resets = 0, glow_s = 0, frames = 0, bad_frames = 0, events = 0;
+           fault_resets = 0, glow_s = 0, frames = 0, bad_frames = 0, events = 0, co_alarms = 0, co_faults = 0,
+           pump_cuts = 0;
   void add(const Stats &o) {
     sim_ms += o.sim_ms, starts += o.starts, running += o.running, stalls += o.stalls;
     lockouts += o.lockouts, deadman += o.deadman, resets += o.resets, latched += o.latched;
     fault_resets += o.fault_resets, glow_s += o.glow_s, frames += o.frames, bad_frames += o.bad_frames;
-    events += o.events;
+    events += o.events, co_alarms += o.co_alarms, co_faults += o.co_faults, pump_cuts += o.pump_cuts;
   }
 };
 
@@ -129,7 +134,6 @@ struct Bench : LinkTransport {
   uint16_t test_pulse = 0;
   int glow_en = 0;
   double pump_i = 0;
-  uint8_t oc_pending = 0;
   uint8_t last_result = 0;
   bool pulsed = false, stroked = false;  // this pass
   bool fan_stop_excused = false;
@@ -138,7 +142,14 @@ struct Bench : LinkTransport {
 
   // faults
   bool fan_stuck_on = false, glow_trips = false, glow_ls = false, pump_open = false, pump_ls = false,
-       pump_hs = false, pump_oc = false, co = false, overheat_trip = false;
+       pump_hs = false, pump_oc = false, overheat_trip = false;
+  uint32_t co_ratio = 1000;    // the CO sensor: Rs / R0 in 1/1000
+  bool co_open = false, co_heater_dead = false;
+  uint32_t co_r0_flash = 0;    // the clean-air R0 kept in flash
+  uint8_t pump_cut = 0;        // the overcurrent cut, reported until the core latches it (board.c)
+  bool co_shadow = false;      // the CO module had an alarm or fault last pass
+  bool co_alarm_shadow = false, co_fault_shadow = false;
+  uint32_t co_clean_ms = 0;  // the air clean since
 
   // the link
   bool esp_alive = true;
@@ -189,7 +200,7 @@ struct Bench : LinkTransport {
     in.fan_rpm = uint16_t(m.fan_rpm + 0.5);
     in.supply_cv = m.supply_cv;
     in.overheat_latch = uint8_t(!latch_armed && overheat_trip);
-    in.co_alarm = co;
+    in.co_alarm = 0;  // the core's own CO alarm (safety_co_step) is the path
     in.board_c10 = board_c10;
     return in;
   }
@@ -211,6 +222,10 @@ struct Bench : LinkTransport {
       safety_load_params(&s, params_flash.data(), params_flash.size());
     if (!plug_flash.empty())
       safety_load_plug(&s, plug_flash.data(), plug_flash.size());
+    if (co_r0_flash)
+      safety_load_co_r0(&s, co_r0_flash);
+    pump_cut = 0;
+    co_shadow = co_alarm_shadow = co_fault_shadow = false;
     latch_armed = 0;  // a reset leaves the latch tripped until the power-up test re-arms it
     hb_running_ms = 0;
     link_parser_init(&mirror, LINK_REQUEST);
@@ -275,9 +290,13 @@ struct Bench : LinkTransport {
         return fail("no_self_start", "a start without a new start number");
       if (latched_before)
         return fail("no_self_start", "a start with a latched fault");
+      if (s.co.alarm || s.co.fault)
+        return fail("co", "a start with a CO alarm or sensor fault");
     }
     if (latched_shadow && !s.burn.fault_latched && !reset_ok)
       return fail("latch", "a latched fault cleared without a fault reset");
+    if (latched_shadow && !s.burn.fault_latched && (s.co.alarm || s.co.fault))
+      return fail("co", "a fault reset cleared the latch while the CO module still holds one");
     latched_shadow = s.burn.fault_latched;
   }
 
@@ -314,14 +333,25 @@ struct Bench : LinkTransport {
     pump_meas pm;
     pm.vin_cv = m.supply_cv;
     pm.i_ma = uint16_t(pump_i * 1000);
-    pm.overcurrent = oc_pending;  // the ADC watchdog cut the stroke of the last millisecond
-    oc_pending = 0;
+    pm.overcurrent = pump_cut;  // PMP-7: reported until the core latches it (board.c)
     pm.hs_ok = !pump_hs;
     pm.hb_running_ms = 0;
     uint8_t step_before = s.burn.step;
     safety_io out = safety_ms(&s, t, &co_, &pm);
     if (step_before == BURN_STEP_OFF && s.burn.step != BURN_STEP_OFF)
       fail("no_self_start", "the millisecond step left off");
+    if (out.pump_duty && pump_cut)
+      fail("pump_cut", "a stroke while the overcurrent cut is reported");
+    if (out.pump_duty && s.pump.fault != PUMP_FAULT_NONE)
+      fail("pump_cut", "a stroke with a pump fault latched");
+    if (out.pump_duty && !out.pump_oc_armed)
+      fail("pump_cut", "a stroke the overcurrent watchdog does not guard");
+    if (s.pump.fault != PUMP_FAULT_NONE)
+      pump_cut = 0;
+    // A shorted coil: the watchdog cuts an armed stroke at once, and the coil gets no drive.
+    bool cut_now = pump_oc && pump_plus && out.pump_duty && out.pump_oc_armed;
+    if (cut_now && !pump_cut)
+      pump_cut = 1, st.pump_cuts++;
     if (out.pump_duty) {
       stroked = true;
       uint8_t st_ = s.burn.step;
@@ -331,10 +361,8 @@ struct Bench : LinkTransport {
         fail("fuel", "a pump stroke outside a fuel step or without the heartbeat");
       if (st_ != BURN_STEP_PRIMING)
         fuel_went_in = true;
-      if (pump_oc && pump_plus)
-        oc_pending = 1;
     }
-    double v = (pump_plus && out.pump_duty && !pump_open) ? out.pump_duty / 1000.0 * vin : 0;
+    double v = (pump_plus && out.pump_duty && !pump_open && !pump_cut) ? out.pump_duty / 1000.0 * vin : 0;
     if (pump_ls && pump_plus && !pump_open)
       v = vin;  // the low side conducts: the coil is on whenever its + side is
     pump_i += (v / 6.0 - pump_i) * 0.393;
@@ -391,8 +419,17 @@ struct Bench : LinkTransport {
     st.sim_ms += TICK;
 
     burn_inputs in = inputs();
+    if (now % SEC == 0) {
+      safety_co_step(&s, now, co_reading(), board_c10);
+      uint32_t r0 = safety_co_r0_to_save(&s);
+      if (r0)
+        co_r0_flash = r0, safety_co_r0_saved(&s, r0);
+    }
     uint8_t step_before = s.burn.step;
+    bool fuel_before = s.burn.step == BURN_STEP_IGNITION || s.burn.step == BURN_STEP_PURGE ||
+                       s.burn.step == BURN_STEP_WARM_UP || s.burn.step == BURN_STEP_RUNNING;
     safety_step(&s, now, &in);
+    check_co(fuel_before);
     if (step_before == BURN_STEP_OFF && s.burn.step != BURN_STEP_OFF)
       fail("no_self_start", "a pass of the safety loop left off");
     if (latched_shadow && !s.burn.fault_latched)
@@ -425,6 +462,44 @@ struct Bench : LinkTransport {
     esp_alive = now >= silent_until;
     if (esp_alive)
       client.loop(now);
+  }
+
+  // The MiCS-5524 on its 47 k load: Rs from the gas, five times higher with its heater off (a dead
+  // heater: no change, so its check fails).
+  uint16_t co_reading() const {
+    if (co_open)
+      return 10;
+    uint64_t rs = 300000ull * co_ratio / 1000u * (safety_co_heater(&s) || co_heater_dead ? 1u : 5u);
+    return uint16_t(uint64_t(CO_ADC_FULL) * CO_LOAD_OHM / (CO_LOAD_OHM + rs));
+  }
+
+  // CO (CO-1, CO-2): an alarm or a sensor fault ends a run as any fault does, with a burn-off and
+  // a cooldown once fuel went in, and latches; nothing starts while either is on; not fitted,
+  // neither ever comes.
+  void check_co(bool fuel_before) {
+    bool co_now = s.co.alarm || s.co.fault;
+    // The alarm clears only after a minute of clean air, the sensor fault only with a plausible
+    // reading (the bench's own view of the air and the sensor, not the CO module's).
+    if (co_alarm_shadow && !s.co.alarm && (co_ratio < s.co.cfg.clear_ratio || now - co_clean_ms < s.co.cfg.clear_ms))
+      fail("co", "the CO alarm cleared without a minute of clean air");
+    if (co_fault_shadow && !s.co.fault && co_open)
+      fail("co", "the CO sensor fault cleared with the sensor still open");
+    st.co_alarms += s.co.alarm && !co_alarm_shadow;
+    st.co_faults += s.co.fault && !co_fault_shadow;
+    co_alarm_shadow = s.co.alarm, co_fault_shadow = s.co.fault;
+    if (!s.co.cfg.fitted && co_now)
+      fail("co", "a CO alarm or sensor fault with no sensor fitted");
+    if (s.co.cfg.fitted != (s.burn.p.co_fitted ? 1 : 0))
+      fail("co", "the CO alarm does not follow the CO-fitted parameter");
+    if (co_now) {
+      if (!s.burn.fault_latched)
+        fail("co", "a CO alarm or sensor fault without a latched fault");
+      if (burn_active(&s.burn))
+        fail("co", "still running with a CO alarm or sensor fault");
+      if (!co_shadow && fuel_before && s.burn.step != BURN_STEP_BURN_OFF && s.burn.step != BURN_STEP_COOLDOWN)
+        fail("co", "a CO stop after fuel without a burn-off and cooldown");
+    }
+    co_shadow = co_now;
   }
 
   // Invariants after each pass.
@@ -629,11 +704,23 @@ struct Bench : LinkTransport {
       case F_BOARD_HOT: board_c10 = int16_t(e.a); break;
       case F_NO_IGNITION: m.no_ignition = int(e.a); break;
       case F_FLAME_OUT: m.kill_flame = int(e.a); break;
-      case F_CO: co = e.a != 0; break;
+      case F_CO:
+        if (e.a >= 300 && co_ratio < 300)
+          co_clean_ms = now;
+        co_ratio = e.a;
+        break;
+      case F_CO_OPEN: co_open = e.a != 0; break;
+      case F_CO_HEATER: co_heater_dead = e.a != 0; break;
+      case U_CO_FITTED:
+        client.param_set(0x52, int32_t(e.a));
+        client.param_apply(true);
+        break;
       default: break;
     }
   }
 };
+
+bool is_fault(uint32_t kind) { return kind >= F_FAN_STALL && kind != E_RESET && kind != U_CO_FITTED; }
 
 // A seed's schedule: events about every two minutes on average, faults switched off again after a
 // while (some only by the next MCU reset).
@@ -651,7 +738,8 @@ std::vector<Ev> schedule(uint32_t seed, uint32_t hours) {
                        {F_FAN_STALL, 3}, {F_FAN_STUCK_ON, 1}, {F_SENSOR_OPEN, 2}, {F_SUPPLY, 3},
                        {F_OVERHEAT_LATCH, 1}, {F_GLOW_TRIPS, 2}, {F_GLOW_LS, 1}, {F_PUMP_OPEN, 1},
                        {F_PUMP_LS, 1}, {F_PUMP_HS, 1}, {F_PUMP_OC, 1}, {F_BOARD_HOT, 2}, {F_NO_IGNITION, 3},
-                       {F_FLAME_OUT, 2}, {F_CO, 1}, {E_RESET, 2}};
+                       {F_FLAME_OUT, 2}, {F_CO, 2}, {E_RESET, 2}, {F_CO_OPEN, 1}, {F_CO_HEATER, 1},
+                       {U_CO_FITTED, 1}};
   uint32_t total = 0;
   for (const W &w : weights)
     total += w.weight;
@@ -684,8 +772,15 @@ std::vector<Ev> schedule(uint32_t seed, uint32_t hours) {
       }
       case F_BOARD_HOT: e.a = r.range(800, 1150), off_after = r.range(5 * SEC, 10 * MIN); break;
       case F_OVERHEAT_LATCH: e.a = 1; break;
+      case F_CO: {
+        uint32_t c = r.below(3);
+        e.a = c == 0 ? r.range(1, 10) : c == 1 ? r.range(11, 30) : r.range(31, 600);
+        off_after = r.range(5 * SEC, 10 * MIN);
+        break;
+      }
+      case U_CO_FITTED: e.a = r.below(3) ? 1 : 0; break;
       default:
-        if (kind >= F_FAN_STALL) {
+        if (is_fault(kind)) {
           e.a = 1;
           off_after = r.below(2) ? r.range(100, 3 * SEC) : r.range(3 * SEC, 15 * MIN);
         }
@@ -695,11 +790,11 @@ std::vector<Ev> schedule(uint32_t seed, uint32_t hours) {
     if (off_after) {
       Ev off = e;
       off.t = t + off_after;
-      off.a = kind == F_SUPPLY ? 1260 : kind == F_BOARD_HOT ? 350 : 0;
+      off.a = kind == F_SUPPLY ? 1260 : kind == F_BOARD_HOT ? 350 : kind == F_CO ? 1000 : 0;
       ev.push_back(off);
     }
     // The user notices: a fault reset once the fault has gone, and a power cycle for a tripped latch.
-    if (kind >= F_FAN_STALL && r.below(2))
+    if (is_fault(kind) && r.below(2))
       ev.push_back(Ev{t + off_after + r.range(1 * SEC, 5 * MIN), U_FAULT_RESET, 0, 0});
     if (kind == F_OVERHEAT_LATCH)
       ev.push_back(Ev{t + r.range(10 * SEC, 30 * MIN), M_RESET, LINK_RESET_POWER_ON, 0});
@@ -779,6 +874,15 @@ void regressions() {
   // A fan that froze for 3 s in ignition and freed before a stall was declared: the speed loop's
   // integral wound up while it slowed, the freed fan overshot past 1.2 x its command and the fan
   // stage latched an overspeed fault (a burn-off and a fault reset for nothing).
+  // Two short freezes 0.7 s apart in a run: the integral still wound up while the slowing fan was
+  // between half and all of its command (seed 73).
+  regression("fan_double_freeze",
+             {{1944266, U_HEAT, 0, 0},
+              {2099796, F_FAN_STALL, 1, 0},
+              {2102195, F_FAN_STALL, 0, 0},
+              {2102892, F_FAN_STALL, 1, 0},
+              {2105686, F_FAN_STALL, 0, 0}},
+             2120 * SEC);
   regression("fan_freed_overspeed",
              {{300 * SEC, U_HEAT, 0, 0}, {340 * SEC, F_FAN_STALL, 1, 0}, {343 * SEC, F_FAN_STALL, 0, 0}}, 420 * SEC);
   // A fan that froze in a run locked out in the cooldown and stopped with the heater hot; the user
@@ -881,9 +985,11 @@ int main(int argc, char **argv) {
   }
   std::printf("soak: %u seeds x %u h = %.1f h simulated, %u events, %u starts, %u reached running, %u stall "
               "retries, %u lockouts, %u dead-man stops, %u MCU resets, %u faults latched, %u fault resets, "
-              "%u glow s, %u frames (%u bad); %d regressions; %d failures\n",
+              "%u glow s, %u frames (%u bad), %u CO alarms, %u CO sensor faults, %u pump cuts; %d regressions; "
+              "%d failures\n",
               last - first + 1, hours, total.sim_ms / 3600000.0, total.events, total.starts, total.running,
               total.stalls, total.lockouts, total.deadman, total.resets, total.latched, total.fault_resets,
-              total.glow_s, total.frames, total.bad_frames, regressions_run, failed + regressions_failed);
+              total.glow_s, total.frames, total.bad_frames, total.co_alarms, total.co_faults, total.pump_cuts,
+              regressions_run, failed + regressions_failed);
   return failed + regressions_failed ? 1 : 0;
 }
