@@ -56,6 +56,8 @@ const param_def PARAM_TABLE[] = {
      F(overheat_derate_c10), 1, "Above this the heater runs at its lowest power."},
     {0x51, "Overheat stop", PARAM_UNIT_C, 1, PARAM_GROUP_OTHER, PARAM_LEVEL_EXPERT, OFF, 1600, 2550, 50,
      F(overheat_stop_c10), 1, "Above this it stops. The board's own latch trips at about 270 C, whatever is set."},
+    {0x52, "CO sensor fitted", PARAM_UNIT_NONE, 0, PARAM_GROUP_OTHER, PARAM_LEVEL_EXPERT, OFF, 0, 1, 1, F(co_fitted),
+     0, "1 on a board with the CO sensor. 0 only on a board built without it: there is then no CO alarm."},
 };
 const size_t PARAM_COUNT = sizeof(PARAM_TABLE) / sizeof(PARAM_TABLE[0]);
 

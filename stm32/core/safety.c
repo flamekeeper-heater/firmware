@@ -9,7 +9,7 @@ static void on_info(void *ctx, link_info *out) {
   out->version[0] = SAFETY_VERSION_MAJOR;
   out->version[1] = SAFETY_VERSION_MINOR;
   out->version[2] = SAFETY_VERSION_PATCH;
-  out->capabilities = SAFETY_CAPABILITIES;
+  out->capabilities = SAFETY_CAPABILITIES | (s->co.cfg.fitted ? LINK_CAP_CO : 0u);
   out->param_count = (uint8_t) PARAM_COUNT;
   out->reset_reason = s->reset_reason;
   out->checks = s->checks;
@@ -90,7 +90,56 @@ static void on_poll(void *ctx, const link_desired *want, link_status *out) {
 
 static void on_detail(void *ctx, link_detail *out) {
   safety *s = (safety *) ctx;
+  const co_alarm *c = &s->co;
   *out = s->detail;
+  out->co_state = c->state;
+  out->co_ppm = LINK_UNKNOWN_U16;
+  if (c->state == CO_LEARNING || c->state == CO_OK || c->state == CO_ALARM || c->state == CO_TOO_COLD) {
+    if (c->ppm != CO_UNKNOWN_PPM)
+      out->co_ppm = c->ppm;
+    else if (c->ratio != 0xFFFFu)
+      out->co_ppm = 0; /* cleaner than the curve's end (about 25 ppm): no CO it can see */
+  }
+}
+
+/* ---------------------------------------------------------------- the CO alarm */
+
+/* CO-1: the CO-fitted parameter alone says whether the sensor is there. A change (heater off only)
+ * starts the alarm afresh: warm-up, heater check, the R0 from flash. */
+static void co_follow_params(safety *s) {
+  if (s->co.cfg.fitted == s->burn.p.co_fitted)
+    return;
+  co_config cfg = s->co.cfg;
+  cfg.fitted = s->burn.p.co_fitted ? 1u : 0u;
+  co_init(&s->co, &cfg);
+  co_load_r0(&s->co, s->co_r0_saved);
+}
+
+void safety_co_step(safety *s, uint32_t now, uint16_t adc, int16_t board_c10) {
+  co_step(&s->co, now, adc, board_c10);
+}
+
+void safety_load_co_r0(safety *s, uint32_t r0_ohm) {
+  s->co_r0_saved = r0_ohm;
+  co_load_r0(&s->co, r0_ohm);
+}
+
+uint32_t safety_co_r0_to_save(const safety *s) {
+  const co_alarm *c = &s->co;
+  uint32_t r0 = c->r0, old = s->co_r0_saved;
+  if (c->state != CO_OK || r0 == 0) /* learnt, warm enough, no alarm or fault */
+    return 0;
+  if (old == 0)
+    return r0;
+  uint32_t diff = r0 > old ? r0 - old : old - r0;
+  if (diff < old / 16u || (uint32_t) (s->now - s->co_r0_saved_ms) < SAFETY_CO_R0_SAVE_MIN_MS)
+    return 0;
+  return r0;
+}
+
+void safety_co_r0_saved(safety *s, uint32_t r0_ohm) {
+  s->co_r0_saved = r0_ohm;
+  s->co_r0_saved_ms = s->now;
 }
 
 /* ---------------------------------------------------------------- parameters */
@@ -141,8 +190,10 @@ static int heater_off(const safety *s) { return s->burn.step == BURN_STEP_OFF; }
 static int on_param_apply(void *ctx, uint8_t save) {
   safety *s = (safety *) ctx;
   int r = params_apply(&s->params, heater_off(s), save);
-  if (r == LINK_OK)
+  if (r == LINK_OK) {
     s->burn.p = s->params.live;
+    co_follow_params(s);
+  }
   return r;
 }
 
@@ -157,6 +208,7 @@ static int on_param_defaults(void *ctx) {
     return LINK_NOT_OFF;
   params_defaults(&s->params);
   s->burn.p = s->params.live;
+  co_follow_params(s);
   return LINK_OK;
 }
 
@@ -179,16 +231,24 @@ static int on_param_help(void *ctx, uint16_t id, const char **text) {
 void safety_load_plug(safety *s, const uint8_t *image, size_t len) { plug_unpack(&s->plug, image, len); }
 
 void safety_load_params(safety *s, const uint8_t *image, size_t len) {
-  if (params_unpack(&s->params, image, len) && heater_off(s))
+  if (params_unpack(&s->params, image, len) && heater_off(s)) {
     s->burn.p = s->params.live;
+    co_follow_params(s);
+  }
 }
 
 /* ---------------------------------------------------------------- faults */
 
 static int on_fault_reset(void *ctx) {
   safety *s = (safety *) ctx;
+  /* The CO alarm's latches first: an alarm clears once the air has been clean a minute, a sensor
+   * fault once the reading is plausible (and its heater check runs again). */
+  if (s->co.alarm || s->co.fault)
+    (void) co_reset(&s->co, s->now);
   /* The stages' own faults clear with a user reset too, once the burn agrees. */
   burn_inputs in = s->in;
+  in.co_alarm = s->co.alarm;
+  in.co_fault = s->co.fault;
   in.glow_fault = 0;
   in.fan_fault = 0;
   in.pump_fault = 0;
@@ -203,6 +263,8 @@ static int on_fault_reset(void *ctx) {
     s->in.glow_fault = 0;
     s->in.fan_fault = 0;
     s->in.pump_fault = 0;
+    s->in.co_alarm = 0;
+    s->in.co_fault = 0;
   }
   return r;
 }
@@ -234,6 +296,11 @@ void safety_init(safety *s, const burn_params *p, const glow_params *gp, const f
   plug_init(&s->plug, &pl, now);
   s->params.live = *p;
   burn_init(&s->burn, p, now, in);
+  co_config co;
+  co_default_config(&co);
+  co.fitted = p->co_fitted ? 1u : 0u;
+  co_init(&s->co, &co);
+  s->co_r0_saved_ms = now;
   glow_init(&s->glow, gp, now);
   fan_init(&s->fan, fp, now);
   checks_init(&s->chk, cp, now);
@@ -277,6 +344,8 @@ void safety_step(safety *s, uint32_t now, const burn_inputs *in) {
   s->in.precheck = s->precheck_result;
   s->in.pump_fault = in->pump_fault ? in->pump_fault : s->pump.fault;
   s->in.plug_refused = s->plug_refused;
+  s->in.co_alarm = (uint8_t) (in->co_alarm || s->co.alarm);
+  s->in.co_fault = (uint8_t) (in->co_fault || s->co.fault);
   if (burn_fuel_steps(&s->burn) && s->burn.step != BURN_STEP_PRIMING) {
     s->run_ms += dt;
     s->run_time_s += s->run_ms / 1000u;

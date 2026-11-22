@@ -155,6 +155,7 @@ typedef struct {
   uint8_t fuel_up_percent_s, air_down_percent_s;
 
   uint8_t plug_v;              /* the glow plug fitted: 12 or 24 (V) */
+  uint8_t co_fitted;           /* CO-1: the CO sensor is fitted; the only authority on its presence */
 } burn_params;
 
 void burn_params_default(burn_params *p);

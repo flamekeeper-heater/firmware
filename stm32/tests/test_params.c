@@ -38,6 +38,11 @@ static void test_table(void) {
   CHECK(params_find(0x04)->max == 1000); /* priming at most 10 Hz */
   CHECK(params_find(0x30)->max == 90);   /* glow at most 90 W */
   CHECK(params_find(0x51)->max <= 2550); /* below the hardware latch */
+  /* CO-1: the CO sensor's presence is this setting, fitted by default (an unset or damaged table
+   * never loses the alarm), applied only with the heater off. */
+  const param_def *co = params_find(0x52);
+  CHECK(co != NULL && co->min == 0 && co->max == 1 && (co->flags & PARAM_FLAG_HEATER_OFF));
+  CHECK(ps.live.co_fitted == 1);
 }
 
 static void test_stage_apply(void) {
@@ -75,8 +80,13 @@ static void test_stage_apply(void) {
   CHECK(ps.live.cool_c10 == 400);
   CHECK(params_value(&ps, (size_t) (params_find(0x41) - PARAM_TABLE)) == 400);
 
+  CHECK(params_set(&ps, 0x52, 0) == LINK_STORED);
+  CHECK(params_apply(&ps, 1, 0) == LINK_OK);
+  CHECK(ps.live.co_fitted == 0);
+
   params_defaults(&ps);
   CHECK(ps.live.pump_max_cHz == 550 && ps.live.cool_c10 == 500 && ps.save_pending);
+  CHECK(ps.live.co_fitted == 1);
 }
 
 static void test_image(void) {

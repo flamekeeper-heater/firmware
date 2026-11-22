@@ -61,6 +61,7 @@ void burn_params_default(burn_params *p) {
   p->fuel_up_percent_s = 5;
   p->air_down_percent_s = 5;
   p->plug_v = 12;
+  p->co_fitted = 1; /* the safe side: a board without the sensor shows a sensor fault until set */
 }
 
 static uint32_t since(uint32_t now, uint32_t then) { return (uint32_t) (now - then); }
