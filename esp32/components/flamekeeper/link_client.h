@@ -38,6 +38,9 @@ enum class McuJob : uint8_t {
 // and lends it the UART while owns_uart().
 class McuUpdater {
  public:
+  // The refusal of anything else while a job runs.
+  static constexpr const char *BUSY_TEXT = "the heater firmware is being updated";
+
   virtual ~McuUpdater() = default;
   virtual bool available() const = 0;              // an image to install
   virtual const uint8_t *image_version() const = 0;  // ...and its version (major, minor, patch)
@@ -64,6 +67,7 @@ class LinkClient : public Heater {
   static const uint32_t INFO_REFRESH_MS = 30000;  // HELLO again while up
   static const uint32_t PARAM_REFRESH_MS = 250;  // one PARAM_GET this often
   static const uint8_t MISSES_DOWN = 3;
+  static const size_t QUEUE_MAX = 16;  // commands waiting for the link
 
   explicit LinkClient(LinkTransport *transport);
 
@@ -138,6 +142,9 @@ class LinkClient : public Heater {
   const Param *param_(uint16_t id) const;
   bool params_ready_() const;
   Outcome queue_(uint8_t op, const uint8_t *payload, size_t len, uint16_t id = 0);
+  bool queue_full_() const { return this->queue_cmds_.size() >= QUEUE_MAX; }
+  bool mcu_available_() const { return this->mcu_ != nullptr && this->mcu_->available(); }
+  bool mcu_running_() const { return this->mcu_ != nullptr && this->mcu_->running(); }
 
   LinkTransport *transport_;
   link_parser parser_;

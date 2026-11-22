@@ -10,6 +10,7 @@ namespace flamekeeper {
 
 namespace {
 float fixed(int32_t raw, int32_t unknown, float scale) { return raw == unknown ? NAN : float(raw) / scale; }
+const char *const QUEUE_FULL_TEXT = "too many changes waiting";
 }  // namespace
 
 LinkClient::LinkClient(LinkTransport *transport) : transport_(transport) {
@@ -320,7 +321,7 @@ void LinkClient::on_reply_(const uint8_t *f) {
 
 uint32_t LinkClient::capabilities() const {
   // The heater firmware update also works on an MCU that does not answer (an unfinished update).
-  uint32_t c = this->mcu_ != nullptr && this->mcu_->available() ? cap::FIRMWARE_UPDATE : 0;
+  uint32_t c = this->mcu_available_() ? cap::FIRMWARE_UPDATE : 0;
   if (!this->up_)
     return c;
   const uint32_t l = this->info_.capabilities;
@@ -362,7 +363,7 @@ void LinkClient::read_status(HeaterStatus &out) const {
         break;
     }
   }
-  if (this->mcu_ != nullptr && this->mcu_->running()) {
+  if (this->mcu_running_()) {
     out.update_running = true;
     out.update_progress = this->mcu_->progress();
     out.state = HeaterState::UPDATING;
@@ -398,8 +399,8 @@ Outcome LinkClient::set_mode(Mode mode) {
     this->mode_ = LINK_MODE_OFF;
     return Outcome::ok();
   }
-  if (this->mcu_ != nullptr && this->mcu_->running())
-    return Outcome::refuse(Result::BUSY, "the heater firmware is being updated");
+  if (this->mcu_running_())
+    return Outcome::refuse(Result::BUSY, McuUpdater::BUSY_TEXT);
   if (!this->up_ || !this->have_status_)
     return Outcome::refuse(Result::NO_REPLY, this->incompatible_ ? "the safety MCU speaks an unknown link version"
                                                                   : "the heater does not answer");
@@ -454,8 +455,8 @@ void LinkClient::set_trims(int fuel_pct, int fan_rpm) {
 Outcome LinkClient::queue_(uint8_t op, const uint8_t *payload, size_t len, uint16_t id) {
   if (!this->up_)
     return Outcome::refuse(Result::NO_REPLY, "the heater does not answer");
-  if (this->queue_cmds_.size() >= 16)
-    return Outcome::refuse(Result::BUSY, "too many changes waiting");
+  if (this->queue_full_())
+    return Outcome::refuse(Result::BUSY, QUEUE_FULL_TEXT);
   Request r{};
   r.op = op;
   r.len = uint8_t(len);
@@ -487,16 +488,16 @@ Outcome LinkClient::glow_plug_fitted() {
 Outcome LinkClient::start_mcu_job(McuJob job) {
   if (this->mcu_ == nullptr || (job == McuJob::UPDATE && !this->mcu_->available()))
     return Outcome::refuse(Result::NOT_SUPPORTED, "this board cannot update the heater's firmware");
-  if (this->mcu_->running())
-    return Outcome::refuse(Result::BUSY, "the heater firmware is being updated");
+  if (this->mcu_running_())
+    return Outcome::refuse(Result::BUSY, McuUpdater::BUSY_TEXT);
   if (this->mode_ != LINK_MODE_OFF)
     return Outcome::refuse(Result::NOT_OFF, "turn the heater off first");
   if (this->up_ && this->have_status_) {
     // The MCU decides: UPDATE_PREPARE only with the heater off and cold.
     if (this->status_.state != uint8_t(HeaterState::OFF))
       return Outcome::refuse(Result::NOT_OFF, "the heater is not off yet (wait for the cooldown)");
-    if (this->queue_cmds_.size() >= 16)
-      return Outcome::refuse(Result::BUSY, "too many changes waiting");
+    if (this->queue_full_())
+      return Outcome::refuse(Result::BUSY, QUEUE_FULL_TEXT);
     Outcome o = this->mcu_->begin(job, true, this->now_);
     if (o.accepted())
       this->queue_(LINK_OP_UPDATE_PREPARE, nullptr, 0);
@@ -509,7 +510,7 @@ Outcome LinkClient::start_mcu_job(McuJob job) {
 }
 
 const char *LinkClient::firmware_update_text() const {
-  if (this->mcu_ == nullptr || !this->mcu_->available())
+  if (!this->mcu_available_())
     return "Not available";
   if (this->mcu_->text()[0] != 0)
     return this->mcu_->text();

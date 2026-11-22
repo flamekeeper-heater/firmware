@@ -84,7 +84,7 @@ void McuUpdate::save_pending_(bool pending) {
 
 Outcome McuUpdate::begin(McuJob job, bool prepare, uint32_t now) {
   if (this->running())
-    return Outcome::refuse(Result::BUSY, "the heater firmware is being updated");
+    return Outcome::refuse(Result::BUSY, BUSY_TEXT);
   if (job == McuJob::UPDATE) {
     Outcome o = this->check_image();
     if (!o.accepted())
