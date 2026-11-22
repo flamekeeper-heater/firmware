@@ -17,19 +17,77 @@ static burn_inputs read_inputs(board *b) {
   /* OVH-1: the latch reads tripped after every power-up until the self-test re-arms it; only a
    * fall after that is a hardware overheat trip. */
   in.overheat_latch = (uint8_t) (b->latch_was_armed && !hal_overheat_n());
-  in.co_alarm = 0; /* the CO alarm (common/co/) is not wired to the board layer yet */
+  /* co_alarm, co_fault: the core's own CO alarm (safety_co_step) */
   in.board_c10 = analog_board_c10(b->raw[HAL_ADC_BOARD]);
   return in;
 }
 
+/* ---------------------------------------------------------------- the CO sensor's R0 log */
+
+/* A slot: 'R' '0', R0 in ohm (4 bytes, little-endian), CRC16 of those six. Erased: all 0xFF. */
+static int slot_erased(const uint8_t *e) {
+  for (unsigned i = 0; i < BOARD_CO_LOG_SLOT; i++)
+    if (e[i] != 0xFFu)
+      return 0;
+  return 1;
+}
+
+/* The last valid R0 in the log (0: none); notes the next free slot. */
+static uint32_t co_log_scan(board *b) {
+  const uint8_t *page = hal_flash_page(HAL_PAGE_PLUG);
+  uint32_t r0 = 0;
+  b->co_log_next = 0;
+  for (unsigned i = 0; i < BOARD_CO_LOG_SLOTS; i++) {
+    const uint8_t *e = page + BOARD_CO_LOG_START + i * BOARD_CO_LOG_SLOT;
+    if (slot_erased(e))
+      continue;
+    b->co_log_next = (uint16_t) (i + 1u); /* written, or torn: skipped either way */
+    if (e[0] == 'R' && e[1] == '0' && link_crc16(e, 6) == (uint16_t) (e[6] | (e[7] << 8)))
+      r0 = (uint32_t) e[2] | ((uint32_t) e[3] << 8) | ((uint32_t) e[4] << 16) | ((uint32_t) e[5] << 24);
+  }
+  return r0;
+}
+
+/* Erases the plug page, keeping the plug record. */
+static int plug_page_rewrite(board *b) {
+  uint8_t img[PLUG_IMAGE_SIZE];
+  size_t n = plug_pack(&b->s.plug, img, sizeof(img));
+  if (n == 0 || hal_flash_write(HAL_PAGE_PLUG, img, n) != 0)
+    return -1;
+  b->co_log_next = 0;
+  return 0;
+}
+
+static int co_log_append(board *b, uint32_t r0) {
+  if (b->co_log_next >= BOARD_CO_LOG_SLOTS && plug_page_rewrite(b) != 0)
+    return -1;
+  uint8_t e[BOARD_CO_LOG_SLOT] = {'R', '0', (uint8_t) r0, (uint8_t) (r0 >> 8), (uint8_t) (r0 >> 16),
+                                  (uint8_t) (r0 >> 24), 0, 0};
+  uint16_t crc = link_crc16(e, 6);
+  e[6] = (uint8_t) crc, e[7] = (uint8_t) (crc >> 8);
+  uint16_t at = (uint16_t) (BOARD_CO_LOG_START + b->co_log_next * BOARD_CO_LOG_SLOT);
+  b->co_log_next++;
+  return hal_flash_program(HAL_PAGE_PLUG, at, e, sizeof(e));
+}
+
 static void load(board *b) {
   uint8_t buf[PARAMS_IMAGE_MAX];
+  /* A page read with a double ECC error (hal_flash_unreadable): nothing from it is trusted, the
+   * defaults stand, and the next save erases and rewrites it. */
   size_t n = hal_flash_read(HAL_PAGE_PARAMS, buf, sizeof(buf));
-  if (n > 0)
+  if (hal_flash_unreadable(HAL_PAGE_PARAMS))
+    b->s.params.save_pending = 1;
+  else if (n > 0)
     safety_load_params(&b->s, buf, n);
   n = hal_flash_read(HAL_PAGE_PLUG, buf, sizeof(buf));
-  if (n > 0)
+  uint32_t r0 = co_log_scan(b);
+  if (hal_flash_unreadable(HAL_PAGE_PLUG)) {
+    b->s.plug.save_pending = 1;
+    r0 = 0;
+  } else if (n > 0) {
     safety_load_plug(&b->s, buf, n);
+  }
+  safety_load_co_r0(&b->s, r0);
 }
 
 void board_init(board *b, uint32_t now, uint8_t reset_reason, uint8_t option_faults) {
@@ -51,8 +109,8 @@ void board_init(board *b, uint32_t now, uint8_t reset_reason, uint8_t option_fau
   burn_inputs in = read_inputs(b);
   safety_init(&b->s, &bp, &gp, &fp, &cp, &pp, now, &in, reset_reason, option_faults);
   load(b);
-  b->last_glow_ms = b->last_loop_ms = now;
-  hal_co_heater(0);
+  b->last_glow_ms = b->last_loop_ms = b->last_co_ms = now;
+  hal_co_heater(safety_co_heater(&b->s)); /* CO-5: heated whenever the board is awake, if fitted */
 }
 
 /* The slow readings for the link's Detail record. */
@@ -67,8 +125,8 @@ static void fill_detail(board *b) {
   d->vdda_mv = v;
 }
 
-/* Saved parameters and the plug record go to flash only with the heater off: erasing stalls the
- * CPU for longer than a heartbeat burst lasts. */
+/* Saved parameters, the plug record and R0 go to flash only with the heater off: erasing stalls
+ * the CPU for longer than a heartbeat burst lasts. */
 static void save(board *b) {
   if (b->s.burn.step != BURN_STEP_OFF)
     return;
@@ -80,8 +138,19 @@ static void save(board *b) {
   }
   if (safety_plug_save_pending(&b->s)) {
     size_t n = plug_pack(&b->s.plug, buf, sizeof(buf));
-    if (n > 0 && hal_flash_write(HAL_PAGE_PLUG, buf, n) == 0)
+    if (n > 0 && hal_flash_write(HAL_PAGE_PLUG, buf, n) == 0) {
       safety_plug_saved(&b->s);
+      b->co_log_next = 0; /* the erase took the R0 log: the saved R0 goes back first */
+      if (b->s.co_r0_saved != 0)
+        (void) co_log_append(b, b->s.co_r0_saved);
+    }
+  }
+  /* A failed write counts as saved too: the next try waits for the next change, so a bad page is
+   * not erased over and over. */
+  uint32_t r0 = safety_co_r0_to_save(&b->s);
+  if (r0 != 0) {
+    (void) co_log_append(b, r0);
+    safety_co_r0_saved(&b->s, r0);
   }
 }
 
@@ -114,10 +183,15 @@ void board_ms(board *b, uint32_t now) {
   pump_meas pm;
   pm.vin_cv = vin;
   pm.i_ma = analog_pump_ma(b->raw[HAL_ADC_PUMP_I], v);
-  pm.overcurrent = hal_pump_overcurrent();
+  /* PMP-7: the watchdog's interrupt has already cut; the report stays until the core latches it. */
+  if (hal_pump_overcurrent())
+    b->pump_cut = 1;
+  pm.overcurrent = b->pump_cut;
   pm.hs_ok = o.pump_hs_ok;
   pm.hb_running_ms = 0;
   safety_io io = safety_ms(&b->s, now, &o, &pm);
+  if (b->s.pump.fault != PUMP_FAULT_NONE)
+    b->pump_cut = 0;
 
   /* A running heartbeat is re-armed by the loop pass below; a static level or a stop is at once.
    * Going from stopped to running, the first burst starts now (the last pass completed). */
@@ -134,18 +208,24 @@ void board_ms(board *b, uint32_t now) {
                                                          : HAL_HB_STOPPED);
   }
   hal_latch_reset(io.latch_reset);
+  hal_pump_oc_arm(io.pump_oc_armed, analog_pump_oc_raw(b->s.pump.p.oc_ma, v), b->s.pump.p.oc_hold_us);
   hal_pump_duty(io.pump_duty);
   if (io.pump_pulse_us)
     hal_pump_test_pulse_us(io.pump_pulse_us);
   b->glow_en_test = io.glow_en;
 
-  /* Every 5 ms: the glow planner's next pulse. */
-  if (since(now, b->last_glow_ms) >= 5u) {
+  /* Every glow period (5 ms): the planner's next pulse, from the readings that period's timer took
+   * in its pulse and in the gap before it (GLW-6). Should the periods stop coming (the timer's
+   * interrupt lost), it still steps every 10 ms, with no readings, so GLOW_EN keeps following the
+   * burn and only probes go out. */
+  hal_glow_sample gs;
+  int period = hal_glow_period(&gs);
+  if (period || since(now, b->last_glow_ms) >= 10u) {
     b->last_glow_ms = now;
     glow_meas gm;
-    gm.vin_cv = vin;
-    gm.pulse_ca = analog_glow_ca(hal_glow_pulse_raw(), v);
-    gm.gap_ca = analog_glow_ca(b->raw[HAL_ADC_GLOW_I], v);
+    gm.vin_cv = period ? analog_vin_cv(gs.gap_vin, v) : vin;
+    gm.pulse_ca = period ? analog_glow_ca(gs.pulse_i, v) : 0;
+    gm.gap_ca = period ? analog_glow_ca(gs.gap_i, v) : 0;
     gm.airflow_ok = (uint8_t) (hal_hall_rpm() >= b->s.burn.p.glow_min_fan_rpm);
     gm.board_c10 = analog_board_c10(b->raw[HAL_ADC_BOARD]);
     gm.high_side_trip = (uint8_t) !hal_pwr_flt_n();
@@ -159,6 +239,13 @@ void board_ms(board *b, uint32_t now) {
   if (since(now, b->last_loop_ms) >= 10u) {
     b->last_loop_ms = now;
     burn_inputs in = read_inputs(b);
+    /* Once a second: the CO alarm's reading (ratiometric: VDDA cancels), taken with the heater as it
+     * said; an alarm or a sensor fault reaches the sequencer in this same pass. */
+    if (since(now, b->last_co_ms) >= 1000u) {
+      b->last_co_ms = now;
+      safety_co_step(&b->s, now, b->raw[HAL_ADC_CO], in.board_c10);
+    }
+    hal_co_heater(safety_co_heater(&b->s));
     safety_step(&b->s, now, &in);
     fan_meas fm;
     fm.rpm = in.fan_rpm;

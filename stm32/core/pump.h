@@ -6,6 +6,8 @@
  *
  * - Strokes of stroke_ms, at most max_cHz (priming: prime_max_cHz).
  * - The first stroke only once the heartbeat has run hs_arm_ms and the high side reports no fault.
+ * - The overcurrent watchdog (PMP-7) is armed from a stroke's first pulse until decay_ms after its
+ *   last; the board's ADC watchdog does the cut itself and reports it here.
  * - Faults: the hardware overcurrent cut during a stroke; current not gone decay_ms after a stroke,
  *   or back between strokes; no current rise in a stroke (open coil). A high-side fault gets one
  *   heartbeat restart per run, then locks out.
@@ -30,6 +32,8 @@ typedef struct {
   uint16_t gap_ma;         /* PMP-8: above this between strokes: the low side conducts */
   uint16_t rise_ma;        /* PMP-15: a stroke's current must reach this, else the coil is open */
   uint16_t rearm_ms;       /* PMP-9: heartbeat stopped this long to clear the high side's latch */
+  uint16_t oc_ma;          /* PMP-7: the overcurrent cut's threshold (about 3.3 A) */
+  uint16_t oc_hold_us;     /* PMP-7: ... held this long */
 } pump_params;
 
 void pump_params_default(pump_params *p);
@@ -53,6 +57,7 @@ enum {
 typedef struct {
   uint16_t duty;         /* PUMP_CMD duty, permille (0 = low) */
   uint8_t hb_hold_off;   /* 1: the heartbeat must stop (a fault, or a high-side re-arm) */
+  uint8_t oc_armed;      /* 1: the overcurrent watchdog guards this millisecond (PMP-7) */
 } pump_out;
 
 typedef struct {

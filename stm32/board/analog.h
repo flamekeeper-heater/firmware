@@ -21,6 +21,9 @@ uint16_t analog_div19_cv(uint16_t raw, uint16_t vdda_mv);   /* GLOW_VSENSE, PUMP
 uint16_t analog_glow_ca(uint16_t raw, uint16_t vdda_mv);    /* GLW-18: 9 mV per A */
 uint16_t analog_pump_ma(uint16_t raw, uint16_t vdda_mv);    /* PMP-17: 0.45 V per A */
 uint16_t analog_fan_ma(uint16_t raw, uint16_t vdda_mv);     /* FAN-8: 15 mV per A */
+/* The pump overcurrent watchdog's threshold (PMP-7): PUMP_ISENSE counts above it mean more than
+ * ma. At most 4094, so a saturated reading always trips. */
+uint16_t analog_pump_oc_raw(uint16_t ma, uint16_t vdda_mv);
 
 /* The thermistors (ratiometric: VDDA cancels). Open or out of range: ANALOG_UNKNOWN_TEMP. */
 int16_t analog_hx_c10(uint16_t raw);     /* OVH-6: within 2 counts of full scale = open */

@@ -25,8 +25,9 @@ for f in burn glow fan checks pump params plug safety; do
   objs="$objs $out/$f.o"
 done
 cc $strict $san -c "$here/../../common/link/link.c" -o "$out/link.o"
+cc $strict $san -c "$here/../../common/co/co_alarm.c" -o "$out/co_alarm.o"
 cc -std=c99 -Wall -Wextra -Werror $san -c "$here/heater_model.c" -o "$out/heater_model.o"
-objs="$objs $out/link.o"
+objs="$objs $out/link.o $out/co_alarm.o"
 
 if [ "$what" = fuzz ] || [ "$what" = all ]; then
   fuzz_cxx=${FUZZ_CXX:-clang++}
@@ -42,8 +43,9 @@ if [ "$what" = fuzz ] || [ "$what" = all ]; then
       lf="$lf $out/lf_$f.o"
     done
     $fuzz_cxx -x c $strict -fsanitize=fuzzer-no-link,address,undefined -g -O1 -c "$here/../../common/link/link.c" -o "$out/lf_link.o"
+    $fuzz_cxx -x c $strict -fsanitize=fuzzer-no-link,address,undefined -g -O1 -c "$here/../../common/co/co_alarm.c" -o "$out/lf_co.o"
     $fuzz_cxx -std=c++17 -DUSE_LIBFUZZER -fsanitize=fuzzer,address,undefined -g -O1 "$here/fuzz_link.cpp" \
-      "$fk/link_client.cpp" $lf "$out/lf_link.o" -o "$out/fuzz_link"
+      "$fk/link_client.cpp" $lf "$out/lf_link.o" "$out/lf_co.o" -o "$out/fuzz_link"
     "$out/fuzz_link" -jobs=1 -workers=1 -max_total_time="${FUZZ_SECONDS:-180}" -seed="${FUZZ_SEED:-1}" "$out/corpus"
   else
     c++ -std=c++17 -Wall -Wextra -Werror $san "$here/fuzz_link.cpp" "$fk/link_client.cpp" $objs -o "$out/fuzz_link"

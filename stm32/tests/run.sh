@@ -37,9 +37,10 @@ fk="$here/../../esp32/components/flamekeeper"
 link="$here/../../common/link"
 cc $strict $san -c "$core/safety.c" -o "$out/safety.o"
 cc $strict $san -c "$link/link.c" -o "$out/link.o"
+cc $strict $san -c "$here/../../common/co/co_alarm.c" -o "$out/co_alarm.o"
 cc -std=c99 -Wall -Wextra -Werror $san -c "$here/heater_model.c" -o "$out/heater_model.o"
 c++ -std=c++17 -Wall -Wextra -Werror $san "$here/test_e2e.cpp" "$fk/link_client.cpp" "$fk/controller.cpp" \
-  "$fk/tuning.cpp" "$fk/thermostat.cpp" "$out/safety.o" "$out/burn.o" "$out/glow.o" "$out/fan.o" "$out/checks.o" "$out/pump.o" "$out/params.o" "$out/plug.o" "$out/link.o" "$out/heater_model.o" \
+  "$fk/tuning.cpp" "$fk/thermostat.cpp" "$out/safety.o" "$out/burn.o" "$out/glow.o" "$out/fan.o" "$out/checks.o" "$out/pump.o" "$out/params.o" "$out/plug.o" "$out/link.o" "$out/co_alarm.o" "$out/heater_model.o" \
   -o "$out/test_e2e"
 "$out/test_e2e"
 
@@ -53,6 +54,7 @@ mkdir -p "$out/o1"
     cc $strict $o1 -c "$core/$f.c" -o "$out/o1/$f.o"
   done
   cc $strict $o1 -c "$link/link.c" -o "$out/o1/link.o"
+  cc $strict $o1 -c "$here/../../common/co/co_alarm.c" -o "$out/o1/co_alarm.o"
   c++ -std=c++17 -Wall -Wextra -Werror $o1 -c "$here/fuzz_link.cpp" -o "$out/fuzz_link.o"
 ) &
 lane=$!
@@ -67,6 +69,18 @@ c++ $o1 "$out/test_soak.o" "$out"/o1/*.o "$out/heater_model.o" -o "$out/test_soa
 # The board layer against a fake chip.
 cc $strict $san -c "$here/../board/analog.c" -o "$out/analog.o"
 cc $strict $san -c "$here/../board/board.c" -o "$out/board.o"
-cc -std=c99 -Wall -Wextra -Werror $san "$here/test_board.c" "$out/board.o" "$out/analog.o" "$out/safety.o" "$out/burn.o" \
-  "$out/glow.o" "$out/fan.o" "$out/checks.o" "$out/pump.o" "$out/params.o" "$out/plug.o" "$out/link.o" -o "$out/test_board"
+cc $strict $san -c "$here/../board/pump_oc.c" -o "$out/pump_oc.o"
+cc -std=c99 -Wall -Wextra -Werror $san "$here/test_board.c" "$out/board.o" "$out/analog.o" "$out/pump_oc.o" "$out/safety.o" "$out/burn.o" \
+  "$out/glow.o" "$out/fan.o" "$out/checks.o" "$out/pump.o" "$out/params.o" "$out/plug.o" "$out/link.o" "$out/co_alarm.o" -o "$out/test_board"
 "$out/test_board"
+
+# The bring-up build (bringup/): the console and the bench actions, over the core built with its
+# bench requests (SAFETY_BENCH), against a fake chip with a fan, a pump and a glow plug.
+for f in core/burn core/glow core/fan core/checks core/pump core/params core/plug core/safety board/analog \
+  board/board board/pump_oc bringup/bench bringup/console; do
+  cc $strict $san -DSAFETY_BENCH -c "$here/../$f.c" -o "$out/bench_$(basename $f).o"
+done
+cc $strict $san -DSAFETY_BENCH -c "$link/link.c" -o "$out/bench_link.o"
+cc $strict $san -DSAFETY_BENCH -c "$here/../../common/co/co_alarm.c" -o "$out/bench_co_alarm.o"
+cc -std=c99 -Wall -Wextra -Werror $san -DSAFETY_BENCH "$here/test_bringup.c" "$out"/bench_*.o -o "$out/test_bringup"
+"$out/test_bringup"

@@ -26,7 +26,7 @@ void fan_params_default(fan_params *p) {
 static uint32_t since(uint32_t now, uint32_t then) { return (uint32_t) (now - then); }
 
 void fan_init(fan *f, const fan_params *p, uint32_t now_ms) {
-  fan_params keep = *p; /* p may be the stage's own (a fresh start after a fault): copied before the clear */
+  fan_params keep = *p; /* p may point into f: a restart with its own parameters */
   memset(f, 0, sizeof(*f));
   f->p = keep;
   f->last_ms = now_ms;
@@ -51,7 +51,8 @@ static uint16_t fail(fan *f, uint8_t fault) {
   return set(f, 0);
 }
 
-uint16_t fan_step(fan *f, uint32_t now_ms, uint16_t target_rpm, const fan_meas *m) {
+/* One pass. open_permille > 0: open loop at that duty (fan_step_open), else the speed loop. */
+static uint16_t step(fan *f, uint32_t now_ms, uint16_t target_rpm, uint16_t open_permille, const fan_meas *m) {
   const fan_params *p = &f->p;
   uint32_t dt = since(now_ms, f->last_ms);
   f->last_ms = now_ms;
@@ -68,23 +69,31 @@ uint16_t fan_step(fan *f, uint32_t now_ms, uint16_t target_rpm, const fan_meas *
     f->stuck_timing = 0;
   }
 
-  if (target_rpm < f->target)
-    f->target_dropped_ms = now_ms;
-  f->target = target_rpm;
-  int spun_down = since(now_ms, f->target_dropped_ms) >= p->spin_down_ms;
-
-  /* Speed without a command, or well above it, once it had time to slow down (FAN-3). */
-  if (target_rpm == 0 && m->rpm >= p->turning_rpm && spun_down)
-    return fail(f, FAN_FAULT_UNCOMMANDED);
-  if (target_rpm > 0 && spun_down &&
-      (uint32_t) m->rpm * 100u > (uint32_t) target_rpm * (100u + p->overspeed_percent))
-    return fail(f, FAN_FAULT_OVERSPEED);
-
-  if (target_rpm == 0) {
+  if (open_permille > 0) {
+    /* No speed to compare with: the start limit always applies, and the speed checks wait for
+     * the next command, which counts as a drop (its spin-down time starts then). */
+    target_rpm = 0xFFFFu;
+    f->target = 0xFFFFu;
     f->integ = 0;
-    f->over = 0;
-    f->stall_timing = 0;
-    return set(f, 0);
+  } else {
+    if (target_rpm < f->target)
+      f->target_dropped_ms = now_ms;
+    f->target = target_rpm;
+    int spun_down = since(now_ms, f->target_dropped_ms) >= p->spin_down_ms;
+
+    /* Speed without a command, or well above it, once it had time to slow down (FAN-3). */
+    if (target_rpm == 0 && m->rpm >= p->turning_rpm && spun_down)
+      return fail(f, FAN_FAULT_UNCOMMANDED);
+    if (target_rpm > 0 && spun_down &&
+        (uint32_t) m->rpm * 100u > (uint32_t) target_rpm * (100u + p->overspeed_percent))
+      return fail(f, FAN_FAULT_OVERSPEED);
+
+    if (target_rpm == 0) {
+      f->integ = 0;
+      f->over = 0;
+      f->stall_timing = 0;
+      return set(f, 0);
+    }
   }
 
   /* Stalled: current flows but the Hall shows no turning (FAN-3: off within 1 s). */
@@ -99,15 +108,18 @@ uint16_t fan_step(fan *f, uint32_t now_ms, uint16_t target_rpm, const fan_meas *
 
   /* The speed loop: feed-forward from the 10 V point, plus PI on the Hall error. */
   int32_t cap = fan_duty_cap(f, m->vin_cv);
-  int32_t ff = (int32_t) ((uint32_t) target_rpm * p->v_max_cv * 1000u /
-                          ((uint32_t) p->rpm_at_v_max * (m->vin_cv ? m->vin_cv : 1u)));
-  int32_t err = (int32_t) target_rpm - (int32_t) m->rpm;
-  int32_t integ = f->integ + (int32_t) p->ki_permille_per_krpm_s * err * (int32_t) dt / 1000;
-  if (integ > cap * 1000)
-    integ = cap * 1000;
-  if (integ < -cap * 1000)
-    integ = -cap * 1000;
-  int32_t want = ff + (int32_t) p->kp_permille_per_krpm * err / 1000 + integ / 1000;
+  int32_t err = 0, integ = 0, want = open_permille;
+  if (open_permille == 0) {
+    int32_t ff = (int32_t) ((uint32_t) target_rpm * p->v_max_cv * 1000u /
+                            ((uint32_t) p->rpm_at_v_max * (m->vin_cv ? m->vin_cv : 1u)));
+    err = (int32_t) target_rpm - (int32_t) m->rpm;
+    integ = f->integ + (int32_t) p->ki_permille_per_krpm_s * err * (int32_t) dt / 1000;
+    if (integ > cap * 1000)
+      integ = cap * 1000;
+    if (integ < -cap * 1000)
+      integ = -cap * 1000;
+    want = ff + (int32_t) p->kp_permille_per_krpm * err / 1000 + integ / 1000;
+  }
   int32_t free_want = want;
   if (want > cap)
     want = cap;
@@ -145,7 +157,17 @@ uint16_t fan_step(fan *f, uint32_t now_ms, uint16_t target_rpm, const fan_meas *
 
   /* No integral wind-up while the ramp, a limit or zero holds the duty away from what the loop
    * wants. */
-  if (!(err > 0 && want < free_want) && !(err < 0 && want > free_want))
+  if (open_permille == 0 && !(err > 0 && want < free_want) && !(err < 0 && want > free_want))
     f->integ = integ;
   return set(f, (uint16_t) want);
+}
+
+uint16_t fan_step(fan *f, uint32_t now_ms, uint16_t target_rpm, const fan_meas *m) {
+  return step(f, now_ms, target_rpm, 0, m);
+}
+
+uint16_t fan_step_open(fan *f, uint32_t now_ms, uint16_t duty_permille, const fan_meas *m) {
+  if (duty_permille == 0)
+    return step(f, now_ms, 0, 0, m);
+  return step(f, now_ms, 0, duty_permille > 1000u ? 1000u : duty_permille, m);
 }

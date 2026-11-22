@@ -34,7 +34,7 @@ typedef struct {
   burn b;
   heater_model m;
   uint32_t now;
-  uint8_t latch, co, glow_fault, fan_fault, pump_fault, plug_refused;
+  uint8_t latch, co, co_fault, glow_fault, fan_fault, pump_fault, plug_refused;
   uint8_t precheck; /* what the pre-start self-test reports (passes by default) */
   int16_t board_c10; /* the board thermistor */
   int air_below_fuel; /* passes where the fan's level fell below the fuel's */
@@ -50,6 +50,7 @@ static burn_inputs inputs(const rig *r) {
   in.supply_cv = r->m.supply_cv;
   in.overheat_latch = r->latch;
   in.co_alarm = r->co;
+  in.co_fault = r->co_fault;
   in.glow_fault = r->glow_fault;
   in.fan_fault = r->fan_fault;
   in.precheck = r->precheck;
@@ -307,6 +308,40 @@ static void test_co_alarm(void) {
   r.co = 0;
   CHECK(run_until_step(&r, BURN_STEP_OFF, 25 * MIN));
   CHECK_EQ(start(&r, HEAT, 50), 0x2F); /* latched until a user reset */
+}
+
+/* CO-2: a CO sensor fault is an alarm with the heater-safe action: the run ends as for CO, and the
+ * fault stays until the sensor reads again and the user resets it. */
+static void test_co_sensor_fault(void) {
+  rig r;
+  rig_init(&r, 0, 10);
+  CHECK_EQ(start(&r, HEAT, 50), 0);
+  CHECK(run_until_step(&r, BURN_STEP_RUNNING, 5 * MIN));
+  r.co_fault = 1;
+  run(&r, TICK);
+  CHECK_EQ(r.b.fault, BURN_FAULT_CO_SENSOR);
+  CHECK_EQ(r.b.why, BURN_WHY_CO_SENSOR);
+  CHECK(r.b.fault_latched);
+  CHECK_EQ(r.b.step, BURN_STEP_BURN_OFF);
+  CHECK_EQ(r.b.out.pump_cHz, 0);
+  CHECK(run_until_step(&r, BURN_STEP_OFF, 25 * MIN));
+  burn_inputs in = inputs(&r);
+  CHECK_EQ(burn_fault_reset(&r.b, &in), 0x2F); /* still faulty */
+  CHECK_EQ(start(&r, FAN, 50), 0x2F);
+  r.co_fault = 0;
+  CHECK_EQ(start(&r, HEAT, 50), 0x2F); /* latched until a user reset */
+  in = inputs(&r);
+  CHECK_EQ(burn_fault_reset(&r.b, &in), 0);
+  CHECK_EQ(start(&r, HEAT, 50), 0);
+
+  /* With the heater off: latched at once, and no start. */
+  rig_init(&r, 0, 10);
+  r.co_fault = 1;
+  run(&r, TICK);
+  CHECK_EQ(r.b.fault, BURN_FAULT_CO_SENSOR);
+  CHECK(r.b.fault_latched);
+  CHECK_EQ(r.b.step, BURN_STEP_OFF);
+  CHECK_EQ(start(&r, HEAT, 50), 0x2F);
 }
 
 static void test_glow_stage_fault(void) {
@@ -700,6 +735,7 @@ int main(void) {
   test_overheat_limit();
   test_overheat_latch();
   test_co_alarm();
+  test_co_sensor_fault();
   test_glow_stage_fault();
   test_fan_stage_faults();
   test_precheck();
