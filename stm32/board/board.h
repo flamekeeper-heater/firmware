@@ -34,8 +34,9 @@ typedef struct {
   uint8_t want_burst;        /* the core wants the heartbeat running */
   uint8_t glow_en_test, glow_en_planner;
   uint32_t last_glow_ms, last_loop_ms, last_co_ms;
+  uint16_t oc_raw;           /* the pump's overcurrent threshold, as last armed */
   uint16_t co_log_next;      /* the R0 log's next free slot */
-  uint32_t loops, bursts, refreshes; /* for the tests and the logs */
+  uint32_t loops, bursts;    /* loop passes (each refreshes the watchdog) and heartbeat bursts */
 } board;
 
 /* After the start-up code (option bytes, clocks, peripherals): reads the analog inputs once, starts

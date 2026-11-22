@@ -114,7 +114,7 @@ static void on_detail(void *ctx, link_detail *out) {
 /* The table's parameters take effect: the sequencer runs on them, and the CO-fitted parameter alone
  * says whether the sensor is there (CO-1; a change, heater off only, starts the alarm afresh). */
 static void take_params(safety *s) {
-  s->burn.p = s->params.live;
+  burn_set_params(&s->burn, &s->params.live);
   co_set_fitted(&s->co, s->burn.p.co_fitted);
 }
 

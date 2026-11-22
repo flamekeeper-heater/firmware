@@ -148,7 +148,7 @@ uint8_t burn_power_cap(const burn *b, int16_t board_c10) {
                                       (uint32_t) (p->derate_full_c10 - p->derate_start_c10);
   uint32_t level = 1;
   for (uint32_t n = 10; n >= 1; n--)
-    if (level_fan_ma(p, n) <= allowed) {
+    if (b->level_ma[n - 1u] <= allowed) {
       level = n;
       break;
     }
@@ -190,9 +190,15 @@ static void cool_if_hot(burn *b, const burn_inputs *in, uint32_t now) {
   }
 }
 
+void burn_set_params(burn *b, const burn_params *p) {
+  b->p = *p;
+  for (uint32_t n = 1; n <= 10; n++)
+    b->level_ma[n - 1u] = level_fan_ma(p, n);
+}
+
 void burn_init(burn *b, const burn_params *p, uint32_t now, const burn_inputs *in) {
   memset(b, 0, sizeof(*b));
-  b->p = *p;
+  burn_set_params(b, p);
   b->last_ms = now;
   b->glow_bucket_start = now;
   b->reset_ms = now;

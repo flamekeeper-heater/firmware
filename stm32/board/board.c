@@ -5,13 +5,13 @@
 
 #include "analog.h"
 
-/* The sequencer's measurements, from the last scan. */
-static burn_inputs read_inputs(board *b) {
+/* The sequencer's measurements, from the last scan (vin_cv: VIN_SENSE from it). */
+static burn_inputs read_inputs(board *b, uint16_t vin_cv) {
   burn_inputs in;
   memset(&in, 0, sizeof(in));
   in.hx_c10 = analog_hx_c10(b->raw[HAL_ADC_NTC]);
   in.fan_rpm = hal_hall_rpm();
-  in.supply_cv = analog_vin_cv(b->raw[HAL_ADC_VIN], b->vdda_mv);
+  in.supply_cv = vin_cv;
   /* overheat_latch: the core's, from the latch readings (OVH-1); co_alarm, co_fault: the core's
    * own CO alarm (safety_co_step) */
   in.board_c10 = analog_board_c10(b->raw[HAL_ADC_BOARD]);
@@ -66,7 +66,8 @@ static int co_log_append(board *b, uint32_t r0) {
   return hal_flash_program(HAL_PAGE_PLUG, at, e, sizeof(e));
 }
 
-static void load(board *b) {
+/* noinline here and in save(): the page buffer stays out of board_ms's frame, under the link's. */
+static __attribute__((noinline)) void load(board *b) {
   uint8_t buf[PARAMS_IMAGE_MAX];
   /* A page read with a double ECC error (hal_flash_unreadable): nothing from it is trusted, the
    * defaults stand, and the next save erases and rewrites it. */
@@ -92,44 +93,41 @@ void board_init(board *b, uint32_t now, uint8_t reset_reason, uint8_t option_fau
   b->vrefint_cal = hal_vrefint_cal();
   hal_adc_scan(b->raw);
   b->vdda_mv = analog_vdda_mv(b->raw[HAL_ADC_VREF], b->vrefint_cal);
-  burn_inputs in = read_inputs(b);
+  burn_inputs in = read_inputs(b, analog_vin_cv(b->raw[HAL_ADC_VIN], b->vdda_mv));
   safety_init(&b->s, now, &in, reset_reason, option_faults);
   load(b);
   b->last_glow_ms = b->last_loop_ms = b->last_co_ms = now;
   hal_co_heater(safety_co_heater(&b->s)); /* CO-5: heated whenever the board is awake, if fitted */
 }
 
-/* The slow readings for the link's Detail record. */
-static void fill_detail(board *b) {
+/* The slow readings for the link's Detail record, with the pass's own conversions. */
+static void fill_detail(board *b, const burn_inputs *in, uint16_t fan_ma, uint16_t pump_ma) {
   link_detail *d = &b->s.detail;
   uint16_t v = b->vdda_mv;
-  d->board = analog_board_c10(b->raw[HAL_ADC_BOARD]);
+  d->board = in->board_c10;
   d->glow_v = analog_div19_cv(b->raw[HAL_ADC_GLOW_V], v);
   d->glow_a = analog_glow_ca(b->raw[HAL_ADC_GLOW_I], v);
-  d->fan_a = (uint16_t) (analog_fan_ma(b->raw[HAL_ADC_FAN_I], v) / 10u);
-  d->pump_ma = analog_pump_ma(b->raw[HAL_ADC_PUMP_I], v);
+  d->fan_a = (uint16_t) (fan_ma / 10u);
+  d->pump_ma = pump_ma;
   d->vdda_mv = v;
 }
 
 /* Saved parameters, the plug record and R0 go to flash only with the heater off: erasing stalls
  * the CPU for longer than a heartbeat burst lasts. */
-static void save(board *b) {
+static __attribute__((noinline)) void save(board *b) {
   if (!burn_is_off(&b->s.burn))
     return;
-  uint8_t buf[PARAMS_IMAGE_MAX];
   if (safety_params_save_pending(&b->s)) {
+    uint8_t buf[PARAMS_IMAGE_MAX];
     size_t n = params_pack(&b->s.params, buf, sizeof(buf));
     if (n > 0 && hal_flash_write(HAL_PAGE_PARAMS, buf, n) == 0)
       safety_params_saved(&b->s);
   }
-  if (safety_plug_save_pending(&b->s)) {
-    size_t n = plug_pack(&b->s.plug, buf, sizeof(buf));
-    if (n > 0 && hal_flash_write(HAL_PAGE_PLUG, buf, n) == 0) {
-      safety_plug_saved(&b->s);
-      b->co_log_next = 0; /* the erase took the R0 log: the saved R0 goes back first */
-      if (b->s.co_r0_saved != 0)
-        (void) co_log_append(b, b->s.co_r0_saved);
-    }
+  /* The erase takes the R0 log too: the saved R0 goes back first. */
+  if (safety_plug_save_pending(&b->s) && plug_page_rewrite(b) == 0) {
+    safety_plug_saved(&b->s);
+    if (b->s.co_r0_saved != 0)
+      (void) co_log_append(b, b->s.co_r0_saved);
   }
   /* A failed write counts as saved too: the next try waits for the next change, so a bad page is
    * not erased over and over. */
@@ -156,16 +154,20 @@ void board_ms(board *b, uint32_t now) {
       hal_uart_write(reply, n);
   }
 
-  /* Every millisecond: the self-tests and the pump strokes. */
+  /* Every millisecond: the self-tests and the pump strokes. The tests' readings only while one runs
+   * or may start; the latch's every time (OVH-1). */
   checks_obs o;
-  o.vin_cv = vin;
-  o.pump_v_cv = analog_div19_cv(b->raw[HAL_ADC_PUMP_V], v);
-  o.glow_v_cv = analog_div19_cv(b->raw[HAL_ADC_GLOW_V], v);
-  o.pump_peak_ma = analog_pump_ma(hal_pump_peak_raw(), v);
-  o.glow_ca = analog_glow_ca(b->raw[HAL_ADC_GLOW_I], v);
+  memset(&o, 0, sizeof(o));
   o.latch_armed = hal_overheat_n();
   o.pump_hs_ok = hal_pump_hs_flt_n();
-  o.hx_c10 = analog_hx_c10(b->raw[HAL_ADC_NTC]);
+  if (safety_checks_may_run(&b->s)) {
+    o.vin_cv = vin;
+    o.pump_v_cv = analog_div19_cv(b->raw[HAL_ADC_PUMP_V], v);
+    o.glow_v_cv = analog_div19_cv(b->raw[HAL_ADC_GLOW_V], v);
+    o.pump_peak_ma = analog_pump_ma(hal_pump_peak_raw(), v);
+    o.glow_ca = analog_glow_ca(b->raw[HAL_ADC_GLOW_I], v);
+    o.hx_c10 = analog_hx_c10(b->raw[HAL_ADC_NTC]);
+  }
   pump_meas pm;
   pm.vin_cv = vin;
   pm.i_ma = analog_pump_ma(b->raw[HAL_ADC_PUMP_I], v);
@@ -189,7 +191,9 @@ void board_ms(board *b, uint32_t now) {
                                                          : HAL_HB_STOPPED);
   }
   hal_latch_reset(io.latch_reset);
-  hal_pump_oc_arm(io.pump_oc_armed, analog_pump_oc_raw(b->s.pump.p.oc_ma, v), b->s.pump.p.oc_hold_us);
+  if (io.pump_oc_armed) /* the threshold follows VDDA while armed; unused while not */
+    b->oc_raw = analog_pump_oc_raw(b->s.pump.p.oc_ma, v);
+  hal_pump_oc_arm(io.pump_oc_armed, b->oc_raw, b->s.pump.p.oc_hold_us);
   hal_pump_duty(io.pump_duty);
   if (io.pump_pulse_us)
     hal_pump_test_pulse_us(io.pump_pulse_us);
@@ -219,7 +223,7 @@ void board_ms(board *b, uint32_t now) {
   /* Every 10 ms: the safety loop pass. */
   if (since(now, b->last_loop_ms) >= 10u) {
     b->last_loop_ms = now;
-    burn_inputs in = read_inputs(b);
+    burn_inputs in = read_inputs(b, vin);
     /* Once a second: the CO alarm's reading (ratiometric: VDDA cancels), taken with the heater as it
      * said; an alarm or a sensor fault reaches the sequencer in this same pass. */
     if (since(now, b->last_co_ms) >= 1000u) {
@@ -233,7 +237,7 @@ void board_ms(board *b, uint32_t now) {
     fm.vin_cv = vin;
     fm.isense_ma = analog_fan_ma(b->raw[HAL_ADC_FAN_I], v);
     hal_fan_duty(safety_fan_step(&b->s, now, &fm));
-    fill_detail(b);
+    fill_detail(b, &in, fm.isense_ma, pm.i_ma);
     save(b);
     /* The pass completed: the next heartbeat burst (PMP-1) and the watchdog (WDG-16), here only. */
     if (b->want_burst) {
@@ -241,7 +245,6 @@ void board_ms(board *b, uint32_t now) {
       b->bursts++;
     }
     hal_iwdg_refresh();
-    b->refreshes++;
     b->loops++;
   }
 }

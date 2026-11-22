@@ -62,8 +62,8 @@ int params_apply(params *ps, int heater_off, int save);       /* the staged chan
 void params_discard(params *ps);
 void params_defaults(params *ps);                             /* every value back, and saved */
 
-/* The flash image: magic, version, count, id/value pairs, CRC16. */
-#define PARAMS_IMAGE_MAX 256u
+/* The flash image: magic, version, count, id/value pairs, CRC16. At most 32 entries (staged_mask). */
+#define PARAMS_IMAGE_MAX (4u + 32u * 6u + 2u)
 size_t params_pack(const params *ps, uint8_t *out, size_t cap);
 /* 1 when the image was valid and every value in range (then applied); 0 leaves the defaults. */
 int params_unpack(params *ps, const uint8_t *in, size_t len);

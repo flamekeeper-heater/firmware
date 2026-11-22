@@ -741,7 +741,7 @@ static void io_line(console *c) {
   kv(c, "hb_ms", s->hb_running_ms);
   kv(c, "bursts", (int32_t) b->bursts);
   kv(c, "loops", (int32_t) b->loops);
-  kv(c, "refreshes", (int32_t) b->refreshes);
+  kv(c, "refreshes", (int32_t) b->loops); /* the watchdog, once per loop pass */
   nl(c);
   put(c, "io");
   kv(c, "fan_duty", s->fan.duty);

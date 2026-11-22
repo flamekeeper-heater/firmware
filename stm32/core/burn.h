@@ -223,12 +223,15 @@ typedef struct {
   uint32_t last_ms;
   uint8_t glow_on;
   uint32_t fuel_mp, air_mp; /* running: the pump's and the fan's power, milli-percent */
+  uint32_t level_ma[10];   /* the fan current recorded at each power level 1..10 (from p) */
   held board_hot;          /* the board too hot even at the lowest power */
   burn_outputs out;
 } burn;
 
 /* After a reset: the heat exchanger's first reading decides whether it cools down first. */
 void burn_init(burn *b, const burn_params *p, uint32_t now, const burn_inputs *in);
+/* New parameters take effect (the heater off, or at boot). */
+void burn_set_params(burn *b, const burn_params *p);
 
 /* Requests. They return the app protocol's result codes: 0 OK, 0x20 not off, 0x13 not supported,
  * 0x2F refused (fault and why say what stands in the way). */

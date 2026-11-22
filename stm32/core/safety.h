@@ -152,6 +152,10 @@ typedef struct {
  * the pump's (its hb_running_ms is filled in here). An overcurrent cut in pm latches the pump's
  * fault at once, test or not (PMP-7). */
 safety_io safety_ms(safety *s, uint32_t now, const checks_obs *o, pump_meas *pm);
+/* A self-test runs or may start at the next safety_ms: it reads the whole of checks_obs then. */
+static inline int safety_checks_may_run(const safety *s) {
+  return !s->power_up_started || checks_busy(&s->chk) || s->burn.step == BURN_STEP_PRE_CHECK;
+}
 
 #ifdef SAFETY_BENCH
 /* A bench glow probe waits for the heartbeat to have run this long (GLW-7: the gate supply). */

@@ -120,7 +120,6 @@ static pump_out step(pump *pu, uint32_t now, uint16_t rate_cHz, int priming, con
     pu->scheduled = 0;
     return out;
   }
-  uint32_t period = 100000u / rate_cHz;
   if (!pu->scheduled) {
     pu->scheduled = 1;
     pu->next_ms = now;
@@ -133,7 +132,7 @@ static pump_out step(pump *pu, uint32_t now, uint16_t rate_cHz, int priming, con
     pu->stroke_peak_ma = 0;
     pu->strokes++;
     /* Spaced from the stroke itself: a delayed stroke never shortens the next gap. */
-    pu->next_ms = now + period;
+    pu->next_ms = now + 100000u / rate_cHz;
     out.duty = stroke_duty(pu, m->vin_cv);
   }
   return out;

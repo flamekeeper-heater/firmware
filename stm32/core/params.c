@@ -60,6 +60,7 @@ const param_def PARAM_TABLE[] = {
      0, "1 on a board with the CO sensor. 0 only on a board built without it: there is then no CO alarm."},
 };
 const size_t PARAM_COUNT = sizeof(PARAM_TABLE) / sizeof(PARAM_TABLE[0]);
+typedef char table_fits_staged_mask[sizeof(PARAM_TABLE) / sizeof(PARAM_TABLE[0]) <= 32u ? 1 : -1];
 
 static size_t index_of(uint16_t id) {
   for (size_t i = 0; i < PARAM_COUNT; i++)
