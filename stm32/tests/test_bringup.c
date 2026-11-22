@@ -12,17 +12,13 @@
 #define TEXT_MAX (1u << 20)
 static char text[TEXT_MAX]; /* everything the console sent */
 static size_t text_len, text_mark;
-static int n_checks = 0, failures = 0;
-#define CHECK(c)                                                  \
-  do {                                                            \
-    n_checks++;                                                   \
-    if (!(c)) {                                                   \
-      failures++;                                                 \
-      printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c);         \
-      if (getenv("SHOW")) /* SHOW=1: the console's answer too */ \
-        printf("---\n%s\n---\n", text + text_mark);            \
-    }                                                             \
-  } while (0)
+/* SHOW=1: a failed check prints the console's answer too. */
+static void show_answer(void) {
+  if (getenv("SHOW"))
+    printf("---\n%s\n---\n", text + text_mark);
+}
+#define CHECK_ON_FAIL() show_answer()
+#include "../../common/test/check.h"
 
 /* ---------------------------------------------------------------- the fake chip */
 
@@ -828,6 +824,5 @@ int main(void) {
   test_co();
   test_watchdog();
   test_runs();
-  printf("bringup: %d checks, %d failures\n", n_checks, failures);
-  return failures ? 1 : 0;
+  return check_report("bringup");
 }

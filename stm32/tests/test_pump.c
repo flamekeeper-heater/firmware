@@ -5,16 +5,7 @@
 #include <string.h>
 
 #include "../core/pump.h"
-
-static int checks = 0, failures = 0;
-#define CHECK(c)                                                  \
-  do {                                                            \
-    checks++;                                                     \
-    if (!(c)) {                                                   \
-      failures++;                                                 \
-      printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c);         \
-    }                                                             \
-  } while (0)
+#include "../../common/test/check.h"
 
 /* A dosing pump's coil: 6 Ohm, 2 ms time constant (PMP-8 needs the current gone within 10 ms of a
  * stroke); the board's high side. */
@@ -256,6 +247,5 @@ int main(void) {
   test_faults();
   test_high_side_rearm();
   test_not_ready();
-  printf("pump: %d checks, %d failures\n", checks, failures);
-  return failures ? 1 : 0;
+  return check_report("pump");
 }

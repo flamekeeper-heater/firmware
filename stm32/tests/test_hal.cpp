@@ -5,18 +5,10 @@
 // The ESP32's header first: the register macros in stm32g030.h would shadow its names.
 #include "../../esp32/components/flamekeeper/stm32_boot.h"
 #include "../hal/hal_stm32g0.h"
+#include "../../common/test/check.h"
 
 namespace g030 = esphome::flamekeeper::g030;
 
-static int checks = 0, failures = 0;
-#define CHECK(c)                                          \
-  do {                                                    \
-    checks++;                                             \
-    if (!(c)) {                                           \
-      failures++;                                         \
-      printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); \
-    }                                                     \
-  } while (0)
 
 // The bits match the map both sides share (common/g030/g030_map.h).
 static void test_optr_bits() {
@@ -70,6 +62,5 @@ int main() {
   test_optr_bits();
   test_optr_matches_updater();
   test_optr_examples();
-  printf("hal: %d checks, %d failures\n", checks, failures);
-  return failures ? 1 : 0;
+  return check_report("hal");
 }

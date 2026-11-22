@@ -5,6 +5,7 @@
 #include <cstring>
 #include <deque>
 
+#include "../../common/test/check.h"
 #include "../../esp32/components/flamekeeper/link_client.h"
 
 extern "C" {
@@ -12,15 +13,6 @@ extern "C" {
 #include "heater_model.h"
 }
 
-static int n_checks = 0, failures = 0;
-#define CHECK(c)                                                \
-  do {                                                          \
-    n_checks++;                                                   \
-    if (!(c)) {                                                 \
-      failures++;                                               \
-      std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c);  \
-    }                                                           \
-  } while (0)
 
 using esphome::flamekeeper::LinkClient;
 using esphome::flamekeeper::LinkTransport;
@@ -547,6 +539,5 @@ int main() {
   test_co_not_fitted();
   test_co_warm_up_and_cold();
   test_co_r0_kept();
-  std::printf("e2e: %d checks, %d failures\n", n_checks, failures);
-  return failures ? 1 : 0;
+  return check_report("e2e");
 }

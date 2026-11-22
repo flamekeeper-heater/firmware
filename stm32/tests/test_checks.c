@@ -4,16 +4,7 @@
 #include <string.h>
 
 #include "../core/checks.h"
-
-static int checks_n = 0, failures = 0;
-#define CHECK(c)                                                  \
-  do {                                                            \
-    checks_n++;                                                   \
-    if (!(c)) {                                                   \
-      failures++;                                                 \
-      printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c);         \
-    }                                                             \
-  } while (0)
+#include "../../common/test/check.h"
 
 /* The interlocks: the heartbeat detector, the overheat latch, the pump's and the plug's high
  * sides, and the faults that can break them. */
@@ -261,6 +252,5 @@ int main(void) {
   test_stuck_low_side_drops_enable();
   test_latch_already_armed();
   test_sensor_and_heat();
-  printf("checks: %d checks, %d failures\n", checks_n, failures);
-  return failures ? 1 : 0;
+  return check_report("checks");
 }

@@ -4,16 +4,7 @@
 #include <string.h>
 
 #include "../core/plug.h"
-
-static int checks = 0, failures = 0;
-#define CHECK(c)                                                  \
-  do {                                                            \
-    checks++;                                                     \
-    if (!(c)) {                                                   \
-      failures++;                                                 \
-      printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c);         \
-    }                                                             \
-  } while (0)
+#include "../../common/test/check.h"
 
 #define MIN (60u * 1000u)
 static const int16_t UNKNOWN = (int16_t) 0x8000;
@@ -149,6 +140,5 @@ int main(void) {
   test_warm_starts();
   test_record();
   test_resistance();
-  printf("plug: %d checks, %d failures\n", checks, failures);
-  return failures ? 1 : 0;
+  return check_report("plug");
 }

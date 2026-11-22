@@ -6,16 +6,7 @@
 #include <string.h>
 
 #include "../core/fan.h"
-
-static int checks = 0, failures = 0;
-#define CHECK(c)                                                  \
-  do {                                                            \
-    checks++;                                                     \
-    if (!(c)) {                                                   \
-      failures++;                                                 \
-      printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c);         \
-    }                                                             \
-  } while (0)
+#include "../../common/test/check.h"
 
 #define TICK 10u /* the safety loop's pass, ms */
 
@@ -140,7 +131,7 @@ static void test_24v_cap(void) {
   CHECK(r.max_i_limited < 6.6);
   CHECK(r.max_i < 8.0);
   CHECK(r.f.fault == FAN_FAULT_NONE);
-  if (failures)
+  if (check_failures)
     printf("  24 V spin-up: start %.2f A, max %.2f A\n", r.max_i_limited, r.max_i);
 }
 
@@ -166,7 +157,7 @@ static void test_frozen(double ohms, double vin) {
   r.mo.frozen = 0;
   run(&r, 8000, 3000);
   CHECK(r.f.fault == FAN_FAULT_NONE && fabs(r.mo.rpm - 3000) < 150);
-  if (failures)
+  if (check_failures)
     printf("  frozen %.1f Ohm at %.1f V: max %.2f A, limited %.2f A, fault after %u ms\n", ohms, vin, r.max_i,
            r.max_i_limited, t);
 }
@@ -254,6 +245,5 @@ int main(void) {
   test_uncommanded_and_overspeed();
   test_freed_after_a_short_freeze();
   test_off_is_off();
-  printf("fan: %d checks, %d failures\n", checks, failures);
-  return failures ? 1 : 0;
+  return check_report("fan");
 }

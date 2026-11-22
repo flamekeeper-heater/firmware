@@ -5,25 +5,7 @@
 
 #include "../core/burn.h"
 #include "heater_model.h"
-
-static int checks = 0, failures = 0;
-#define CHECK(c)                                                  \
-  do {                                                            \
-    checks++;                                                     \
-    if (!(c)) {                                                   \
-      failures++;                                                 \
-      printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c);         \
-    }                                                             \
-  } while (0)
-#define CHECK_EQ(a, b)                                                                              \
-  do {                                                                                              \
-    checks++;                                                                                       \
-    long long va_ = (long long) (a), vb_ = (long long) (b);                                         \
-    if (va_ != vb_) {                                                                               \
-      failures++;                                                                                   \
-      printf("FAIL %s:%d: %s == %s (%lld != %lld)\n", __FILE__, __LINE__, #a, #b, va_, vb_);         \
-    }                                                                                               \
-  } while (0)
+#include "../../common/test/check.h"
 
 enum { HEAT = 1, FAN = 2, PRIME = 3 };
 #define SEC 1000u
@@ -752,6 +734,5 @@ int main(void) {
   test_supply();
   test_stop_before_fuel();
   test_dead_man_stop();
-  printf("burn: %d checks, %d failures\n", checks, failures);
-  return failures ? 1 : 0;
+  return check_report("burn");
 }

@@ -5,16 +5,7 @@
 
 #include "../core/params.h"
 #include "../../common/link/link.h"
-
-static int checks = 0, failures = 0;
-#define CHECK(c)                                                  \
-  do {                                                            \
-    checks++;                                                     \
-    if (!(c)) {                                                   \
-      failures++;                                                 \
-      printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c);         \
-    }                                                             \
-  } while (0)
+#include "../../common/test/check.h"
 
 static void test_table(void) {
   params ps;
@@ -139,6 +130,5 @@ int main(void) {
   test_table();
   test_stage_apply();
   test_image();
-  printf("params: %d checks, %d failures\n", checks, failures);
-  return failures ? 1 : 0;
+  return check_report("params");
 }

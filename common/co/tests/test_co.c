@@ -4,25 +4,7 @@
 #include <string.h>
 
 #include "../co_alarm.h"
-
-static int checks = 0, failures = 0;
-#define CHECK(c)                                                    \
-  do {                                                              \
-    checks++;                                                       \
-    if (!(c)) {                                                     \
-      failures++;                                                   \
-      printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c);           \
-    }                                                               \
-  } while (0)
-#define CHECK_EQ(a, b)                                                                          \
-  do {                                                                                          \
-    long long va_ = (long long) (a), vb_ = (long long) (b);                                     \
-    checks++;                                                                                   \
-    if (va_ != vb_) {                                                                           \
-      failures++;                                                                               \
-      printf("FAIL %s:%d: %s == %s (%lld != %lld)\n", __FILE__, __LINE__, #a, #b, va_, vb_); \
-    }                                                                                           \
-  } while (0)
+#include "../../test/check.h"
 
 #define SEC 1000u
 #define MIN (60u * SEC)
@@ -249,6 +231,5 @@ int main(void) {
   test_cold_and_r0();
   test_curve();
   test_set_fitted();
-  printf("co: %d checks, %d failures\n", checks, failures);
-  return failures == 0 ? 0 : 1;
+  return check_report("co");
 }

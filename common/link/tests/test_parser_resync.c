@@ -6,16 +6,7 @@
 #include <string.h>
 
 #include "../link.h"
-
-static int checks = 0, failures = 0;
-#define CHECK(c)                                                  \
-  do {                                                            \
-    checks++;                                                     \
-    if (!(c)) {                                                   \
-      failures++;                                                 \
-      printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c);         \
-    }                                                             \
-  } while (0)
+#include "../../test/check.h"
 
 static void test_frame_after_bogus_length(void) {
   uint8_t a[LINK_FRAME_MAX], b[LINK_FRAME_MAX], stream[4 * LINK_FRAME_MAX];
@@ -55,6 +46,5 @@ static void test_frame_after_bogus_length(void) {
 
 int main(void) {
   test_frame_after_bogus_length();
-  printf("parser resync: %d checks, %d failures\n", checks, failures);
-  return failures ? 1 : 0;
+  return check_report("parser resync");
 }

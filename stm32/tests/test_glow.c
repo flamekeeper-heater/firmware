@@ -6,16 +6,7 @@
 #include <string.h>
 
 #include "../core/glow.h"
-
-static int checks = 0, failures = 0;
-#define CHECK(c)                                                  \
-  do {                                                            \
-    checks++;                                                     \
-    if (!(c)) {                                                   \
-      failures++;                                                 \
-      printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c);         \
-    }                                                             \
-  } while (0)
+#include "../../common/test/check.h"
 
 #define PERIOD_MS 5u
 
@@ -135,7 +126,7 @@ static void test_plug(double r_cold, double r_hot, double vin, double want_w) {
   CHECK(r.cap_violations == 0);
   CHECK(r.rms_violations == 0);
   CHECK(r.probes == 1);
-  if (failures)
+  if (check_failures)
     printf("  plug %.2f-%.2f Ohm at %.1f V: early %.1f V rms, mid %.1f W, late %.1f W\n", r_cold, r_hot,
            vin, v_rms_early, mid, late);
 }
@@ -318,6 +309,5 @@ int main(void) {
   test_heat_budget();
   test_no_reading_no_long_pulses();
   test_reset_starts_empty();
-  printf("glow: %d checks, %d failures\n", checks, failures);
-  return failures ? 1 : 0;
+  return check_report("glow");
 }
