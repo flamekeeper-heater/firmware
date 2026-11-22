@@ -18,6 +18,8 @@
 
 #include <stdint.h>
 
+#include "util.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -77,9 +79,16 @@ typedef struct {
   uint32_t strokes;       /* since init (fuel used = strokes x stroke volume) */
 } pump;
 
+/* At boot only. */
 void pump_init(pump *pu, const pump_params *p);
+/* A user's fault reset: the fault and the stroke state go; the parameters and the stroke count
+ * stay. */
+void pump_clear_fault(pump *pu);
 /* A new run (a start): the high side gets its one re-arm again. */
 void pump_new_run(pump *pu);
+/* The board's overcurrent cut was reported (PMP-7): the fault latches at once (a fault already
+ * latched stays). pump_ms does the same with pump_meas.overcurrent. */
+void pump_cut(pump *pu);
 /* One millisecond. rate_cHz: strokes per 100 s the sequencer asks for (0 = none). */
 pump_out pump_ms(pump *pu, uint32_t now_ms, uint16_t rate_cHz, int priming, const pump_meas *m);
 

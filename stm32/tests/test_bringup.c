@@ -514,26 +514,29 @@ static void test_fan_open_loop(void) {
   CHECK(fan_step_open(&f, 25010, 0, &m) == 0);
 }
 
-/* A stage restarted with its own parameters keeps them (safety.c's stall retry and fault reset). */
+/* A stage's fault cleared by a user's reset keeps its parameters (safety.c's fault reset). */
 static void test_restart_keeps_params(void) {
   fan_params fp;
   fan_params_default(&fp);
   fan f;
   fan_init(&f, &fp, 0);
-  fan_init(&f, &f.p, 10);
-  CHECK(memcmp(&f.p, &fp, sizeof(fp)) == 0);
+  f.fault = FAN_FAULT_STUCK_ON;
+  fan_clear_fault(&f, 10);
+  CHECK(f.fault == FAN_FAULT_NONE && memcmp(&f.p, &fp, sizeof(fp)) == 0);
   glow_params gp;
   glow_params_default(&gp);
   glow g;
   glow_init(&g, &gp, 0);
-  glow_init(&g, &g.p, 10);
-  CHECK(memcmp(&g.p, &gp, sizeof(gp)) == 0);
+  g.fault = GLOW_FAULT_HIGH_SIDE_TRIPS;
+  glow_clear_fault(&g);
+  CHECK(g.fault == GLOW_FAULT_NONE && memcmp(&g.p, &gp, sizeof(gp)) == 0);
   pump_params pp;
   pump_params_default(&pp);
   pump pu;
   pump_init(&pu, &pp);
-  pump_init(&pu, &pu.p);
-  CHECK(memcmp(&pu.p, &pp, sizeof(pp)) == 0);
+  pu.fault = PUMP_FAULT_LOW_SIDE;
+  pump_clear_fault(&pu);
+  CHECK(pu.fault == PUMP_FAULT_NONE && memcmp(&pu.p, &pp, sizeof(pp)) == 0);
 }
 
 /* ---------------------------------------------------------------- heartbeat and pump */

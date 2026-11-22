@@ -23,6 +23,8 @@
 
 #include <stdint.h>
 
+#include "util.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -78,7 +80,7 @@ typedef struct {
   uint16_t glow_ca;        /* GLOW_ISENSE now, 0.01 A */
   uint8_t latch_armed;     /* OVERHEAT_N high */
   uint8_t pump_hs_ok;      /* PUMP_HS_FLT_N high */
-  int16_t hx_c10;          /* heat-exchanger sensor, 0x8000 when open */
+  int16_t hx_c10;          /* heat-exchanger sensor, UNKNOWN_TEMP when open */
 } checks_obs;
 
 typedef struct {
@@ -98,7 +100,6 @@ typedef struct {
   uint32_t boot_ms;      /* power-up, for the latch's re-arm delay */
   uint16_t failed;       /* CHECK_FAIL_* of the last test */
   uint8_t pulse_pending; /* a pulse went out last step: its peak comes in now */
-  uint8_t latch_skipped; /* power-up: the latch was already armed, so step 1 could not run */
   uint8_t power_up_done;
 } checks;
 

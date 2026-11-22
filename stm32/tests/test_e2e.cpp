@@ -54,21 +54,12 @@ struct Bench : LinkTransport {
   uint32_t co_ratio = 1000;
   int co_adc = -1;
   int16_t board_c10 = 350;
+  uint16_t glow_gap_ca = 0;  // the plug's current between pulses (a stuck low side above 2 A)
 
   Bench() {
     heater_model_init(&m, 10);
-    burn_params p;
-    burn_params_default(&p);
-    glow_params gp;
-    glow_params_default(&gp);
-    fan_params fp;
-    fan_params_default(&fp);
-    checks_params cp;
-    checks_params_default(&cp);
-    pump_params pp;
-    pump_params_default(&pp);
     burn_inputs in = inputs();
-    safety_init(&s, &p, &gp, &fp, &cp, &pp, now, &in, LINK_RESET_POWER_ON, 0);
+    safety_init(&s, now, &in, LINK_RESET_POWER_ON, 0);
   }
   burn_inputs inputs() const {
     burn_inputs in;
@@ -109,7 +100,7 @@ struct Bench : LinkTransport {
     glow_meas gm;
     gm.vin_cv = 1260;
     gm.pulse_ca = (uint16_t) (last_i * 100 + 0.5);
-    gm.gap_ca = 0;
+    gm.gap_ca = glow_gap_ca;
     gm.airflow_ok = 1;
     gm.board_c10 = 250;
     gm.high_side_trip = 0;
@@ -284,18 +275,8 @@ static void test_mcu_reset_mid_run() {
   CHECK(b.run_until_state(BURN_STATE_HEATING, 5 * MIN));
   b.run(5 * MIN);
   // The safety MCU resets (watchdog): hot heat exchanger, the ESP32 still asking for heat.
-  burn_params p;
-  burn_params_default(&p);
-  glow_params gp;
-  glow_params_default(&gp);
-  fan_params fp;
-  fan_params_default(&fp);
-  checks_params cp;
-  checks_params_default(&cp);
-  pump_params pp;
-  pump_params_default(&pp);
   burn_inputs in = b.inputs();
-  safety_init(&b.s, &p, &gp, &fp, &cp, &pp, b.now, &in, LINK_RESET_WATCHDOG, 0);
+  safety_init(&b.s, b.now, &in, LINK_RESET_WATCHDOG, 0);
   b.latch_armed = 0;  // a reset leaves the latch tripped until the power-up test re-arms it
   CHECK(b.s.burn.step == BURN_STEP_COOLDOWN);
   CHECK(b.run_until_state(BURN_STATE_COOLING, 5 * SEC));
@@ -361,14 +342,13 @@ static void test_plug_cold_check() {
   CHECK(b.client.set_mode(Mode::HEAT).accepted());
   CHECK(b.run_until_state(BURN_STATE_HEATING, 5 * MIN));
   CHECK(b.s.plug.last_cold);
-  CHECK(b.s.plug.rec.verified_type == 12 && b.s.plug.rec.verified_setting == 12);
+  CHECK(b.s.plug.rec.verified_v == 12);  // the model's 0.2 Ohm plug, under 0.8 Ohm
   CHECK(safety_plug_save_pending(&b.s));
   CHECK(!b.s.plug_warning);
-  CHECK(b.s.plug.last_r_mohm > 150 && b.s.plug.last_r_mohm < 400);  // the model's 0.2 Ohm plug
   // "New glow plug fitted" from the ESP32: the remembered check is gone.
   CHECK(b.client.glow_plug_fitted().accepted());
   b.run(1 * SEC);
-  CHECK(b.s.plug.rec.verified_type == 0);
+  CHECK(b.s.plug.rec.verified_v == 0);
 }
 
 // ---------------------------------------------------------------- the CO alarm
@@ -449,6 +429,35 @@ static void test_co_sensor_fault() {
   // The reset runs the heater check again (heater off 5 s), then the sensor reads on.
   b.run(10 * SEC);
   CHECK(b.s.co.checked && co_state(b) == CO_OK);
+}
+
+static void test_glow_fault_reset_keeps_budget() {
+  // A glow stage fault in preheat, then the user's fault reset: the fault clears, the plug's heat
+  // budget stays as used (GLW-21: it starts empty only after an MCU reset).
+  Bench b;
+  b.run(125 * SEC);
+  b.client.set_power_demand(50);
+  CHECK(b.client.set_mode(Mode::HEAT).accepted());
+  for (uint32_t t = 0; t < 2 * MIN && b.s.burn.step != BURN_STEP_PREHEAT; t += TICK)
+    b.tick();
+  b.run(10 * SEC);
+  CHECK(glow_bucket_a2s(&b.s.glow) > 100);
+  b.glow_gap_ca = 500;  // the low side sticks on (GLW-6)
+  b.run(1 * SEC);
+  b.glow_gap_ca = 0;
+  CHECK(b.s.glow.fault == GLOW_FAULT_STUCK_LOW_SIDE);
+  CHECK(b.s.burn.fault == BURN_FAULT_GLOW && b.s.burn.fault_latched);
+  CHECK(b.s.burn.step == BURN_STEP_OFF);
+  b.client.set_mode(Mode::OFF);
+  b.run(1 * SEC);
+  uint32_t used = glow_bucket_a2s(&b.s.glow);
+  b.client.reset_fault();
+  b.run(200);
+  CHECK(!b.s.burn.fault_latched && b.s.glow.fault == GLOW_FAULT_NONE);
+  CHECK(glow_bucket_a2s(&b.s.glow) + 10 >= used);  // only drained since, by the plug's rest
+  glow_params gp;
+  glow_params_default(&gp);
+  CHECK(std::memcmp(&b.s.glow.p, &gp, sizeof(gp)) == 0);  // and its parameters
 }
 
 static void test_co_not_fitted() {
@@ -534,6 +543,7 @@ int main() {
   test_mcu_reset_mid_run();
   test_co_alarm_stops_and_latches();
   test_co_sensor_fault();
+  test_glow_fault_reset_keeps_budget();
   test_co_not_fitted();
   test_co_warm_up_and_cold();
   test_co_r0_kept();

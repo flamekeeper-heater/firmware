@@ -52,6 +52,8 @@ typedef struct {
   uint8_t precheck_started; /* the pre-start test of the current start has begun */
   uint8_t precheck_result;  /* BURN_PRECHECK_* for the sequencer */
   uint16_t power_up_failed; /* CHECK_FAIL_* from the power-up test */
+  uint8_t latch_armed;      /* the overheat latch's last reading (checks_obs.latch_armed) */
+  uint8_t latch_was_armed;  /* ... armed since the power-up test passed (OVH-1) */
   link_mcu mcu;
   link_parser parser;
   link_start_gate gate;
@@ -83,16 +85,17 @@ typedef struct {
 #endif
 } safety;
 
-/* reset_reason and checks come from the start-up code. */
-void safety_init(safety *s, const burn_params *p, const glow_params *gp, const fan_params *fp,
-                 const checks_params *cp, const pump_params *pp, uint32_t now, const burn_inputs *in,
-                 uint8_t reset_reason, uint8_t checks);
+/* After a reset, with every stage on its defaults (safety_load_params then brings the saved
+ * parameters). in: the first measurements; reset_reason and checks come from the start-up code. */
+void safety_init(safety *s, uint32_t now, const burn_inputs *in, uint8_t reset_reason, uint8_t checks);
 
 /* One received byte. When it completes a request, the reply is written to reply (LINK_FRAME_MAX
  * bytes) and its length returned; otherwise 0. */
 size_t safety_receive(safety *s, uint8_t byte, uint32_t now, uint8_t *reply);
 
-/* One pass of the safety loop with fresh measurements: the dead-man, then the sequencer. */
+/* One pass of the safety loop with fresh measurements: the dead-man, then the sequencer. The core
+ * adds its own findings to in: the stages' faults, the CO alarm, and the overheat latch's trip (a
+ * fall of the latch the power-up test re-armed, OVH-1; from safety_ms's readings). */
 void safety_step(safety *s, uint32_t now, const burn_inputs *in);
 
 const burn_outputs *safety_outputs(const safety *s);
@@ -145,8 +148,14 @@ typedef struct {
 
 /* Every millisecond: the self-tests while one runs (the power-up test by itself after a reset,
  * the pre-start test when the sequencer asks), else the pump strokes and the heartbeat the burn
- * needs. o: the self-tests' readings; pm: the pump's (its hb_running_ms is filled in here). */
+ * needs. o: the self-tests' readings (latch_armed every time, the rest while a test may run); pm:
+ * the pump's (its hb_running_ms is filled in here). An overcurrent cut in pm latches the pump's
+ * fault at once, test or not (PMP-7). */
 safety_io safety_ms(safety *s, uint32_t now, const checks_obs *o, pump_meas *pm);
+/* A self-test runs or may start at the next safety_ms: it reads the whole of checks_obs then. */
+static inline int safety_checks_may_run(const safety *s) {
+  return !s->power_up_started || checks_busy(&s->chk) || s->burn.step == BURN_STEP_PRE_CHECK;
+}
 
 #ifdef SAFETY_BENCH
 /* A bench glow probe waits for the heartbeat to have run this long (GLW-7: the gate supply). */

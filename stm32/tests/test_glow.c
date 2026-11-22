@@ -196,6 +196,15 @@ static void test_stuck_low_side(void) {
   r.gap_a = 0;
   run(&r, 1000, 90);
   CHECK(r.last_width == 0); /* never again until a reset */
+  /* The user's fault reset: pulses again, from a probe, and the heat budget is kept (GLW-21). */
+  uint32_t used = glow_bucket_a2s(&r.g);
+  CHECK(used > 0);
+  glow_clear_fault(&r.g);
+  CHECK(r.g.fault == GLOW_FAULT_NONE && glow_bucket_a2s(&r.g) == used);
+  period(&r, 90);
+  CHECK(r.last_width == r.g.p.min_pulse_us);
+  run(&r, 1000, 90);
+  CHECK(r.g.fault == GLOW_FAULT_NONE && r.last_width > 0);
 }
 
 static void test_high_side_trips(void) {
@@ -220,6 +229,10 @@ static void test_high_side_trips(void) {
     run(&r, 600, 90);
   }
   CHECK(r.g.fault == GLOW_FAULT_HIGH_SIDE_TRIPS);
+  glow_clear_fault(&r.g); /* the user's reset: the trip count starts again */
+  CHECK(r.g.trips == 0 && !r.g.holding);
+  run(&r, 1000, 90);
+  CHECK(r.g.fault == GLOW_FAULT_NONE && r.last_width > 0);
 }
 
 static void test_airflow_and_board(void) {

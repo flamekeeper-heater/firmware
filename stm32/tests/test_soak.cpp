@@ -212,18 +212,8 @@ struct Bench : LinkTransport {
   }
 
   void init_mcu(uint8_t reason) {
-    burn_params p;
-    burn_params_default(&p);
-    glow_params gp;
-    glow_params_default(&gp);
-    fan_params fp;
-    fan_params_default(&fp);
-    checks_params cp;
-    checks_params_default(&cp);
-    pump_params pp;
-    pump_params_default(&pp);
     burn_inputs in = inputs();
-    safety_init(&s, &p, &gp, &fp, &cp, &pp, now, &in, reason, 0);
+    safety_init(&s, now, &in, reason, 0);
     if (!params_flash.empty())
       safety_load_params(&s, params_flash.data(), params_flash.size());
     if (!plug_flash.empty())

@@ -8,14 +8,17 @@
  *   its commanded speed the motor current is held at or below start_limit_ma (the fan's one-time
  *   fuse). Below estimate_min_permille of duty the current estimate is too coarse: the ramp runs on
  *   time alone there.
- * - Faults: a stalled motor (current, no Hall edges), current at zero duty (the switch stuck on),
- *   speed without a command or well above it, once the fan has had time to spin down.
+ * - Faults: a stalled motor (current, no Hall edges; it clears itself once the command is 0), current
+ *   at zero duty (the switch stuck on), speed without a command or well above it, once the fan has
+ *   had time to spin down.
  *
  * Gains and limits are PROVISIONAL until measured on the first boards. */
 #ifndef FLAMEKEEPER_FAN_H
 #define FLAMEKEEPER_FAN_H
 
 #include <stdint.h>
+
+#include "util.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -64,21 +67,20 @@ typedef struct {
   int32_t integ;        /* integral term, permille x 1000 */
   uint16_t target;
   uint32_t target_dropped_ms; /* when the command last went down (spin-down time counts from it) */
-  uint8_t over;          /* start current above the limit */
-  uint32_t over_ms;
-  uint8_t stall_timing;
-  uint32_t stall_ms;
-  uint8_t stuck_timing;
-  uint32_t stuck_ms;
-  uint8_t overspeed_timing;
-  uint32_t overspeed_ms;
+  held over;             /* start current above the limit (re-armed after each back-off) */
+  held stall;            /* current, no turning */
+  held stuck;            /* current at zero duty */
+  held overspeed;        /* well above the command */
   uint8_t fault;
 } fan;
 
+/* At boot only. */
 void fan_init(fan *f, const fan_params *p, uint32_t now_ms);
+/* A user's fault reset: the fault, its timers and the loop's state go; the parameters stay. */
+void fan_clear_fault(fan *f, uint32_t now_ms);
 
 /* One pass: the speed wanted (0 = off) and the readings. Returns the duty, permille. After a fault
- * it returns 0 until fan_init. */
+ * it returns 0: a stall until the speed wanted is 0, any other fault until fan_clear_fault. */
 uint16_t fan_step(fan *f, uint32_t now_ms, uint16_t target_rpm, const fan_meas *m);
 
 /* Open loop at a fixed duty (the bring-up build's bench tests): the same 10 V cap, ramp, start

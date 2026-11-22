@@ -305,9 +305,14 @@ static void test_schedule_and_watchdog(void) {
   CHECK(chip.iwdg_refreshes == 100); /* WDG-16: from the loop pass only */
   CHECK(b.s.chk.power_up_done);
   CHECK(b.s.power_up_failed == 0);   /* through the real interlock lines of the fake chip */
-  CHECK(chip.latch_armed && b.latch_was_armed);
+  CHECK(chip.latch_armed && b.s.latch_was_armed);
   CHECK(b.s.burn.fault == BURN_FAULT_NONE);
   CHECK(chip.hb_mode == HAL_HB_STOPPED); /* off: no heartbeat */
+  /* OVH-1: a fall of the re-armed latch is a hardware overheat trip, latched. */
+  chip.latch_armed = 0;
+  run(&b, 20);
+  CHECK(b.s.in.overheat_latch && b.s.burn.fault == BURN_FAULT_OVERHEAT && b.s.burn.fault_latched);
+  CHECK(b.s.burn.why == BURN_WHY_OVERHEAT_LATCH);
 }
 
 static void test_link(void) {
@@ -387,6 +392,15 @@ static void test_pump_overcurrent(void) {
   esp32_polls(&b, 100);
   CHECK(chip.hb_mode == HAL_HB_STOPPED && chip.pump_duty == 0); /* latched */
   CHECK(b.s.pump.fault == PUMP_FAULT_OVERCURRENT);
+
+  /* A cut reported while a self-test runs (no stroke steps then): latched at once all the same. */
+  chip_reset();
+  board_init(&b, chip.now, LINK_RESET_POWER_ON, 0);
+  run(&b, 5);
+  CHECK(checks_busy(&b.s.chk) && b.s.pump.fault == PUMP_FAULT_NONE);
+  chip.oc_report = 1;
+  run(&b, 1);
+  CHECK(checks_busy(&b.s.chk) && b.s.pump.fault == PUMP_FAULT_OVERCURRENT);
 }
 
 /* GLW-6 through the board: the planner steps once per glow period, on the timer's readings; if
@@ -567,14 +581,13 @@ static void test_co_r0_in_flash(void) {
   CHECK(b2.s.co.state == CO_OK);
 
   /* The plug record is rewritten: the page is erased, R0 goes back in. */
-  b2.s.plug.rec.verified_type = 12;
-  b2.s.plug.rec.verified_setting = 12;
+  b2.s.plug.rec.verified_v = 12;
   b2.s.plug.save_pending = 1;
   run(&b2, 20);
   CHECK(chip.flash_writes == 1 && log_slots_used() == 1 && chip.flash_bad_programs == 0);
   board b3;
   board_init(&b3, chip.now, LINK_RESET_POWER_ON, 0);
-  CHECK(b3.s.co_r0_saved == r0 && b3.s.plug.rec.verified_type == 12);
+  CHECK(b3.s.co_r0_saved == r0 && b3.s.plug.rec.verified_v == 12);
 
   /* A full log: the next R0 erases the page, keeping the plug record, and starts the log again. */
   uint8_t e[BOARD_CO_LOG_SLOT];
@@ -593,7 +606,7 @@ static void test_co_r0_in_flash(void) {
   CHECK(chip.flash_writes == writes + 1 && log_slots_used() == 1 && chip.flash_bad_programs == 0);
   board b5;
   board_init(&b5, chip.now, LINK_RESET_POWER_ON, 0);
-  CHECK(b5.s.co_r0_saved == b4.s.co.r0 && b5.s.plug.rec.verified_type == 12 && b5.co_log_next == 1);
+  CHECK(b5.s.co_r0_saved == b4.s.co.r0 && b5.s.plug.rec.verified_v == 12 && b5.co_log_next == 1);
 
   /* A torn slot (power lost while writing) is skipped. */
   chip.flash[HAL_PAGE_PLUG][BOARD_CO_LOG_START + BOARD_CO_LOG_SLOT] = 0x00;
@@ -627,7 +640,7 @@ static void test_flash_ecc_error(void) {
   plug_params pp;
   plug_params_default(&pp);
   plug_init(&pl, &pp, 0);
-  pl.rec.verified_type = pl.rec.verified_setting = 12;
+  pl.rec.verified_v = 12;
   n = plug_pack(&pl, img, sizeof(img));
   CHECK(hal_flash_write(HAL_PAGE_PLUG, img, n) == 0);
   const uint8_t slot[8] = {'R', '0', 0xE0, 0x93, 0x04, 0x00, 0, 0}; /* 300000, CRC filled below */
@@ -638,21 +651,21 @@ static void test_flash_ecc_error(void) {
   CHECK(hal_flash_program(HAL_PAGE_PLUG, BOARD_CO_LOG_START, e, 8) == 0);
   board b;
   board_init(&b, chip.now, LINK_RESET_POWER_ON, 0);
-  CHECK(b.s.burn.p.fan_max_rpm == 5000 && b.s.plug.rec.verified_type == 12 && b.s.co_r0_saved == 300000);
+  CHECK(b.s.burn.p.fan_max_rpm == 5000 && b.s.plug.rec.verified_v == 12 && b.s.co_r0_saved == 300000);
 
   /* Both pages now read with an ECC error: defaults, nothing remembered, no reset loop. */
   chip.ecc_bad[HAL_PAGE_PARAMS] = chip.ecc_bad[HAL_PAGE_PLUG] = 1;
   uint32_t writes = chip.flash_writes;
   board_init(&b, chip.now, LINK_RESET_POWER_ON, 0);
   CHECK(b.s.burn.p.fan_max_rpm == 4500 && b.s.burn.p.co_fitted == 1);
-  CHECK(b.s.plug.rec.verified_type == 0 && b.s.co_r0_saved == 0 && b.s.co.r0 == 0);
+  CHECK(b.s.plug.rec.verified_v == 0 && b.s.co_r0_saved == 0 && b.s.co.r0 == 0);
   /* The next pass with the heater off rewrites both, erasing first. */
   run(&b, 20);
   CHECK(chip.flash_writes == writes + 2 && chip.unreadable == 0);
   CHECK(!chip.ecc_bad[0] && !chip.ecc_bad[1] && log_slots_used() == 0);
   board b2;
   board_init(&b2, chip.now, LINK_RESET_POWER_ON, 0);
-  CHECK(b2.s.burn.p.fan_max_rpm == 4500 && b2.s.plug.rec.verified_type == 0 && chip.unreadable == 0);
+  CHECK(b2.s.burn.p.fan_max_rpm == 4500 && b2.s.plug.rec.verified_v == 0 && chip.unreadable == 0);
 }
 
 int main(void) {

@@ -13,11 +13,13 @@
 
 #include <stdint.h>
 
+#include "util.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define BURN_UNKNOWN_TEMP ((int16_t) 0x8000) /* heat exchanger sensor open or not read */
+#define BURN_UNKNOWN_TEMP UNKNOWN_TEMP /* a sensor open or not read */
 
 /* The heater states the app protocol reports (link_status.state). */
 enum {
@@ -189,7 +191,6 @@ typedef struct {
   uint16_t fan_rpm;  /* target speed; 0 = fan off */
   uint16_t pump_cHz; /* 0 = no fuel */
   uint16_t glow_w;   /* 0 = glow plug off */
-  uint8_t fan_reset; /* 1 for one pass: clear the fan stage's stall, the burn has dealt with it */
 } burn_outputs;
 
 typedef struct {
@@ -201,13 +202,10 @@ typedef struct {
   uint8_t attempt;
   uint8_t fault_latched;   /* needs burn_fault_reset() (hardware latch, CO, CO sensor) */
   uint32_t step_ms;        /* when this step began */
-  uint32_t fan_low_ms;     /* when the fan was first seen below the stall speed (0 = not low) */
-  uint8_t fan_low;
-  uint32_t supply_bad_ms;
-  uint8_t supply_bad;
+  held fan_low;            /* the fan below the stall speed while asked to turn */
+  held supply_bad;         /* the supply outside its range */
   int16_t start_c10, peak_c10;
-  uint8_t flame;
-  uint32_t flame_ms;
+  uint32_t flame_ms;       /* when the flame was seen */
   /* Glow on-time: this attempt's, and the last 10 minutes' in one-minute buckets (ms): the
    * current minute and the ten before it. */
   uint32_t glow_attempt_ms;
@@ -223,16 +221,17 @@ typedef struct {
   uint8_t air_ok;          /* self-test: the fan has reached the glow's speed ... */
   uint32_t air_ok_ms;      /* ... since then */
   uint32_t last_ms;
-  uint32_t dt_ms;          /* this pass's step */
   uint8_t glow_on;
   uint32_t fuel_mp, air_mp; /* running: the pump's and the fan's power, milli-percent */
-  uint8_t board_hot;
-  uint32_t board_hot_ms;
+  uint32_t level_ma[10];   /* the fan current recorded at each power level 1..10 (from p) */
+  held board_hot;          /* the board too hot even at the lowest power */
   burn_outputs out;
 } burn;
 
 /* After a reset: the heat exchanger's first reading decides whether it cools down first. */
 void burn_init(burn *b, const burn_params *p, uint32_t now, const burn_inputs *in);
+/* New parameters take effect (the heater off, or at boot). */
+void burn_set_params(burn *b, const burn_params *p);
 
 /* Requests. They return the app protocol's result codes: 0 OK, 0x20 not off, 0x13 not supported,
  * 0x2F refused (fault and why say what stands in the way). */
@@ -253,8 +252,13 @@ uint16_t burn_prime_left_s(const burn *b, uint32_t now);
 uint16_t burn_glow_window_s(const burn *b);
 /* 1 from a start until the stop is asked: the dead-man stops an active run. */
 int burn_active(const burn *b);
-/* 1 while fuel may be in the chamber (ignition to burn-off): the pump interlock's business. */
-int burn_fuel_steps(const burn *b);
+/* 1 from ignition until the stop: fuel has gone in (the run time counts). */
+int burn_burning(const burn *b);
+/* 1 while the high sides' heartbeat should run: from the fan check before preheat (so the glow
+ * enable comes at least 20 ms after it, GLW-7) through burn-off, and while priming. */
+int burn_heartbeat_wanted(const burn *b);
+/* Off: no run, no cooldown (parameters apply, flash is written, an update may begin). */
+static inline int burn_is_off(const burn *b) { return b->step == BURN_STEP_OFF; }
 
 #ifdef __cplusplus
 }

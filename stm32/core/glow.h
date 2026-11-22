@@ -15,6 +15,8 @@
 
 #include <stdint.h>
 
+#include "util.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -79,9 +81,12 @@ typedef struct {
   uint8_t holding;
 } glow;
 
-/* After a reset the heat budget starts empty; the burn runs the fan longer before the first glow
- * (GLW-21). */
+/* At boot only. After a reset the heat budget starts empty; the burn runs the fan longer before the
+ * first glow (GLW-21). */
 void glow_init(glow *g, const glow_params *p, uint32_t now_ms);
+/* A user's fault reset: the fault and its trip count go; the parameters and the heat budget stay
+ * (GLW-21: the budget starts empty only after an MCU reset). */
+void glow_clear_fault(glow *g);
 
 /* One PWM period. power_w: what the burn asks of the plug (0 = off). */
 glow_cmd glow_period(glow *g, uint32_t now_ms, uint16_t power_w, const glow_meas *m);

@@ -18,28 +18,35 @@ void pump_params_default(pump_params *p) {
   p->oc_hold_us = 50;
 }
 
-static uint32_t since(uint32_t now, uint32_t then) { return (uint32_t) (now - then); }
-
 void pump_init(pump *pu, const pump_params *p) {
-  pump_params keep = *p; /* p may point into pu: a restart with its own parameters */
   memset(pu, 0, sizeof(*pu));
-  pu->p = keep;
+  pu->p = *p;
+}
+
+void pump_clear_fault(pump *pu) {
+  pu->fault = PUMP_FAULT_NONE;
+  pu->stroking = 0;
+  pu->scheduled = 0;
+  pu->after_stroke = 0;
+  pu->gap_high = 0;
+  pu->rearms = 0;
+  pu->rearming = 0;
 }
 
 void pump_new_run(pump *pu) { pu->rearms = 0; }
 
-static uint16_t stroke_duty(const pump *pu, uint16_t vin_cv) {
-  if (vin_cv == 0)
-    return 0;
-  uint32_t d = (uint32_t) pu->p.stroke_v_cv * 1000u / vin_cv;
-  return (uint16_t) (d > 1000u ? 1000u : d);
-}
+static uint16_t stroke_duty(const pump *pu, uint16_t vin_cv) { return duty_permille_for(pu->p.stroke_v_cv, vin_cv); }
 
 static pump_out fault(pump *pu, uint8_t f) {
   pump_out o = {0, 1, 0};
   pu->fault = f;
   pu->stroking = 0;
   return o;
+}
+
+void pump_cut(pump *pu) {
+  if (pu->fault == PUMP_FAULT_NONE)
+    (void) fault(pu, PUMP_FAULT_OVERCURRENT);
 }
 
 static pump_out step(pump *pu, uint32_t now, uint16_t rate_cHz, int priming, const pump_meas *m) {
@@ -113,7 +120,6 @@ static pump_out step(pump *pu, uint32_t now, uint16_t rate_cHz, int priming, con
     pu->scheduled = 0;
     return out;
   }
-  uint32_t period = 100000u / rate_cHz;
   if (!pu->scheduled) {
     pu->scheduled = 1;
     pu->next_ms = now;
@@ -126,7 +132,7 @@ static pump_out step(pump *pu, uint32_t now, uint16_t rate_cHz, int priming, con
     pu->stroke_peak_ma = 0;
     pu->strokes++;
     /* Spaced from the stroke itself: a delayed stroke never shortens the next gap. */
-    pu->next_ms = now + period;
+    pu->next_ms = now + 100000u / rate_cHz;
     out.duty = stroke_duty(pu, m->vin_cv);
   }
   return out;

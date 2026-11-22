@@ -3,6 +3,9 @@
 
 #include <string.h>
 
+/* One "not known" temperature everywhere: the CO module and the link use their own names for it. */
+typedef char unknown_temps_agree[CO_UNKNOWN_TEMP == UNKNOWN_TEMP && LINK_UNKNOWN_I16 == UNKNOWN_TEMP ? 1 : -1];
+
 static void on_info(void *ctx, link_info *out) {
   safety *s = (safety *) ctx;
   out->kind = LINK_KIND_STM32;
@@ -108,15 +111,11 @@ static void on_detail(void *ctx, link_detail *out) {
 
 /* ---------------------------------------------------------------- the CO alarm */
 
-/* CO-1: the CO-fitted parameter alone says whether the sensor is there. A change (heater off only)
- * starts the alarm afresh: warm-up, heater check, the R0 from flash. */
-static void co_follow_params(safety *s) {
-  if (s->co.cfg.fitted == s->burn.p.co_fitted)
-    return;
-  co_config cfg = s->co.cfg;
-  cfg.fitted = s->burn.p.co_fitted ? 1u : 0u;
-  co_init(&s->co, &cfg);
-  co_load_r0(&s->co, s->co_r0_saved);
+/* The table's parameters take effect: the sequencer runs on them, and the CO-fitted parameter alone
+ * says whether the sensor is there (CO-1; a change, heater off only, starts the alarm afresh). */
+static void take_params(safety *s) {
+  burn_set_params(&s->burn, &s->params.live);
+  co_set_fitted(&s->co, s->burn.p.co_fitted);
 }
 
 void safety_co_step(safety *s, uint32_t now, uint16_t adc, int16_t board_c10) {
@@ -179,7 +178,7 @@ static int on_param_get(void *ctx, uint16_t id, link_param_value *out) {
   out->staged = out->value;
   if (s->params.staged_mask & (1u << i)) {
     out->flags |= LINK_PARAM_STAGED;
-    out->staged = s->params.staged[i];
+    out->staged = params_staged(&s->params, i);
   }
   return LINK_OK;
 }
@@ -189,13 +188,13 @@ static int on_param_set(void *ctx, uint16_t id, int32_t value) {
 }
 
 /* The sequencer takes new parameters only while the heater is off. */
-static int heater_off(const safety *s) { return s->burn.step == BURN_STEP_OFF; }
+static int heater_off(const safety *s) { return burn_is_off(&s->burn); }
 
 /* The staged changes would mark a fitted CO sensor as not fitted. */
 static int co_unfit_staged(const safety *s) {
   for (size_t i = 0; i < PARAM_COUNT; i++)
     if (PARAM_TABLE[i].offset == offsetof(burn_params, co_fitted))
-      return (s->params.staged_mask & (1u << i)) && s->params.staged[i] == 0 && s->burn.p.co_fitted;
+      return (s->params.staged_mask & (1u << i)) && params_staged(&s->params, i) == 0 && s->burn.p.co_fitted;
   return 0;
 }
 
@@ -207,10 +206,8 @@ static int on_param_apply(void *ctx, uint8_t save) {
   if (s->co.alarm && co_unfit_staged(s))
     return LINK_REFUSED;
   int r = params_apply(&s->params, heater_off(s), save);
-  if (r == LINK_OK) {
-    s->burn.p = s->params.live;
-    co_follow_params(s);
-  }
+  if (r == LINK_OK)
+    take_params(s);
   return r;
 }
 
@@ -224,8 +221,7 @@ static int on_param_defaults(void *ctx) {
   if (!heater_off(s))
     return LINK_NOT_OFF;
   params_defaults(&s->params);
-  s->burn.p = s->params.live;
-  co_follow_params(s);
+  take_params(s);
   return LINK_OK;
 }
 
@@ -250,10 +246,8 @@ void safety_load_plug(safety *s, const uint8_t *image, size_t len) { plug_unpack
 void safety_load_params(safety *s, const uint8_t *image, size_t len) {
   /* At boot, before any start: the sequencer may already be cooling down after a reset with a hot
    * heat exchanger, and does that with the saved values too. */
-  if (params_unpack(&s->params, image, len)) {
-    s->burn.p = s->params.live;
-    co_follow_params(s);
-  }
+  if (params_unpack(&s->params, image, len))
+    take_params(s);
 }
 
 /* ---------------------------------------------------------------- faults */
@@ -274,11 +268,11 @@ static int on_fault_reset(void *ctx) {
   int r = burn_fault_reset(&s->burn, &in);
   if (r == LINK_OK) {
     if (s->glow.fault != GLOW_FAULT_NONE)
-      glow_init(&s->glow, &s->glow.p, s->now);
+      glow_clear_fault(&s->glow); /* the heat budget stays as used (GLW-21) */
     if (s->fan.fault != FAN_FAULT_NONE)
-      fan_init(&s->fan, &s->fan.p, s->now);
+      fan_clear_fault(&s->fan, s->now);
     if (s->pump.fault != PUMP_FAULT_NONE)
-      pump_init(&s->pump, &s->pump.p);
+      pump_clear_fault(&s->pump);
     s->in.glow_fault = 0;
     s->in.fan_fault = 0;
     s->in.pump_fault = 0;
@@ -292,7 +286,7 @@ static int on_update_prepare(void *ctx, uint8_t *method) {
   safety *s = (safety *) ctx;
   const burn *b = &s->burn;
   /* Only with the heater off and cold (DESIGN.md): the MCU then refuses starts until it resets. */
-  if (b->step != BURN_STEP_OFF)
+  if (!burn_is_off(b))
     return LINK_NOT_OFF;
   if (s->in.hx_c10 == BURN_UNKNOWN_TEMP || s->in.hx_c10 >= b->p.hot_start_c10)
     return LINK_NOT_OFF;
@@ -301,29 +295,37 @@ static int on_update_prepare(void *ctx, uint8_t *method) {
   return LINK_OK;
 }
 
-void safety_init(safety *s, const burn_params *p, const glow_params *gp, const fan_params *fp,
-                 const checks_params *cp, const pump_params *pp, uint32_t now, const burn_inputs *in,
-                 uint8_t reset_reason, uint8_t checks) {
+void safety_init(safety *s, uint32_t now, const burn_inputs *in, uint8_t reset_reason, uint8_t checks) {
   memset(s, 0, sizeof(*s));
   s->now = now;
   s->in = *in;
   s->reset_reason = reset_reason;
   s->checks = checks;
+  /* Every stage's own figures are its defaults; the sequencer's are the parameter table's. */
+  union {
+    plug_params plug;
+    glow_params glow;
+    fan_params fan;
+    checks_params chk;
+    pump_params pump;
+    co_config co;
+  } d;
+  plug_params_default(&d.plug);
+  plug_init(&s->plug, &d.plug, now);
+  glow_params_default(&d.glow);
+  glow_init(&s->glow, &d.glow, now);
+  fan_params_default(&d.fan);
+  fan_init(&s->fan, &d.fan, now);
+  checks_params_default(&d.chk);
+  checks_init(&s->chk, &d.chk, now);
+  pump_params_default(&d.pump);
+  pump_init(&s->pump, &d.pump);
   params_init(&s->params);
-  plug_params pl;
-  plug_params_default(&pl);
-  plug_init(&s->plug, &pl, now);
-  s->params.live = *p;
-  burn_init(&s->burn, p, now, in);
-  co_config co;
-  co_default_config(&co);
-  co.fitted = p->co_fitted ? 1u : 0u;
-  co_init(&s->co, &co);
+  burn_init(&s->burn, &s->params.live, now, in);
+  co_default_config(&d.co);
+  d.co.fitted = s->params.live.co_fitted ? 1u : 0u;
+  co_init(&s->co, &d.co);
   s->co_r0_saved_ms = now;
-  glow_init(&s->glow, gp, now);
-  fan_init(&s->fan, fp, now);
-  checks_init(&s->chk, cp, now);
-  pump_init(&s->pump, pp);
   link_parser_init(&s->parser, LINK_REQUEST);
   link_start_gate_init(&s->gate);
   link_deadman_init(&s->deadman);
@@ -364,8 +366,11 @@ void safety_step(safety *s, uint32_t now, const burn_inputs *in) {
   s->in.pump_fault = in->pump_fault ? in->pump_fault : s->pump.fault;
   s->in.plug_refused = s->plug_refused;
   s->in.co_alarm = (uint8_t) (in->co_alarm || s->co.alarm);
+  /* OVH-1: the latch reads tripped after every power-up until the self-test re-arms it; only a fall
+   * after that is a hardware overheat trip. */
+  s->in.overheat_latch = (uint8_t) (in->overheat_latch || (s->latch_was_armed && !s->latch_armed));
   s->in.co_fault = (uint8_t) (in->co_fault || s->co.fault);
-  if (burn_fuel_steps(&s->burn) && s->burn.step != BURN_STEP_PRIMING) {
+  if (burn_burning(&s->burn)) {
     s->run_ms += dt;
     s->run_time_s += s->run_ms / 1000u;
     s->run_ms %= 1000u;
@@ -373,32 +378,15 @@ void safety_step(safety *s, uint32_t now, const burn_inputs *in) {
   if (link_deadman_expired(&s->deadman, now, burn_active(&s->burn)))
     burn_stop(&s->burn, BURN_WHY_DEADMAN, now); /* a full burn-off and cooldown, on its own */
   burn_step(&s->burn, now, &s->in);
-  if (s->burn.out.fan_reset) /* a stall the burn retries: the fan stage starts afresh */
-    fan_init(&s->fan, &s->fan.p, now);
 }
 
 const burn_outputs *safety_outputs(const safety *s) { return &s->burn.out; }
 
-/* The heartbeat enables both high sides: it runs from the fan check before preheat (so the glow
- * enable comes at least 20 ms after it, GLW-7) through burn-off, and while priming. */
-static int heartbeat_wanted(const burn *b) {
-  switch (b->step) {
-    case BURN_STEP_SELF_TEST:
-    case BURN_STEP_PREHEAT:
-    case BURN_STEP_IGNITION:
-    case BURN_STEP_PURGE:
-    case BURN_STEP_WARM_UP:
-    case BURN_STEP_RUNNING:
-    case BURN_STEP_BURN_OFF:
-    case BURN_STEP_PRIMING:
-      return 1;
-    default:
-      return 0;
-  }
-}
-
 safety_io safety_ms(safety *s, uint32_t now, const checks_obs *o, pump_meas *pm) {
   checks *c = &s->chk;
+  s->latch_armed = o->latch_armed;
+  if (pm->overcurrent)
+    pump_cut(&s->pump); /* the watchdog has cut already; whatever runs, the fault latches now */
   if (!s->power_up_started) {
     s->power_up_started = 1;
     checks_begin_power_up(c, now, o);
@@ -419,6 +407,8 @@ safety_io safety_ms(safety *s, uint32_t now, const checks_obs *o, pump_meas *pm)
     if (c->failed)
       s->checks |= LINK_CHECK_SELF_TEST; /* no starts until the MCU resets */
   }
+  if (c->power_up_done && s->power_up_failed == 0 && o->latch_armed)
+    s->latch_was_armed = 1;
   if (was_pre_start && !checks_busy(c))
     s->precheck_result = c->failed == 0                      ? BURN_PRECHECK_PASSED
                          : (c->failed & CHECK_FAILS_PUMP) != 0 ? BURN_PRECHECK_FAILED_PUMP
@@ -429,7 +419,7 @@ safety_io safety_ms(safety *s, uint32_t now, const checks_obs *o, pump_meas *pm)
     /* The pump strokes, and the heartbeat the burn needs unless the pump holds it off. */
     pm->hb_running_ms = s->hb_running_ms;
     uint16_t rate = s->burn.out.pump_cHz;
-    int hb = heartbeat_wanted(&s->burn);
+    int hb = burn_heartbeat_wanted(&s->burn); /* it enables both high sides */
 #ifdef SAFETY_BENCH
     if (s->burn.step == BURN_STEP_OFF) {
       rate = s->bench.pump_cHz;

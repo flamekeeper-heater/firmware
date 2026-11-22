@@ -32,6 +32,18 @@ void co_init(co_alarm *c, const co_config *cfg) {
   c->ppm = CO_UNKNOWN_PPM;
 }
 
+void co_set_fitted(co_alarm *c, uint8_t fitted) {
+  fitted = fitted ? 1u : 0u;
+  if (c->cfg.fitted == fitted)
+    return;
+  co_config cfg = c->cfg;
+  uint32_t r0 = c->r0, learned_ms = c->learned_ms;
+  cfg.fitted = fitted;
+  co_init(c, &cfg);
+  c->r0 = r0;
+  c->learned_ms = learned_ms;
+}
+
 void co_load_r0(co_alarm *c, uint32_t r0_ohm) {
   c->r0 = r0_ohm;
   if (r0_ohm != 0)

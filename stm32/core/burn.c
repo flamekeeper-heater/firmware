@@ -12,6 +12,32 @@ enum { MODE_OFF = 0, MODE_HEAT = 1, MODE_FAN = 2, MODE_PRIME = 3 };
 #define BUCKET_MS 60000u
 #define BUCKETS 11u
 
+/* What each step is (indexed by BURN_STEP_*). A fan retry (step 12) is all 0 here: it stands for the
+ * step it goes on with (effective_step) for the state and for being active. */
+enum {
+  ACTIVE = 1u << 0,    /* a run asked for and not yet stopping (the dead-man's business) */
+  FUEL = 1u << 1,      /* fuel has gone in since the start: a stop needs a burn-off and a cooldown */
+  HEARTBEAT = 1u << 2, /* the high sides' heartbeat runs */
+};
+static const struct {
+  uint8_t state, flags;
+} STEPS[] = {
+    {BURN_STATE_OFF, 0},                              /* OFF */
+    {BURN_STATE_STARTING, ACTIVE | HEARTBEAT},        /* SELF_TEST */
+    {BURN_STATE_STARTING, ACTIVE | HEARTBEAT},        /* PREHEAT */
+    {BURN_STATE_STARTING, ACTIVE | FUEL | HEARTBEAT}, /* IGNITION */
+    {BURN_STATE_STARTING, ACTIVE | FUEL | HEARTBEAT}, /* PURGE */
+    {BURN_STATE_STARTING, ACTIVE | FUEL | HEARTBEAT}, /* WARM_UP */
+    {BURN_STATE_HEATING, ACTIVE | FUEL | HEARTBEAT},  /* RUNNING */
+    {BURN_STATE_STOPPING, HEARTBEAT},                 /* BURN_OFF */
+    {BURN_STATE_COOLING, 0},                          /* COOLDOWN */
+    {BURN_STATE_FAN_ONLY, ACTIVE},                    /* FAN_ONLY */
+    {BURN_STATE_PRIMING, ACTIVE | HEARTBEAT},         /* PRIMING */
+    {BURN_STATE_STARTING, ACTIVE},                    /* PRE_CHECK */
+    {0, 0},                                           /* FAN_RETRY */
+};
+typedef char steps_cover_every_step[sizeof(STEPS) / sizeof(STEPS[0]) == BURN_STEP_FAN_RETRY + 1u ? 1 : -1];
+
 void burn_params_default(burn_params *p) {
   memset(p, 0, sizeof(*p));
   p->fan_start_rpm = 1500;
@@ -67,14 +93,15 @@ void burn_params_default(burn_params *p) {
   p->co_fitted = 1; /* the safe side: a board without the sensor shows a sensor fault until set */
 }
 
-static uint32_t since(uint32_t now, uint32_t then) { return (uint32_t) (now - then); }
-
 static void enter(burn *b, uint8_t step, uint32_t now) {
   b->step = step;
   b->step_ms = now;
 }
 
-static int temp_known(int16_t t) { return t != BURN_UNKNOWN_TEMP; }
+/* The heat exchanger too hot for a start: it cools down first. */
+static int hot(const burn *b, const burn_inputs *in) {
+  return temp_known(in->hx_c10) && in->hx_c10 >= b->p.hot_start_c10;
+}
 
 static uint16_t lerp16(uint16_t lo, uint16_t hi, uint32_t num, uint32_t den) {
   if (den == 0 || num >= den)
@@ -99,9 +126,20 @@ static uint32_t level_fan_ma(const burn_params *p, uint32_t level) {
   return p->level6_fan_ma + (uint32_t) (p->level10_fan_ma - p->level6_fan_ma) * (level - 6u) / 4u;
 }
 
+/* The power asked, under the board's cap (FAN-4). */
+static uint8_t capped_power(const burn *b, const burn_inputs *in) {
+  uint8_t cap = burn_power_cap(b, in->board_c10);
+  return b->power < cap ? b->power : cap;
+}
+
+/* ... and held at the minimum while the heat exchanger is above the derate limit. */
+static uint8_t heat_power(const burn *b, const burn_inputs *in) {
+  return in->hx_c10 >= b->p.overheat_derate_c10 ? 0 : capped_power(b, in);
+}
+
 uint8_t burn_power_cap(const burn *b, int16_t board_c10) {
   const burn_params *p = &b->p;
-  if (board_c10 == BURN_UNKNOWN_TEMP || board_c10 <= p->derate_start_c10)
+  if (!temp_known(board_c10) || board_c10 <= p->derate_start_c10)
     return 100;
   uint32_t allowed = p->level1_fan_ma;
   if (board_c10 < p->derate_full_c10)
@@ -110,7 +148,7 @@ uint8_t burn_power_cap(const burn *b, int16_t board_c10) {
                                       (uint32_t) (p->derate_full_c10 - p->derate_start_c10);
   uint32_t level = 1;
   for (uint32_t n = 10; n >= 1; n--)
-    if (level_fan_ma(p, n) <= allowed) {
+    if (b->level_ma[n - 1u] <= allowed) {
       level = n;
       break;
     }
@@ -144,9 +182,23 @@ uint16_t burn_glow_window_s(const burn *b) { return (uint16_t) (glow_window_ms(b
 
 /* ---------------------------------------------------------------- requests */
 
+/* Off with the heat exchanger hot: it cools down first. */
+static void cool_if_hot(burn *b, const burn_inputs *in, uint32_t now) {
+  if (b->step == BURN_STEP_OFF && hot(b, in)) {
+    b->fan_on_ms = now;
+    enter(b, BURN_STEP_COOLDOWN, now);
+  }
+}
+
+void burn_set_params(burn *b, const burn_params *p) {
+  b->p = *p;
+  for (uint32_t n = 1; n <= 10; n++)
+    b->level_ma[n - 1u] = level_fan_ma(p, n);
+}
+
 void burn_init(burn *b, const burn_params *p, uint32_t now, const burn_inputs *in) {
   memset(b, 0, sizeof(*b));
-  b->p = *p;
+  burn_set_params(b, p);
   b->last_ms = now;
   b->glow_bucket_start = now;
   b->reset_ms = now;
@@ -154,10 +206,8 @@ void burn_init(burn *b, const burn_params *p, uint32_t now, const burn_inputs *i
   enter(b, BURN_STEP_OFF, now);
   /* A reset in the middle of a burn: the heat exchanger may be hot and the chamber may hold fuel.
    * Cool it down before anything else (the original spec, section 6.2). */
-  if (in != NULL && temp_known(in->hx_c10) && in->hx_c10 >= p->hot_start_c10) {
-    b->fan_on_ms = now;
-    enter(b, BURN_STEP_COOLDOWN, now);
-  }
+  if (in != NULL)
+    cool_if_hot(b, in, now);
 }
 
 /* Whatever stands in the way of any start; sets fault and why. */
@@ -205,15 +255,14 @@ int burn_start(burn *b, uint8_t mode, uint8_t power, uint32_t now, const burn_in
       return R_NOT_OFF; /* still hot: it is not off yet as far as a start goes */
     /* The glow plug needs at least a full preheat left in its 10-minute allowance. */
     glow_buckets_advance(b, now);
-    if (glow_window_ms(b) + (uint32_t) b->p.preheat_s * 1000u > (uint32_t) b->p.glow_window_max_s * 1000u)
+    if (glow_window_ms(b) + MS(b->p.preheat_s) > MS(b->p.glow_window_max_s))
       return R_REFUSED;
   }
   b->mode = mode;
   b->power = power > 100 ? 100 : power;
   b->attempt = 1;
-  b->flame = 0;
-  b->fan_low = 0;
-  b->supply_bad = 0;
+  b->fan_low.on = 0;
+  b->supply_bad.on = 0;
   b->glow_attempt_ms = 0;
   b->fan_on_ms = now;
   b->air_ok = 0;
@@ -222,10 +271,28 @@ int burn_start(burn *b, uint8_t mode, uint8_t power, uint32_t now, const burn_in
   return R_OK;
 }
 
-/* Fuel has gone in since the start: stopping needs a burn-off and a cooldown. */
-static int fuel_delivered(const burn *b) {
-  return b->step == BURN_STEP_IGNITION || b->step == BURN_STEP_PURGE ||
-         b->step == BURN_STEP_WARM_UP || b->step == BURN_STEP_RUNNING;
+/* The step a fan retry stands for: the one it goes on with after its wait. */
+static uint8_t effective_step(const burn *b) {
+  return b->step == BURN_STEP_FAN_RETRY ? b->retry_step : b->step;
+}
+
+static int fuel_delivered(const burn *b) { return (STEPS[b->step].flags & FUEL) != 0; }
+
+/* Where a stop goes from here: a burn-off once fuel went in, off before that. Off, or already
+ * stopping (a retry on its way to a cooldown too), stays as it is. */
+static uint8_t stop_route(const burn *b) {
+  uint8_t s = effective_step(b);
+  if (fuel_delivered(b))
+    return BURN_STEP_BURN_OFF;
+  if (s == BURN_STEP_OFF || s == BURN_STEP_BURN_OFF || s == BURN_STEP_COOLDOWN)
+    return b->step;
+  return BURN_STEP_OFF;
+}
+
+static void stop_now(burn *b, uint32_t now) {
+  uint8_t to = stop_route(b);
+  if (to != b->step)
+    enter(b, to, now);
 }
 
 void burn_stop(burn *b, uint8_t why, uint32_t now) {
@@ -235,37 +302,25 @@ void burn_stop(burn *b, uint8_t why, uint32_t now) {
    * pump and the glow planner run every millisecond and every 5 ms from these outputs). */
   b->out.pump_cHz = 0;
   b->out.glow_w = 0;
-  if (fuel_delivered(b)) {
-    enter(b, BURN_STEP_BURN_OFF, now);
-    return;
-  }
-  switch (b->step) {
-    case BURN_STEP_PRE_CHECK:
-    case BURN_STEP_SELF_TEST:
-    case BURN_STEP_PREHEAT:
-    case BURN_STEP_FAN_ONLY:
-    case BURN_STEP_PRIMING:
-      enter(b, BURN_STEP_OFF, now);
-      break;
-    case BURN_STEP_FAN_RETRY:
-      if (b->retry_step != BURN_STEP_COOLDOWN)
-        enter(b, BURN_STEP_OFF, now);
-      break; /* a run that had fuel still cools down */
-    default:
-      break; /* off, or already stopping */
-  }
+  stop_now(b, now);
 }
 
-/* A fault that ends the run: fuel off at once, the fan cools the heater if it still can. */
+/* A fault that ends the run: fuel off at once, the fan cools the heater if it still can. Off, it is
+ * only recorded. */
 static void fault_stop(burn *b, uint8_t fault, uint8_t why, uint32_t now) {
   b->fault = fault;
   b->why = why;
-  if (fuel_delivered(b))
-    enter(b, BURN_STEP_BURN_OFF, now);
-  else if (b->step == BURN_STEP_FAN_RETRY && b->retry_step == BURN_STEP_COOLDOWN)
-    ; /* the retry's cooldown still comes */
-  else if (b->step != BURN_STEP_BURN_OFF && b->step != BURN_STEP_COOLDOWN)
-    enter(b, BURN_STEP_OFF, now);
+  stop_now(b, now);
+}
+
+/* A fault that needs a fault reset, when cond holds and it is not latched already: 1 when it
+ * latched now. */
+static int latch(burn *b, int cond, uint8_t fault, uint8_t why, uint32_t now) {
+  if (!cond || (b->fault == fault && b->fault_latched))
+    return 0;
+  b->fault_latched = 1;
+  fault_stop(b, fault, why, now);
+  return 1;
 }
 
 /* The fan stalled or never turned (FAN-3, FAN-5): fuel, glow and fan off at once; the fan tries
@@ -274,17 +329,15 @@ static void fan_stalled(burn *b, uint8_t why, uint32_t now, const burn_inputs *i
   b->fault = BURN_FAULT_FAN;
   b->why = why;
   b->fan_ok_ms = 0;
-  b->fan_low = 0;
+  b->fan_low.on = 0;
   if (++b->fan_stalls > b->p.fan_retries) {
     b->fault_latched = 1;
     enter(b, BURN_STEP_OFF, now);
     return;
   }
-  b->out.fan_reset = 1;
   if (b->step == BURN_STEP_OFF)
     return;
-  int hot = temp_known(in->hx_c10) && in->hx_c10 >= b->p.hot_start_c10;
-  if (fuel_delivered(b) || b->step == BURN_STEP_BURN_OFF || b->step == BURN_STEP_COOLDOWN || hot)
+  if (fuel_delivered(b) || b->step == BURN_STEP_BURN_OFF || b->step == BURN_STEP_COOLDOWN || hot(b, in))
     b->retry_step = BURN_STEP_COOLDOWN;
   else if (b->step == BURN_STEP_FAN_ONLY)
     b->retry_step = BURN_STEP_FAN_ONLY;
@@ -306,50 +359,23 @@ int burn_fault_reset(burn *b, const burn_inputs *in) {
   b->fan_stalls = 0;
   /* Off with the heat exchanger still hot (a fan lockout stops everything at once): it cools down
    * first, as after an MCU reset. A fan still jammed stalls again and locks out again. */
-  if (b->step == BURN_STEP_OFF && temp_known(in->hx_c10) && in->hx_c10 >= b->p.hot_start_c10) {
-    b->fan_on_ms = b->last_ms;
-    enter(b, BURN_STEP_COOLDOWN, b->last_ms);
-  }
+  cool_if_hot(b, in, b->last_ms);
   return R_OK;
 }
 
 /* ---------------------------------------------------------------- the loop */
 
 uint8_t burn_state(const burn *b) {
-  switch (b->step) {
-    case BURN_STEP_PRE_CHECK:
-    case BURN_STEP_SELF_TEST:
-    case BURN_STEP_PREHEAT:
-    case BURN_STEP_IGNITION:
-    case BURN_STEP_PURGE:
-    case BURN_STEP_WARM_UP:
-      return BURN_STATE_STARTING;
-    case BURN_STEP_RUNNING:
-      return BURN_STATE_HEATING;
-    case BURN_STEP_BURN_OFF:
-      return BURN_STATE_STOPPING;
-    case BURN_STEP_COOLDOWN:
-      return BURN_STATE_COOLING;
-    case BURN_STEP_FAN_ONLY:
-      return BURN_STATE_FAN_ONLY;
-    case BURN_STEP_PRIMING:
-      return BURN_STATE_PRIMING;
-    case BURN_STEP_FAN_RETRY:
-      return b->retry_step == BURN_STEP_COOLDOWN ? BURN_STATE_STOPPING
-             : b->retry_step == BURN_STEP_FAN_ONLY ? BURN_STATE_FAN_ONLY
-                                                   : BURN_STATE_STARTING;
-    default:
-      return BURN_STATE_OFF;
-  }
+  if (b->step == BURN_STEP_FAN_RETRY && b->retry_step == BURN_STEP_COOLDOWN)
+    return BURN_STATE_STOPPING; /* a fan retry on its way to the cooldown */
+  return STEPS[effective_step(b)].state;
 }
 
-int burn_active(const burn *b) {
-  if (b->step == BURN_STEP_FAN_RETRY)
-    return b->retry_step != BURN_STEP_COOLDOWN;
-  return b->step != BURN_STEP_OFF && b->step != BURN_STEP_BURN_OFF && b->step != BURN_STEP_COOLDOWN;
-}
+int burn_active(const burn *b) { return (STEPS[effective_step(b)].flags & ACTIVE) != 0; }
 
-int burn_fuel_steps(const burn *b) { return fuel_delivered(b) || b->step == BURN_STEP_PRIMING; }
+int burn_burning(const burn *b) { return fuel_delivered(b); }
+
+int burn_heartbeat_wanted(const burn *b) { return (STEPS[b->step].flags & HEARTBEAT) != 0; }
 
 uint16_t burn_prime_left_s(const burn *b, uint32_t now) {
   if (b->step != BURN_STEP_PRIMING)
@@ -359,71 +385,32 @@ uint16_t burn_prime_left_s(const burn *b, uint32_t now) {
 }
 
 /* Safety checks that hold in every step; they may end the run. */
-static void checks(burn *b, uint32_t now, const burn_inputs *in) {
+static void checks(burn *b, uint32_t now, uint32_t dt, const burn_inputs *in) {
   const burn_params *p = &b->p;
   int burning = fuel_delivered(b);
 
-  if (in->overheat_latch && !(b->fault == BURN_FAULT_OVERHEAT && b->fault_latched)) {
-    b->fault_latched = 1;
-    if (b->step == BURN_STEP_OFF)
-      b->fault = BURN_FAULT_OVERHEAT, b->why = BURN_WHY_OVERHEAT_LATCH;
-    else
-      fault_stop(b, BURN_FAULT_OVERHEAT, BURN_WHY_OVERHEAT_LATCH, now); /* OVH-4: fuel off, fan on */
-    return;
-  }
-  if (in->glow_fault && !(b->fault == BURN_FAULT_GLOW && b->fault_latched)) {
-    /* The board needs looking at: no restart until a reset (GLW-6, GLW-9). */
-    b->fault_latched = 1;
-    if (b->step == BURN_STEP_OFF)
-      b->fault = BURN_FAULT_GLOW, b->why = BURN_WHY_GLOW_STAGE;
-    else
-      fault_stop(b, BURN_FAULT_GLOW, BURN_WHY_GLOW_STAGE, now);
-    return;
-  }
+  /* The latched faults: no restart until a fault reset. */
+  if (latch(b, in->overheat_latch, BURN_FAULT_OVERHEAT, BURN_WHY_OVERHEAT_LATCH, now))
+    return; /* OVH-4: fuel off, fan on */
+  if (latch(b, in->glow_fault, BURN_FAULT_GLOW, BURN_WHY_GLOW_STAGE, now))
+    return; /* the board needs looking at (GLW-6, GLW-9) */
   if (in->fan_fault == 1 && !b->fault_latched && b->step != BURN_STEP_FAN_RETRY) {
     /* The fan stage saw current with no turning (FAN-3): a stall, retried (FAN-5). */
     fan_stalled(b, BURN_WHY_FAN_STALL, now, in);
     return;
   }
-  if (in->fan_fault > 1 && !(b->fault == BURN_FAULT_FAN && b->fault_latched)) {
-    /* FAN-3, FAN-6: the switch stuck on, or the fan turning against its command. Fuel and plug
-     * off at once, an alarm, no restart until a reset; the fan keeps turning by itself (the safe
-     * side) while it burns off. */
-    b->fault_latched = 1;
-    if (b->step == BURN_STEP_OFF)
-      b->fault = BURN_FAULT_FAN, b->why = BURN_WHY_FAN_STAGE;
-    else
-      fault_stop(b, BURN_FAULT_FAN, BURN_WHY_FAN_STAGE, now);
+  /* FAN-3, FAN-6: the switch stuck on, or the fan turning against its command. Fuel and plug off at
+   * once, an alarm; the fan keeps turning by itself (the safe side) while it burns off. */
+  if (latch(b, in->fan_fault > 1, BURN_FAULT_FAN, BURN_WHY_FAN_STAGE, now))
     return;
-  }
-  if (in->pump_fault && !(b->fault == BURN_FAULT_PUMP && b->fault_latched)) {
-    /* The pump stage stopped itself (and the heartbeat): burn off and cool, no restart. */
-    b->fault_latched = 1;
-    if (b->step == BURN_STEP_OFF)
-      b->fault = BURN_FAULT_PUMP, b->why = BURN_WHY_PUMP_STAGE;
-    else if (b->step == BURN_STEP_PRIMING)
-      b->fault = BURN_FAULT_PUMP, b->why = BURN_WHY_PUMP_STAGE, enter(b, BURN_STEP_OFF, now);
-    else
-      fault_stop(b, BURN_FAULT_PUMP, BURN_WHY_PUMP_STAGE, now);
+  /* The pump stage stopped itself (and the heartbeat): burn off and cool. */
+  if (latch(b, in->pump_fault, BURN_FAULT_PUMP, BURN_WHY_PUMP_STAGE, now))
     return;
-  }
-  if (in->co_alarm && !(b->fault == BURN_FAULT_CO && b->fault_latched)) {
-    b->fault_latched = 1;
-    if (b->step == BURN_STEP_OFF)
-      b->fault = BURN_FAULT_CO, b->why = BURN_WHY_CO;
-    else
-      fault_stop(b, BURN_FAULT_CO, BURN_WHY_CO, now);
+  if (latch(b, in->co_alarm, BURN_FAULT_CO, BURN_WHY_CO, now))
     return;
-  }
   /* CO-2: a sensor fault is an alarm too: the same heater-safe action. */
-  if (in->co_fault && !in->co_alarm && !(b->fault == BURN_FAULT_CO_SENSOR && b->fault_latched)) {
-    b->fault_latched = 1;
-    if (b->step == BURN_STEP_OFF)
-      b->fault = BURN_FAULT_CO_SENSOR, b->why = BURN_WHY_CO_SENSOR;
-    else
-      fault_stop(b, BURN_FAULT_CO_SENSOR, BURN_WHY_CO_SENSOR, now);
+  if (latch(b, in->co_fault && !in->co_alarm, BURN_FAULT_CO_SENSOR, BURN_WHY_CO_SENSOR, now))
     return;
-  }
   if (b->step == BURN_STEP_OFF)
     return;
 
@@ -438,53 +425,46 @@ static void checks(burn *b, uint32_t now, const burn_inputs *in) {
   }
 
   /* Board too hot even at the lowest power (FAN-4). */
-  if (in->board_c10 != BURN_UNKNOWN_TEMP && in->board_c10 >= p->board_stop_c10 && burn_active(b)) {
-    if (!b->board_hot)
-      b->board_hot = 1, b->board_hot_ms = now;
-    else if (since(now, b->board_hot_ms) >= p->board_stop_ms) {
-      fault_stop(b, BURN_FAULT_OVERHEAT, BURN_WHY_BOARD_HOT, now);
-      return;
-    }
-  } else {
-    b->board_hot = 0;
+  int board_hot = temp_known(in->board_c10) && in->board_c10 >= p->board_stop_c10 && burn_active(b);
+  if (held_for(&b->board_hot, board_hot, now, p->board_stop_ms)) {
+    fault_stop(b, BURN_FAULT_OVERHEAT, BURN_WHY_BOARD_HOT, now);
+    return;
   }
 
-  /* Supply out of range for a while. */
+  /* Supply out of range for a while (timed whether or not a run is active). */
   int bad = in->supply_cv < p->supply_low_cv || in->supply_cv > p->supply_high_cv;
-  if (bad && !b->supply_bad)
-    b->supply_bad = 1, b->supply_bad_ms = now;
-  else if (!bad)
-    b->supply_bad = 0;
-  if (b->supply_bad && since(now, b->supply_bad_ms) >= p->supply_fault_ms && burn_active(b)) {
+  if (held_for(&b->supply_bad, bad, now, p->supply_fault_ms) && burn_active(b)) {
     fault_stop(b, in->supply_cv < p->supply_low_cv ? BURN_FAULT_SUPPLY_LOW : BURN_FAULT_SUPPLY_HIGH,
                BURN_WHY_SUPPLY, now);
     return;
   }
 
   /* Fan stall (FAN-3): asked to turn, past its spin-up time, and still not turning. */
-  if (b->out.fan_rpm > 0 && since(now, b->fan_on_ms) >= p->fan_spin_up_ms) {
-    if (in->fan_rpm < p->fan_stall_rpm) {
-      if (!b->fan_low)
-        b->fan_low = 1, b->fan_low_ms = now;
-      else if (since(now, b->fan_low_ms) >= p->fan_stall_ms) {
-        fan_stalled(b, BURN_WHY_FAN_STALL, now, in); /* no air: everything off at once */
-        return;
-      }
-    } else {
-      b->fan_low = 0;
-      /* Turning as asked: the stall count forgets in time (FAN-5). */
-      if (b->fan_stalls > 0) {
-        b->fan_ok_ms += b->dt_ms;
-        if (b->fan_ok_ms >= (uint32_t) p->fan_retry_forget_s * 1000u)
-          b->fan_stalls = 0, b->fan_ok_ms = 0;
-      }
-    }
-  } else {
-    b->fan_low = 0;
+  int asked = b->out.fan_rpm > 0 && since(now, b->fan_on_ms) >= p->fan_spin_up_ms;
+  if (held_for(&b->fan_low, asked && in->fan_rpm < p->fan_stall_rpm, now, p->fan_stall_ms)) {
+    fan_stalled(b, BURN_WHY_FAN_STALL, now, in); /* no air: everything off at once */
+    return;
+  }
+  if (asked && in->fan_rpm >= p->fan_stall_rpm && b->fan_stalls > 0) {
+    /* Turning as asked: the stall count forgets in time (FAN-5). */
+    b->fan_ok_ms += dt;
+    if (b->fan_ok_ms >= MS(p->fan_retry_forget_s))
+      b->fan_stalls = 0, b->fan_ok_ms = 0;
   }
 }
 
-static void sequence(burn *b, uint32_t now, const burn_inputs *in) {
+/* The flame's peak, and its loss: a fall below the peak by flame_lost_c10 stops the run (1). */
+static int flame_lost(burn *b, uint32_t now, const burn_inputs *in) {
+  if (in->hx_c10 > b->peak_c10)
+    b->peak_c10 = in->hx_c10;
+  if (in->hx_c10 < b->peak_c10 - b->p.flame_lost_c10) {
+    fault_stop(b, BURN_FAULT_FLAME_OUT, BURN_WHY_FLAME_LOST, now);
+    return 1;
+  }
+  return 0;
+}
+
+static void sequence(burn *b, uint32_t now, uint32_t dt, const burn_inputs *in) {
   const burn_params *p = &b->p;
   uint32_t in_step = since(now, b->step_ms);
   burn_outputs *o = &b->out;
@@ -513,11 +493,11 @@ static void sequence(burn *b, uint32_t now, const burn_inputs *in) {
     case BURN_STEP_SELF_TEST: {
       o->fan_rpm = p->fan_start_rpm;
       /* The first heat start soon after a reset runs the fan longer before the glow (GLW-21). */
-      int longer = b->reset_fan_due && since(now, b->reset_ms) < (uint32_t) p->reset_fan_within_s * 1000u;
+      int longer = b->reset_fan_due && since(now, b->reset_ms) < MS(p->reset_fan_within_s);
       if (in->fan_rpm >= p->glow_min_fan_rpm) {
         if (!b->air_ok)
           b->air_ok = 1, b->air_ok_ms = now;
-        if (!longer || since(now, b->air_ok_ms) >= (uint32_t) p->reset_fan_s * 1000u) {
+        if (!longer || since(now, b->air_ok_ms) >= MS(p->reset_fan_s)) {
           b->reset_fan_due = 0;
           b->glow_attempt_ms = 0;
           enter(b, BURN_STEP_PREHEAT, now);
@@ -530,7 +510,7 @@ static void sequence(burn *b, uint32_t now, const burn_inputs *in) {
     }
 
     case BURN_STEP_FAN_RETRY:
-      if (in_step >= (uint32_t) p->fan_retry_wait_s * 1000u) {
+      if (in_step >= MS(p->fan_retry_wait_s)) {
         if (b->retry_step != BURN_STEP_COOLDOWN)
           b->fault = BURN_FAULT_NONE, b->why = BURN_WHY_NONE; /* the run carries on */
         b->air_ok = 0;
@@ -546,7 +526,7 @@ static void sequence(burn *b, uint32_t now, const burn_inputs *in) {
         enter(b, BURN_STEP_OFF, now);
         break;
       }
-      if (in_step >= (uint32_t) p->preheat_s * 1000u) {
+      if (in_step >= MS(p->preheat_s)) {
         b->start_c10 = in->hx_c10;
         b->peak_c10 = in->hx_c10;
         enter(b, BURN_STEP_IGNITION, now);
@@ -558,11 +538,10 @@ static void sequence(burn *b, uint32_t now, const burn_inputs *in) {
       o->pump_cHz = p->pump_start_cHz;
       want_glow = 1;
       if (in->hx_c10 >= b->start_c10 + p->flame_rise_c10) {
-        b->flame = 1;
         b->flame_ms = now;
         b->peak_c10 = in->hx_c10;
         enter(b, BURN_STEP_WARM_UP, now);
-      } else if (in_step >= (uint32_t) p->ignition_s * 1000u) {
+      } else if (in_step >= MS(p->ignition_s)) {
         if (b->attempt < p->attempts)
           enter(b, BURN_STEP_PURGE, now);
         else
@@ -572,7 +551,7 @@ static void sequence(burn *b, uint32_t now, const burn_inputs *in) {
 
     case BURN_STEP_PURGE:
       o->fan_rpm = p->fan_burn_off_rpm;
-      if (in_step >= (uint32_t) p->purge_s * 1000u) {
+      if (in_step >= MS(p->purge_s)) {
         b->attempt++;
         b->glow_attempt_ms = 0;
         enter(b, BURN_STEP_PREHEAT, now);
@@ -580,18 +559,13 @@ static void sequence(burn *b, uint32_t now, const burn_inputs *in) {
       break;
 
     case BURN_STEP_WARM_UP: {
-      uint32_t ramp = (uint32_t) p->warm_up_s * 1000u;
-      uint8_t cap = burn_power_cap(b, in->board_c10);
-      uint8_t target = in->hx_c10 >= p->overheat_derate_c10 ? 0 : (b->power < cap ? b->power : cap);
+      uint32_t ramp = MS(p->warm_up_s);
+      uint8_t target = heat_power(b, in);
       o->fan_rpm = lerp16(p->fan_start_rpm, fan_for(p, target), in_step, ramp);
       o->pump_cHz = lerp16(p->pump_start_cHz, pump_for(p, target), in_step, ramp);
       b->running_power = (uint8_t) (in_step >= ramp ? target : (uint32_t) target * in_step / ramp);
-      want_glow = since(now, b->flame_ms) < (uint32_t) p->glow_after_flame_s * 1000u;
-      if (in->hx_c10 > b->peak_c10)
-        b->peak_c10 = in->hx_c10;
-      if (in->hx_c10 < b->peak_c10 - p->flame_lost_c10)
-        fault_stop(b, BURN_FAULT_FLAME_OUT, BURN_WHY_FLAME_LOST, now);
-      else if (in_step >= ramp) {
+      want_glow = since(now, b->flame_ms) < MS(p->glow_after_flame_s);
+      if (!flame_lost(b, now, in) && in_step >= ramp) {
         b->fuel_mp = b->air_mp = (uint32_t) target * 1000u;
         enter(b, BURN_STEP_RUNNING, now);
       }
@@ -599,13 +573,11 @@ static void sequence(burn *b, uint32_t now, const burn_inputs *in) {
     }
 
     case BURN_STEP_RUNNING: {
-      uint8_t cap = burn_power_cap(b, in->board_c10);
-      uint8_t asked = b->power < cap ? b->power : cap;
-      uint32_t want = in->hx_c10 >= p->overheat_derate_c10 ? 0u : (uint32_t) asked * 1000u;
+      uint32_t want = (uint32_t) heat_power(b, in) * 1000u;
       /* Fuel follows air (FAN-4): the pump falls at once and rises slowly; the fan rises at once
        * and falls slowly; the fan is never below the fuel. */
-      uint32_t up = (uint32_t) p->fuel_up_percent_s * b->dt_ms;
-      uint32_t down = (uint32_t) p->air_down_percent_s * b->dt_ms;
+      uint32_t up = (uint32_t) p->fuel_up_percent_s * dt;
+      uint32_t down = (uint32_t) p->air_down_percent_s * dt;
       if (want < b->fuel_mp)
         b->fuel_mp = want;
       else
@@ -619,40 +591,35 @@ static void sequence(burn *b, uint32_t now, const burn_inputs *in) {
       o->fan_rpm = fan_for(p, (uint8_t) ((b->air_mp + 999u) / 1000u));
       o->pump_cHz = pump_for(p, (uint8_t) (b->fuel_mp / 1000u));
       b->running_power = (uint8_t) (b->fuel_mp / 1000u);
-      if (in->hx_c10 > b->peak_c10)
-        b->peak_c10 = in->hx_c10;
-      if (in->hx_c10 < b->peak_c10 - p->flame_lost_c10)
-        fault_stop(b, BURN_FAULT_FLAME_OUT, BURN_WHY_FLAME_LOST, now);
+      (void) flame_lost(b, now, in);
       break;
     }
 
     case BURN_STEP_BURN_OFF:
       o->fan_rpm = p->fan_burn_off_rpm;
-      if (in_step >= (uint32_t) p->burn_off_s * 1000u)
+      if (in_step >= MS(p->burn_off_s))
         enter(b, BURN_STEP_COOLDOWN, now);
       break;
 
     case BURN_STEP_COOLDOWN:
       o->fan_rpm = p->fan_burn_off_rpm;
-      if (in_step >= (uint32_t) p->cooldown_min_s * 1000u && temp_known(in->hx_c10) &&
+      if (in_step >= MS(p->cooldown_min_s) && temp_known(in->hx_c10) &&
           in->hx_c10 < p->cool_c10) {
         enter(b, BURN_STEP_OFF, now);
-      } else if (in_step >= (uint32_t) p->cooldown_max_s * 1000u) {
+      } else if (in_step >= MS(p->cooldown_max_s)) {
         if (temp_known(in->hx_c10) && b->fault == BURN_FAULT_NONE)
           b->fault = BURN_FAULT_SENSOR, b->why = BURN_WHY_COOLDOWN_LIMIT;
         enter(b, BURN_STEP_OFF, now);
       }
       break;
 
-    case BURN_STEP_FAN_ONLY: {
-      uint8_t cap = burn_power_cap(b, in->board_c10);
-      o->fan_rpm = fan_for(p, b->power < cap ? b->power : cap);
+    case BURN_STEP_FAN_ONLY:
+      o->fan_rpm = fan_for(p, capped_power(b, in));
       break;
-    }
 
     case BURN_STEP_PRIMING:
       o->pump_cHz = p->pump_prime_cHz;
-      if (in_step >= (uint32_t) p->prime_s * 1000u)
+      if (in_step >= MS(p->prime_s))
         enter(b, BURN_STEP_OFF, now);
       break;
   }
@@ -670,8 +637,7 @@ static void sequence(burn *b, uint32_t now, const burn_inputs *in) {
 
   /* Glow: only with measured airflow (GLW-14) and inside both on-time caps (GLW-1). */
   int glow = want_glow && in->fan_rpm >= p->glow_min_fan_rpm &&
-             b->glow_attempt_ms < (uint32_t) p->glow_attempt_max_s * 1000u &&
-             glow_window_ms(b) < (uint32_t) p->glow_window_max_s * 1000u;
+             b->glow_attempt_ms < MS(p->glow_attempt_max_s) && glow_window_ms(b) < MS(p->glow_window_max_s);
   o->glow_w = glow ? p->glow_w : 0;
   b->glow_on = (uint8_t) glow;
 }
@@ -679,19 +645,17 @@ static void sequence(burn *b, uint32_t now, const burn_inputs *in) {
 void burn_step(burn *b, uint32_t now, const burn_inputs *in) {
   uint32_t dt = since(now, b->last_ms);
   b->last_ms = now;
-  b->dt_ms = dt;
   glow_buckets_advance(b, now);
   if (b->glow_on) {
     b->glow_attempt_ms += dt;
     b->glow_bucket[b->glow_bucket_i] += dt;
   }
   uint16_t fan_before = b->out.fan_rpm;
-  b->out.fan_reset = 0;
-  checks(b, now, in);
+  checks(b, now, dt, in);
   /* A step that ends in this pass hands over at once: the outputs are always the new step's. */
   for (int i = 0; i < 4; i++) {
     uint8_t step = b->step;
-    sequence(b, now, in);
+    sequence(b, now, dt, in);
     if (b->step == step)
       break;
   }

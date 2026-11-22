@@ -44,7 +44,7 @@ const param_def *params_find(uint16_t id);
 
 typedef struct {
   burn_params live;       /* what the sequencer runs with */
-  int32_t staged[32];     /* per table entry */
+  uint16_t staged[32];    /* per table entry, the field's 16 bits (params_staged reads it) */
   uint32_t staged_mask;   /* entries with a staged change */
   uint8_t save_pending;   /* applied with "save": the hardware layer writes params_pack to flash */
 } params;
@@ -53,6 +53,8 @@ typedef struct {
 void params_init(params *ps);
 
 int32_t params_value(const params *ps, size_t index);
+/* The value staged for a table entry (meaningful while its staged_mask bit is set). */
+int32_t params_staged(const params *ps, size_t index);
 
 /* The link's requests. They return the app protocol's result codes. */
 int params_set(params *ps, uint16_t id, int32_t value);        /* stage */
@@ -60,8 +62,8 @@ int params_apply(params *ps, int heater_off, int save);       /* the staged chan
 void params_discard(params *ps);
 void params_defaults(params *ps);                             /* every value back, and saved */
 
-/* The flash image: magic, version, count, id/value pairs, CRC16. */
-#define PARAMS_IMAGE_MAX 256u
+/* The flash image: magic, version, count, id/value pairs, CRC16. At most 32 entries (staged_mask). */
+#define PARAMS_IMAGE_MAX (4u + 32u * 6u + 2u)
 size_t params_pack(const params *ps, uint8_t *out, size_t cap);
 /* 1 when the image was valid and every value in range (then applied); 0 leaves the defaults. */
 int params_unpack(params *ps, const uint8_t *in, size_t len);

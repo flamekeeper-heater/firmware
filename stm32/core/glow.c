@@ -30,8 +30,6 @@ void glow_params_default(glow_params *p) {
   p->board_max_c10 = 850;
 }
 
-static uint32_t since(uint32_t now, uint32_t then) { return (uint32_t) (now - then); }
-
 static uint64_t cap_a2us(const glow *g) { return (uint64_t) g->p.bucket_cap_a2s * 1000000u; }
 
 /* Heat added by a pulse of current i (0.01 A) for w us, in A2 x us. */
@@ -40,12 +38,20 @@ static uint64_t pulse_a2us(uint32_t i_ca, uint32_t w_us) {
 }
 
 void glow_init(glow *g, const glow_params *p, uint32_t now_ms) {
-  glow_params keep = *p; /* p may point into g: a restart with its own parameters */
   memset(g, 0, sizeof(*g));
-  g->p = keep;
+  g->p = *p;
   g->last_ms = now_ms;
   /* After a reset the budget starts empty: the burn runs the fan longer before the first glow
    * instead (GLW-21; burn_params.reset_fan_s). */
+}
+
+void glow_clear_fault(glow *g) {
+  g->fault = GLOW_FAULT_NONE;
+  g->trips = 0;
+  g->holding = 0;
+  g->on = 0;
+  g->have_reading = 0; /* the next pulse is a probe */
+  g->credit_us = 0;
 }
 
 uint32_t glow_bucket_a2s(const glow *g) { return (uint32_t) (g->bucket_a2us / 1000000u); }

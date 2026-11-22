@@ -19,6 +19,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "util.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -46,8 +48,7 @@ enum {
 };
 
 typedef struct {
-  uint8_t verified_type;    /* 12 or 24; 0: nothing verified */
-  uint8_t verified_setting; /* the plug-type setting the check was made against */
+  uint8_t verified_v;       /* the plug verified cold, 12 or 24, matching the setting then; 0: none */
 } plug_record;
 
 typedef struct {
@@ -55,9 +56,7 @@ typedef struct {
   plug_record rec;
   uint8_t save_pending;     /* rec changed: the hardware layer writes plug_pack to flash */
   uint32_t since_ms;        /* glow last seen, or the reset: the cold time counts from here */
-  uint8_t last_verdict;
-  uint16_t last_r_mohm;
-  uint8_t last_cold;
+  uint8_t last_cold;        /* the current start's plug counts as cold (plug_begin) */
 } plug;
 
 void plug_init(plug *pl, const plug_params *p, uint32_t now_ms);
@@ -71,8 +70,13 @@ void plug_begin(plug *pl, uint32_t now_ms, int16_t hx_c10, int16_t board_c10);
 /* The verdict for that start, from its first probe. setting_v: 12 or 24. */
 uint8_t plug_judge(plug *pl, uint8_t setting_v, uint16_t vin_cv, uint16_t probe_ca);
 
-/* The flash record: magic, version, type, setting, CRC16. */
-#define PLUG_IMAGE_SIZE 7u
+/* A probe's resistance (the supply over its current), mOhm: 0xFFFF for no current, or above. */
+uint16_t plug_r_mohm(uint16_t vin_cv, uint16_t probe_ca);
+/* The type a cold resistance says: 12, 24, or 0 (outside both ranges). */
+uint8_t plug_type_of(const plug_params *p, uint16_t r_mohm);
+
+/* The flash record: magic, version, the verified type, CRC16. */
+#define PLUG_IMAGE_SIZE 6u
 size_t plug_pack(const plug *pl, uint8_t *out, size_t cap);
 int plug_unpack(plug *pl, const uint8_t *in, size_t len);
 

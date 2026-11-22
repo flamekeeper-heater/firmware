@@ -158,7 +158,14 @@ static void test_frozen(double ohms, double vin) {
   CHECK(r.max_i < 8.0); /* never the fuse */
   CHECK(r.max_i_limited < 6.6);
   run(&r, 1000, 4500);
-  CHECK(r.duty == 0); /* and it stays off */
+  CHECK(r.duty == 0); /* and it stays off while it is still asked to turn */
+  CHECK(r.f.fault == FAN_FAULT_STALL);
+  /* The burn's answer, the command at 0, clears the stall; a freed fan turns on the next command. */
+  tick(&r, 0);
+  CHECK(r.f.fault == FAN_FAULT_NONE && r.duty == 0);
+  r.mo.frozen = 0;
+  run(&r, 8000, 3000);
+  CHECK(r.f.fault == FAN_FAULT_NONE && fabs(r.mo.rpm - 3000) < 150);
   if (failures)
     printf("  frozen %.1f Ohm at %.1f V: max %.2f A, limited %.2f A, fault after %u ms\n", ohms, vin, r.max_i,
            r.max_i_limited, t);
@@ -183,6 +190,10 @@ static void test_stuck_on(void) {
   r.mo.switch_stuck = 1;
   run(&r, 2000, 0); /* asked to stop: duty 0, yet current flows */
   CHECK(r.f.fault == FAN_FAULT_STUCK_ON);
+  run(&r, 1000, 0);
+  CHECK(r.f.fault == FAN_FAULT_STUCK_ON); /* only a fault reset clears it */
+  fan_clear_fault(&r.f, r.now);
+  CHECK(r.f.fault == FAN_FAULT_NONE);
 }
 
 static void test_uncommanded_and_overspeed(void) {

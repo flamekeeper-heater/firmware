@@ -50,6 +50,15 @@ static void test_stage_apply(void) {
   params_init(&ps);
   CHECK(params_set(&ps, 0x02, 450) == LINK_STORED);
   CHECK(ps.live.pump_max_cHz == 550); /* staged, not applied */
+  CHECK(params_staged(&ps, (size_t) (params_find(0x02) - PARAM_TABLE)) == 450);
+  /* Every value in range fits the staged 16 bits, signed or not. */
+  for (size_t i = 0; i < PARAM_COUNT; i++) {
+    params t;
+    params_init(&t);
+    const param_def *d = &PARAM_TABLE[i];
+    CHECK(d->size <= 2 && params_set(&t, d->id, d->max) == LINK_STORED && params_staged(&t, i) == d->max);
+    CHECK(params_set(&t, d->id, d->min) == LINK_STORED && params_staged(&t, i) == d->min);
+  }
   CHECK(params_set(&ps, 0x02, 650) == LINK_OUT_OF_RANGE); /* above 6 Hz */
   CHECK(params_set(&ps, 0x02, 452) == LINK_OUT_OF_RANGE); /* not on a step */
   CHECK(params_set(&ps, 0x7777, 1) == LINK_OUT_OF_RANGE); /* no such parameter */
