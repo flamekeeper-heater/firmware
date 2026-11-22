@@ -979,8 +979,10 @@ int main(int argc, char **argv) {
       failed++;
       std::printf("FAIL seed %u: %s\n", seed, o.violation.c_str());
     } else if (!quiet && last - first < 50) {
-      std::printf("seed %u: ok (%u starts, %u running, %u stalls, %u lockouts, %u dead-man, %u resets)\n", seed,
-                  o.st.starts, o.st.running, o.st.stalls, o.st.lockouts, o.st.deadman, o.st.resets);
+      std::printf("seed %u: ok (%u starts, %u running, %u stalls, %u lockouts, %u dead-man, %u resets, %u CO alarms, "
+                  "%u CO faults, %u pump cuts)\n",
+                  seed, o.st.starts, o.st.running, o.st.stalls, o.st.lockouts, o.st.deadman, o.st.resets,
+                  o.st.co_alarms, o.st.co_faults, o.st.pump_cuts);
     }
   }
   std::printf("soak: %u seeds x %u h = %.1f h simulated, %u events, %u starts, %u reached running, %u stall "
