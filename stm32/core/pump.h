@@ -77,7 +77,11 @@ typedef struct {
   uint32_t strokes;       /* since init (fuel used = strokes x stroke volume) */
 } pump;
 
+/* At boot only. */
 void pump_init(pump *pu, const pump_params *p);
+/* A user's fault reset: the fault and the stroke state go; the parameters and the stroke count
+ * stay. */
+void pump_clear_fault(pump *pu);
 /* A new run (a start): the high side gets its one re-arm again. */
 void pump_new_run(pump *pu);
 /* One millisecond. rate_cHz: strokes per 100 s the sequencer asks for (0 = none). */

@@ -27,11 +27,22 @@ void fan_params_default(fan_params *p) {
 static uint32_t since(uint32_t now, uint32_t then) { return (uint32_t) (now - then); }
 
 void fan_init(fan *f, const fan_params *p, uint32_t now_ms) {
-  fan_params keep = *p; /* p may point into f: a restart with its own parameters */
   memset(f, 0, sizeof(*f));
-  f->p = keep;
+  f->p = *p;
   f->last_ms = now_ms;
   f->target_dropped_ms = now_ms; /* a fan still coasting after a reset gets its spin-down time */
+}
+
+void fan_clear_fault(fan *f, uint32_t now_ms) {
+  f->fault = FAN_FAULT_NONE;
+  f->duty = 0;
+  f->integ = 0;
+  f->target = 0;
+  f->target_dropped_ms = now_ms; /* a fan still coasting gets its spin-down time again */
+  f->over = 0;
+  f->stall_timing = 0;
+  f->stuck_timing = 0;
+  f->overspeed_timing = 0;
 }
 
 uint16_t fan_duty_cap(const fan *f, uint16_t vin_cv) {

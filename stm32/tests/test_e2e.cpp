@@ -54,6 +54,7 @@ struct Bench : LinkTransport {
   uint32_t co_ratio = 1000;
   int co_adc = -1;
   int16_t board_c10 = 350;
+  uint16_t glow_gap_ca = 0;  // the plug's current between pulses (a stuck low side above 2 A)
 
   Bench() {
     heater_model_init(&m, 10);
@@ -109,7 +110,7 @@ struct Bench : LinkTransport {
     glow_meas gm;
     gm.vin_cv = 1260;
     gm.pulse_ca = (uint16_t) (last_i * 100 + 0.5);
-    gm.gap_ca = 0;
+    gm.gap_ca = glow_gap_ca;
     gm.airflow_ok = 1;
     gm.board_c10 = 250;
     gm.high_side_trip = 0;
@@ -451,6 +452,35 @@ static void test_co_sensor_fault() {
   CHECK(b.s.co.checked && co_state(b) == CO_OK);
 }
 
+static void test_glow_fault_reset_keeps_budget() {
+  // A glow stage fault in preheat, then the user's fault reset: the fault clears, the plug's heat
+  // budget stays as used (GLW-21: it starts empty only after an MCU reset).
+  Bench b;
+  b.run(125 * SEC);
+  b.client.set_power_demand(50);
+  CHECK(b.client.set_mode(Mode::HEAT).accepted());
+  for (uint32_t t = 0; t < 2 * MIN && b.s.burn.step != BURN_STEP_PREHEAT; t += TICK)
+    b.tick();
+  b.run(10 * SEC);
+  CHECK(glow_bucket_a2s(&b.s.glow) > 100);
+  b.glow_gap_ca = 500;  // the low side sticks on (GLW-6)
+  b.run(1 * SEC);
+  b.glow_gap_ca = 0;
+  CHECK(b.s.glow.fault == GLOW_FAULT_STUCK_LOW_SIDE);
+  CHECK(b.s.burn.fault == BURN_FAULT_GLOW && b.s.burn.fault_latched);
+  CHECK(b.s.burn.step == BURN_STEP_OFF);
+  b.client.set_mode(Mode::OFF);
+  b.run(1 * SEC);
+  uint32_t used = glow_bucket_a2s(&b.s.glow);
+  b.client.reset_fault();
+  b.run(200);
+  CHECK(!b.s.burn.fault_latched && b.s.glow.fault == GLOW_FAULT_NONE);
+  CHECK(glow_bucket_a2s(&b.s.glow) + 10 >= used);  // only drained since, by the plug's rest
+  glow_params gp;
+  glow_params_default(&gp);
+  CHECK(std::memcmp(&b.s.glow.p, &gp, sizeof(gp)) == 0);  // and its parameters
+}
+
 static void test_co_not_fitted() {
   // CO_FITTED is a parameter (CO-1): off, nothing reads the sensor, whatever the pin says.
   Bench b;
@@ -534,6 +564,7 @@ int main() {
   test_mcu_reset_mid_run();
   test_co_alarm_stops_and_latches();
   test_co_sensor_fault();
+  test_glow_fault_reset_keeps_budget();
   test_co_not_fitted();
   test_co_warm_up_and_cold();
   test_co_r0_kept();

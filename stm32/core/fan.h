@@ -75,10 +75,13 @@ typedef struct {
   uint8_t fault;
 } fan;
 
+/* At boot only. */
 void fan_init(fan *f, const fan_params *p, uint32_t now_ms);
+/* A user's fault reset: the fault, its timers and the loop's state go; the parameters stay. */
+void fan_clear_fault(fan *f, uint32_t now_ms);
 
 /* One pass: the speed wanted (0 = off) and the readings. Returns the duty, permille. After a fault
- * it returns 0 until fan_init. */
+ * it returns 0 until fan_clear_fault. */
 uint16_t fan_step(fan *f, uint32_t now_ms, uint16_t target_rpm, const fan_meas *m);
 
 /* Open loop at a fixed duty (the bring-up build's bench tests): the same 10 V cap, ramp, start

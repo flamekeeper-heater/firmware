@@ -21,9 +21,18 @@ void pump_params_default(pump_params *p) {
 static uint32_t since(uint32_t now, uint32_t then) { return (uint32_t) (now - then); }
 
 void pump_init(pump *pu, const pump_params *p) {
-  pump_params keep = *p; /* p may point into pu: a restart with its own parameters */
   memset(pu, 0, sizeof(*pu));
-  pu->p = keep;
+  pu->p = *p;
+}
+
+void pump_clear_fault(pump *pu) {
+  pu->fault = PUMP_FAULT_NONE;
+  pu->stroking = 0;
+  pu->scheduled = 0;
+  pu->after_stroke = 0;
+  pu->gap_high = 0;
+  pu->rearms = 0;
+  pu->rearming = 0;
 }
 
 void pump_new_run(pump *pu) { pu->rearms = 0; }

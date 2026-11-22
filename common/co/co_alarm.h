@@ -77,6 +77,10 @@ typedef struct {
 } co_alarm;
 
 void co_init(co_alarm *c, const co_config *cfg);
+/* CO-1: the fitted setting changed (a no-op when it did not). The alarm starts afresh, warm-up and
+ * heater check, keeping its configuration and the R0 it knows; "not fitted" drops its latches (the
+ * caller refuses that while the alarm is on). */
+void co_set_fitted(co_alarm *c, uint8_t fitted);
 /* A stored R0 from a previous run (0: none); the alarm then needs no learning time. */
 void co_load_r0(co_alarm *c, uint32_t r0_ohm);
 /* One reading (about once a second): the ADC count (0..CO_ADC_FULL) taken with the heater as

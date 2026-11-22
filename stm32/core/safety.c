@@ -108,16 +108,9 @@ static void on_detail(void *ctx, link_detail *out) {
 
 /* ---------------------------------------------------------------- the CO alarm */
 
-/* CO-1: the CO-fitted parameter alone says whether the sensor is there. A change (heater off only)
- * starts the alarm afresh: warm-up, heater check, the R0 from flash. */
-static void co_follow_params(safety *s) {
-  if (s->co.cfg.fitted == s->burn.p.co_fitted)
-    return;
-  co_config cfg = s->co.cfg;
-  cfg.fitted = s->burn.p.co_fitted ? 1u : 0u;
-  co_init(&s->co, &cfg);
-  co_load_r0(&s->co, s->co_r0_saved);
-}
+/* CO-1: the CO-fitted parameter alone says whether the sensor is there (a change, heater off only,
+ * starts the alarm afresh: co_set_fitted). */
+static void co_follow_params(safety *s) { co_set_fitted(&s->co, s->burn.p.co_fitted); }
 
 void safety_co_step(safety *s, uint32_t now, uint16_t adc, int16_t board_c10) {
   co_step(&s->co, now, adc, board_c10);
@@ -274,11 +267,11 @@ static int on_fault_reset(void *ctx) {
   int r = burn_fault_reset(&s->burn, &in);
   if (r == LINK_OK) {
     if (s->glow.fault != GLOW_FAULT_NONE)
-      glow_init(&s->glow, &s->glow.p, s->now);
+      glow_clear_fault(&s->glow); /* the heat budget stays as used (GLW-21) */
     if (s->fan.fault != FAN_FAULT_NONE)
-      fan_init(&s->fan, &s->fan.p, s->now);
+      fan_clear_fault(&s->fan, s->now);
     if (s->pump.fault != PUMP_FAULT_NONE)
-      pump_init(&s->pump, &s->pump.p);
+      pump_clear_fault(&s->pump);
     s->in.glow_fault = 0;
     s->in.fan_fault = 0;
     s->in.pump_fault = 0;
@@ -373,8 +366,8 @@ void safety_step(safety *s, uint32_t now, const burn_inputs *in) {
   if (link_deadman_expired(&s->deadman, now, burn_active(&s->burn)))
     burn_stop(&s->burn, BURN_WHY_DEADMAN, now); /* a full burn-off and cooldown, on its own */
   burn_step(&s->burn, now, &s->in);
-  if (s->burn.out.fan_reset) /* a stall the burn retries: the fan stage starts afresh */
-    fan_init(&s->fan, &s->fan.p, now);
+  if (s->burn.out.fan_reset) /* a stall the burn retries: the fan stage's stall goes */
+    fan_clear_fault(&s->fan, now);
 }
 
 const burn_outputs *safety_outputs(const safety *s) { return &s->burn.out; }

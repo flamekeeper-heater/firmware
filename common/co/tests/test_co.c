@@ -214,6 +214,32 @@ static void test_curve(void) {
   CHECK(co_rs_ohm(adc_for(1000000)) > 990000 && co_rs_ohm(adc_for(1000000)) < 1010000);
 }
 
+static void test_set_fitted(void) {
+  /* A learnt sensor set "not fitted": no heater, no state, its alarm dropped; fitted again: a new
+   * warm-up and heater check, with the R0 it had learnt (no learning again). */
+  sim s;
+  ok_sensor(&s);
+  uint32_t r0 = s.c.r0;
+  co_set_fitted(&s.c, 1); /* unchanged: nothing happens */
+  CHECK_EQ(s.c.state, CO_OK);
+  s.c.alarm = 1;
+  co_set_fitted(&s.c, 0);
+  CHECK_EQ(s.c.state, CO_NOT_FITTED);
+  CHECK_EQ(co_heater_on(&s.c), 0);
+  CHECK(!s.c.alarm && !s.c.cfg.fitted);
+  run(&s, MIN);
+  CHECK_EQ(s.c.state, CO_NOT_FITTED);
+  co_set_fitted(&s.c, 1);
+  CHECK_EQ(s.c.state, CO_WARMING_UP);
+  CHECK_EQ(co_heater_on(&s.c), 1);
+  CHECK_EQ(s.c.r0, r0);
+  CHECK_EQ(s.c.cfg.warmup_ms, 3u * MIN); /* the configuration is kept */
+  run(&s, 3 * MIN + 10 * SEC);
+  CHECK(s.c.checked);
+  run(&s, 2 * SEC);
+  CHECK_EQ(s.c.state, CO_OK);
+}
+
 int main(void) {
   test_not_fitted();
   test_start_up();
@@ -222,6 +248,7 @@ int main(void) {
   test_heater_check_fails();
   test_cold_and_r0();
   test_curve();
+  test_set_fitted();
   printf("co: %d checks, %d failures\n", checks, failures);
   return failures == 0 ? 0 : 1;
 }
