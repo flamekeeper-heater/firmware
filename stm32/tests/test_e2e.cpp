@@ -75,6 +75,7 @@ struct Bench : LinkTransport {
     in.fan_fault = 0;
     in.precheck = 0;
     in.pump_fault = 0;
+    in.board_c10 = 350;  // a cool board: no derate
     return in;
   }
   // ESP32 -> MCU: the MCU answers each complete request at once (well inside its 20 ms).

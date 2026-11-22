@@ -46,6 +46,15 @@ void burn_params_default(burn_params *p) {
   p->supply_high_cv = 3000;
   p->supply_fault_ms = 5000;
   p->precheck_max_ms = 2000;
+  p->derate_start_c10 = 850;
+  p->derate_full_c10 = 1000;
+  p->level1_fan_ma = 600;
+  p->level6_fan_ma = 1400;
+  p->level10_fan_ma = 2800;
+  p->board_stop_c10 = 1050;
+  p->board_stop_ms = 10000;
+  p->fuel_up_percent_s = 5;
+  p->air_down_percent_s = 5;
 }
 
 static uint32_t since(uint32_t now, uint32_t then) { return (uint32_t) (now - then); }
@@ -69,6 +78,33 @@ static uint16_t fan_for(const burn_params *p, uint8_t power) {
 
 static uint16_t pump_for(const burn_params *p, uint8_t power) {
   return lerp16(p->pump_min_cHz, p->pump_max_cHz, power, 100);
+}
+
+/* ---------------------------------------------------------------- board temperature */
+
+/* The fan current recorded at a power level (1..10), between the three recorded points. */
+static uint32_t level_fan_ma(const burn_params *p, uint32_t level) {
+  if (level <= 6)
+    return p->level1_fan_ma + (uint32_t) (p->level6_fan_ma - p->level1_fan_ma) * (level - 1u) / 5u;
+  return p->level6_fan_ma + (uint32_t) (p->level10_fan_ma - p->level6_fan_ma) * (level - 6u) / 4u;
+}
+
+uint8_t burn_power_cap(const burn *b, int16_t board_c10) {
+  const burn_params *p = &b->p;
+  if (board_c10 == BURN_UNKNOWN_TEMP || board_c10 <= p->derate_start_c10)
+    return 100;
+  uint32_t allowed = p->level1_fan_ma;
+  if (board_c10 < p->derate_full_c10)
+    allowed = p->level10_fan_ma - (uint32_t) (p->level10_fan_ma - p->level1_fan_ma) *
+                                      (uint32_t) (board_c10 - p->derate_start_c10) /
+                                      (uint32_t) (p->derate_full_c10 - p->derate_start_c10);
+  uint32_t level = 1;
+  for (uint32_t n = 10; n >= 1; n--)
+    if (level_fan_ma(p, n) <= allowed) {
+      level = n;
+      break;
+    }
+  return (uint8_t) ((level - 1u) * 100u / 9u);
 }
 
 /* ---------------------------------------------------------------- glow bookkeeping */
@@ -322,6 +358,18 @@ static void checks(burn *b, uint32_t now, const burn_inputs *in) {
     return;
   }
 
+  /* Board too hot even at the lowest power (FAN-4). */
+  if (in->board_c10 != BURN_UNKNOWN_TEMP && in->board_c10 >= p->board_stop_c10 && burn_active(b)) {
+    if (!b->board_hot)
+      b->board_hot = 1, b->board_hot_ms = now;
+    else if (since(now, b->board_hot_ms) >= p->board_stop_ms) {
+      fault_stop(b, BURN_FAULT_OVERHEAT, BURN_WHY_BOARD_HOT, now);
+      return;
+    }
+  } else {
+    b->board_hot = 0;
+  }
+
   /* Supply out of range for a while. */
   int bad = in->supply_cv < p->supply_low_cv || in->supply_cv > p->supply_high_cv;
   if (bad && !b->supply_bad)
@@ -430,7 +478,8 @@ static void sequence(burn *b, uint32_t now, const burn_inputs *in) {
 
     case BURN_STEP_WARM_UP: {
       uint32_t ramp = (uint32_t) p->warm_up_s * 1000u;
-      uint8_t target = in->hx_c10 >= p->overheat_derate_c10 ? 0 : b->power;
+      uint8_t cap = burn_power_cap(b, in->board_c10);
+      uint8_t target = in->hx_c10 >= p->overheat_derate_c10 ? 0 : (b->power < cap ? b->power : cap);
       o->fan_rpm = lerp16(p->fan_start_rpm, fan_for(p, target), in_step, ramp);
       o->pump_cHz = lerp16(p->pump_start_cHz, pump_for(p, target), in_step, ramp);
       b->running_power = (uint8_t) (in_step >= ramp ? target : (uint32_t) target * in_step / ramp);
@@ -439,16 +488,34 @@ static void sequence(burn *b, uint32_t now, const burn_inputs *in) {
         b->peak_c10 = in->hx_c10;
       if (in->hx_c10 < b->peak_c10 - p->flame_lost_c10)
         fault_stop(b, BURN_FAULT_FLAME_OUT, BURN_WHY_FLAME_LOST, now);
-      else if (in_step >= ramp)
+      else if (in_step >= ramp) {
+        b->fuel_mp = b->air_mp = (uint32_t) target * 1000u;
         enter(b, BURN_STEP_RUNNING, now);
+      }
       break;
     }
 
     case BURN_STEP_RUNNING: {
-      uint8_t power = in->hx_c10 >= p->overheat_derate_c10 ? 0 : b->power;
-      o->fan_rpm = fan_for(p, power);
-      o->pump_cHz = pump_for(p, power);
-      b->running_power = power;
+      uint8_t cap = burn_power_cap(b, in->board_c10);
+      uint8_t asked = b->power < cap ? b->power : cap;
+      uint32_t want = in->hx_c10 >= p->overheat_derate_c10 ? 0u : (uint32_t) asked * 1000u;
+      /* Fuel follows air (FAN-4): the pump falls at once and rises slowly; the fan rises at once
+       * and falls slowly; the fan is never below the fuel. */
+      uint32_t up = (uint32_t) p->fuel_up_percent_s * b->dt_ms;
+      uint32_t down = (uint32_t) p->air_down_percent_s * b->dt_ms;
+      if (want < b->fuel_mp)
+        b->fuel_mp = want;
+      else
+        b->fuel_mp = b->fuel_mp + up < want ? b->fuel_mp + up : want;
+      if (want > b->air_mp)
+        b->air_mp = want;
+      else
+        b->air_mp = b->air_mp > want + down ? b->air_mp - down : want;
+      if (b->air_mp < b->fuel_mp)
+        b->air_mp = b->fuel_mp;
+      o->fan_rpm = fan_for(p, (uint8_t) ((b->air_mp + 999u) / 1000u));
+      o->pump_cHz = pump_for(p, (uint8_t) (b->fuel_mp / 1000u));
+      b->running_power = (uint8_t) (b->fuel_mp / 1000u);
       if (in->hx_c10 > b->peak_c10)
         b->peak_c10 = in->hx_c10;
       if (in->hx_c10 < b->peak_c10 - p->flame_lost_c10)
@@ -474,9 +541,11 @@ static void sequence(burn *b, uint32_t now, const burn_inputs *in) {
       }
       break;
 
-    case BURN_STEP_FAN_ONLY:
-      o->fan_rpm = fan_for(p, b->power);
+    case BURN_STEP_FAN_ONLY: {
+      uint8_t cap = burn_power_cap(b, in->board_c10);
+      o->fan_rpm = fan_for(p, b->power < cap ? b->power : cap);
       break;
+    }
 
     case BURN_STEP_PRIMING:
       o->pump_cHz = p->pump_prime_cHz;
@@ -507,6 +576,7 @@ static void sequence(burn *b, uint32_t now, const burn_inputs *in) {
 void burn_step(burn *b, uint32_t now, const burn_inputs *in) {
   uint32_t dt = since(now, b->last_ms);
   b->last_ms = now;
+  b->dt_ms = dt;
   glow_buckets_advance(b, now);
   if (b->glow_on) {
     b->glow_attempt_ms += dt;

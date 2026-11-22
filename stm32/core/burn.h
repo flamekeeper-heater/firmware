@@ -81,6 +81,7 @@ enum {
   BURN_WHY_FAN_STAGE = 15,      /* the fan's switch stuck on, or the fan turning against its command */
   BURN_WHY_SELF_TEST = 16,      /* the pre-start self-test failed: the board needs looking at */
   BURN_WHY_PUMP_STAGE = 17,     /* overcurrent, current between strokes, open coil, high side */
+  BURN_WHY_BOARD_HOT = 18,      /* the board stayed too hot even at the lowest power */
 };
 
 typedef struct {
@@ -124,6 +125,17 @@ typedef struct {
   uint16_t supply_low_cv, supply_high_cv; /* 0.01 V */
   uint16_t supply_fault_ms;    /* outside the range this long: fault */
   uint16_t precheck_max_ms;    /* the pre-start self-test must be done within this */
+
+  /* Board too hot (FAN-4): the fan is held down to a lower level and the fuel follows it. The
+   * board thermistor sets the fan current allowed, from the top level's at derate_start down to
+   * the lowest's at derate_full; the run is capped at the highest level whose recorded fan current
+   * fits (levels 1..10 = power 0..100 %). PROVISIONAL. */
+  int16_t derate_start_c10, derate_full_c10;
+  uint16_t level1_fan_ma, level6_fan_ma, level10_fan_ma; /* the recorded fan currents */
+  int16_t board_stop_c10;      /* even at the lowest power, this hot this long: stop */
+  uint16_t board_stop_ms;
+  /* Fuel follows air: the pump falls at once and rises this slowly, the fan the other way round. */
+  uint8_t fuel_up_percent_s, air_down_percent_s;
 } burn_params;
 
 void burn_params_default(burn_params *p);
@@ -139,6 +151,7 @@ typedef struct {
   uint8_t fan_fault;       /* the fan stage's fault (fan.h FAN_FAULT_*), 0 none */
   uint8_t precheck;        /* the pre-start self-test: BURN_PRECHECK_* */
   uint8_t pump_fault;      /* the pump stage's fault (pump.h PUMP_FAULT_*), 0 none */
+  int16_t board_c10;       /* BOARD_NTC near the power stage, 0.1 C, or BURN_UNKNOWN_TEMP */
 } burn_inputs;
 
 enum {
@@ -179,7 +192,11 @@ typedef struct {
   uint8_t glow_bucket_i;
   uint32_t fan_on_ms;      /* when the fan was last asked to turn from standstill */
   uint32_t last_ms;
+  uint32_t dt_ms;          /* this pass's step */
   uint8_t glow_on;
+  uint32_t fuel_mp, air_mp; /* running: the pump's and the fan's power, milli-percent */
+  uint8_t board_hot;
+  uint32_t board_hot_ms;
   burn_outputs out;
 } burn;
 
@@ -197,6 +214,8 @@ int burn_fault_reset(burn *b, const burn_inputs *in);
 void burn_step(burn *b, uint32_t now, const burn_inputs *in);
 
 uint8_t burn_state(const burn *b);
+/* The power cap the board's temperature allows now, % (100: no derate). */
+uint8_t burn_power_cap(const burn *b, int16_t board_c10);
 /* Seconds of priming left (0 when not priming). */
 uint16_t burn_prime_left_s(const burn *b, uint32_t now);
 /* Glow seconds counted in the last 10 minutes. */

@@ -116,6 +116,11 @@ off -> fan only -> off          off -> pre-check -> priming -> off
 - Overheat (firmware limit or the hardware latch), CO, an open sensor or the supply out of range
   end the run with a fault. The latch and CO faults need a fault reset once their cause is gone.
 - After a reset with a hot heat exchanger, it cools down first; nothing restarts by itself.
+- Fuel follows air: the pump falls at once and rises slowly, the fan rises at once and falls
+  slowly, so the fuel never outruns the air.
+- A hot board (its thermistor above 85 C) holds the fan back: the allowed fan current falls with
+  the temperature, and the run is capped at the highest power level whose fan current fits. Still
+  too hot at the lowest level, it stops.
 
 Every timing and limit is a named parameter (`burn_params`). The defaults are provisional until
 they are tuned on a real heater.

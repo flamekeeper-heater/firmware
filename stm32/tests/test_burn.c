@@ -36,6 +36,8 @@ typedef struct {
   uint32_t now;
   uint8_t latch, co, glow_fault, fan_fault, pump_fault;
   uint8_t precheck; /* what the pre-start self-test reports (passes by default) */
+  int16_t board_c10; /* the board thermistor */
+  int air_below_fuel; /* passes where the fan's level fell below the fuel's */
   /* What the run did. */
   uint32_t glow_ms, glow_no_air_ms, pump_ms, max_glow_attempt_ms;
   uint8_t max_step_seen;
@@ -52,6 +54,7 @@ static burn_inputs inputs(const rig *r) {
   in.fan_fault = r->fan_fault;
   in.precheck = r->precheck;
   in.pump_fault = r->pump_fault;
+  in.board_c10 = r->board_c10;
   return in;
 }
 
@@ -60,6 +63,7 @@ static void rig_init(rig *r, uint32_t start, double ambient_c) {
   heater_model_init(&r->m, ambient_c);
   r->now = start;
   r->precheck = BURN_PRECHECK_PASSED;
+  r->board_c10 = 400;
   burn_params p;
   burn_params_default(&p);
   burn_inputs in = inputs(r);
@@ -83,6 +87,8 @@ static void tick(rig *r) {
   burn_step(&r->b, r->now, &in);
   if (r->b.step > r->max_step_seen)
     r->max_step_seen = r->b.step;
+  if (r->b.step == BURN_STEP_RUNNING && r->b.air_mp < r->b.fuel_mp)
+    r->air_below_fuel++;
 }
 
 static void run(rig *r, uint32_t ms) {
@@ -131,11 +137,23 @@ static void test_full_cycle(uint32_t t0) {
   CHECK_EQ(r.b.running_power, 50);
   CHECK(r.m.hx_c10 > 900 && r.m.hx_c10 < 2400);
 
-  /* Power changes follow at once. */
+  /* More power: the fan first, at once; the fuel follows over seconds. */
   burn_set_power(&r.b, 100);
   run(&r, 1 * SEC);
-  CHECK_EQ(r.b.out.pump_cHz, r.b.p.pump_max_cHz);
   CHECK_EQ(r.b.out.fan_rpm, r.b.p.fan_max_rpm);
+  CHECK(r.b.out.pump_cHz < r.b.p.pump_max_cHz);
+  run(&r, 10 * SEC);
+  CHECK_EQ(r.b.out.pump_cHz, r.b.p.pump_max_cHz);
+  /* Less power: the fuel first, at once; the fan follows. */
+  burn_set_power(&r.b, 20);
+  run(&r, TICK);
+  CHECK_EQ(r.b.running_power, 20);
+  CHECK(r.b.out.fan_rpm > 1800 + (4500 - 1800) * 20 / 100);
+  run(&r, 20 * SEC);
+  CHECK_EQ(r.b.out.fan_rpm, 1800 + (4500 - 1800) * 20 / 100);
+  CHECK_EQ(r.air_below_fuel, 0);
+  burn_set_power(&r.b, 100);
+  run(&r, 15 * SEC);
 
   /* A second start while it runs is not a start. */
   CHECK_EQ(start(&r, HEAT, 30), 0x20);
@@ -210,14 +228,32 @@ static void test_flame_out(void) {
   CHECK_EQ(r.b.fault, BURN_FAULT_FLAME_OUT);
 }
 
+static void test_overheat_derate_holds(void) {
+  /* A heater that runs too hot at full power: the derate holds it near 245 C, short of the stop. */
+  rig r;
+  rig_init(&r, 0, 30);
+  r.m.heat_gain = 0.06;
+  CHECK_EQ(start(&r, HEAT, 100), 0);
+  CHECK(run_until_step(&r, BURN_STEP_RUNNING, 5 * MIN));
+  double peak = 0;
+  for (int i = 0; i < 20000; i++) {
+    tick(&r);
+    if (r.m.hx_c10 > peak)
+      peak = r.m.hx_c10;
+  }
+  CHECK_EQ(r.b.step, BURN_STEP_RUNNING);
+  CHECK(peak < 2550);
+  CHECK_EQ(r.air_below_fuel, 0);
+}
+
 static void test_overheat_limit(void) {
   rig r;
   rig_init(&r, 0, 30);
-  r.m.heat_gain = 0.06; /* a heater that runs far too hot */
+  r.m.heat_gain = 0.12; /* a heater that overheats even at the lowest fuel with full air */
   CHECK_EQ(start(&r, HEAT, 100), 0);
   CHECK(run_until_step(&r, BURN_STEP_RUNNING, 5 * MIN));
   int derated = 0;
-  for (int i = 0; i < 6000 && r.b.step == BURN_STEP_RUNNING; i++) {
+  for (int i = 0; i < 30000 && r.b.step == BURN_STEP_RUNNING; i++) {
     tick(&r);
     if (r.m.hx_c10 >= 2450 && r.b.step == BURN_STEP_RUNNING && r.b.out.pump_cHz == r.b.p.pump_min_cHz)
       derated = 1;
@@ -364,6 +400,57 @@ static void test_pump_stage_fault(void) {
   CHECK_EQ(start(&r, HEAT, 50), 0x2F); /* latched until a reset */
 }
 
+static void test_board_derate(void) {
+  rig r;
+  rig_init(&r, 0, 10);
+  /* The cap: no derate up to 85 C; then the highest level whose fan current fits. */
+  CHECK_EQ(burn_power_cap(&r.b, 850), 100);
+  CHECK_EQ(burn_power_cap(&r.b, BURN_UNKNOWN_TEMP), 100);
+  CHECK_EQ(burn_power_cap(&r.b, 900), 66);  /* 2.07 A allowed: level 7 (1.75 A) fits, 8 (2.1) not */
+  CHECK_EQ(burn_power_cap(&r.b, 950), 44);  /* 1.33 A: level 5 (1.24 A) */
+  CHECK_EQ(burn_power_cap(&r.b, 1000), 0);  /* the lowest level */
+  CHECK_EQ(burn_power_cap(&r.b, 1200), 0);
+
+  CHECK_EQ(start(&r, HEAT, 100), 0);
+  CHECK(run_until_step(&r, BURN_STEP_RUNNING, 5 * MIN));
+  run(&r, 20 * SEC);
+  CHECK_EQ(r.b.running_power, 100);
+  r.board_c10 = 900;
+  run(&r, TICK);
+  CHECK_EQ(r.b.running_power, 66); /* the fuel steps down at once */
+  CHECK(r.b.out.fan_rpm > 1800 + (4500 - 1800) * 66 / 100); /* the air follows */
+  run(&r, 15 * SEC);
+  CHECK_EQ(r.b.out.fan_rpm, 1800 + (4500 - 1800) * 66 / 100);
+  r.board_c10 = 600; /* cooled again: back up, air first */
+  run(&r, 30 * SEC);
+  CHECK_EQ(r.b.running_power, 100);
+  CHECK_EQ(r.air_below_fuel, 0);
+
+  /* Fan only is held down the same way. */
+  rig r2;
+  rig_init(&r2, 0, 10);
+  r2.board_c10 = 950;
+  CHECK_EQ(start(&r2, FAN, 100), 0);
+  run(&r2, TICK);
+  CHECK_EQ(r2.b.out.fan_rpm, 1800 + (4500 - 1800) * 44 / 100);
+}
+
+static void test_board_too_hot(void) {
+  rig r;
+  rig_init(&r, 0, 10);
+  CHECK_EQ(start(&r, HEAT, 60), 0);
+  CHECK(run_until_step(&r, BURN_STEP_RUNNING, 5 * MIN));
+  r.board_c10 = 1060;
+  run(&r, 9 * SEC);
+  CHECK_EQ(r.b.step, BURN_STEP_RUNNING); /* at the lowest power, for a while */
+  CHECK_EQ(r.b.running_power, 0);
+  run(&r, 2 * SEC);
+  CHECK_EQ(r.b.step, BURN_STEP_BURN_OFF);
+  CHECK_EQ(r.b.fault, BURN_FAULT_OVERHEAT);
+  CHECK_EQ(r.b.why, BURN_WHY_BOARD_HOT);
+  CHECK(run_until_step(&r, BURN_STEP_OFF, 25 * MIN)); /* the cooldown keeps its full fan */
+}
+
 static void test_fan_stall(void) {
   rig r;
   rig_init(&r, 0, 10);
@@ -493,6 +580,7 @@ int main(void) {
   test_glow_needs_airflow();
   test_no_ignition();
   test_flame_out();
+  test_overheat_derate_holds();
   test_overheat_limit();
   test_overheat_latch();
   test_co_alarm();
@@ -500,6 +588,8 @@ int main(void) {
   test_fan_stage_faults();
   test_precheck();
   test_pump_stage_fault();
+  test_board_derate();
+  test_board_too_hot();
   test_fan_stall();
   test_sensor_open();
   test_reset_while_hot();
