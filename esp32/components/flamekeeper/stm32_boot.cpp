@@ -45,35 +45,37 @@ void Stm32Boot::address_(uint32_t address) {
   this->add_(SEND_ACK, 5, ACK_MS);
 }
 
-void Stm32Boot::sync(uint32_t now) {
-  (void) now;
+// The byte count less one, the bytes, and the XOR of all of them, ACKed.
+void Stm32Boot::data_block_(const uint8_t *data, uint16_t len) {
+  uint8_t x = uint8_t(len - 1);
+  this->tx_[this->tx_len_++] = x;
+  for (uint16_t i = 0; i < len; i++) {
+    this->tx_[this->tx_len_++] = data[i];
+    x ^= data[i];
+  }
+  this->tx_[this->tx_len_++] = x;
+  this->add_(SEND_ACK, uint16_t(len + 2), ACK_MS);
+}
+
+// A command whose reply is a count, that many bytes plus one, and an ACK (Get, Get ID).
+void Stm32Boot::counted_(uint8_t code) {
+  this->begin_();
+  this->command_(code);
+  this->add_(RECV_COUNTED, 0, ACK_MS);
+  this->add_(RECV_ACK, 0, ACK_MS);
+}
+
+void Stm32Boot::sync() {
   this->begin_();
   this->tx_[this->tx_len_++] = SYNC;
   this->add_(SEND_SYNC, 1, SYNC_MS);
 }
 
-void Stm32Boot::get(uint32_t now) {
-  (void) now;
-  this->begin_();
-  this->command_(0x00);
-  this->add_(RECV_COUNTED, 0, ACK_MS);
-  this->add_(RECV_ACK, 0, ACK_MS);
-}
-
-void Stm32Boot::get_id(uint32_t now) {
-  (void) now;
-  this->begin_();
-  this->command_(0x02);
-  this->add_(RECV_COUNTED, 0, ACK_MS);
-  this->add_(RECV_ACK, 0, ACK_MS);
-}
-
-void Stm32Boot::read(uint32_t address, uint16_t len, uint32_t now) {
-  (void) now;
+void Stm32Boot::read(uint32_t address, uint16_t len) {
   if (len == 0 || len > BLOCK)
     len = len == 0 ? 1 : BLOCK;
   this->begin_();
-  this->command_(0x11);
+  this->command_(READ);
   this->address_(address);
   this->tx_[this->tx_len_++] = uint8_t(len - 1);
   this->tx_[this->tx_len_++] = uint8_t(~(len - 1));
@@ -81,54 +83,37 @@ void Stm32Boot::read(uint32_t address, uint16_t len, uint32_t now) {
   this->add_(RECV, len, ACK_MS);
 }
 
-bool Stm32Boot::write(uint32_t address, const uint8_t *data, uint16_t len, uint32_t now) {
-  (void) now;
+bool Stm32Boot::write(uint32_t address, const uint8_t *data, uint16_t len) {
   // The application's flash only, in whole double words (the G030 programs 64 bits at a time).
   if (len == 0 || len > BLOCK || (len & 7) != 0 || (address & 7) != 0)
     return false;
   if (address < g030::FLASH_BASE || address >= g030::APP_END || len > g030::APP_END - address)
     return false;
   this->begin_();
-  this->command_(0x31);
+  this->command_(WRITE);
   this->address_(address);
-  uint8_t x = uint8_t(len - 1);
-  this->tx_[this->tx_len_++] = x;
-  for (uint16_t i = 0; i < len; i++) {
-    this->tx_[this->tx_len_++] = data[i];
-    x ^= data[i];
-  }
-  this->tx_[this->tx_len_++] = x;
-  this->add_(SEND_ACK, uint16_t(len + 2), ACK_MS);
+  this->data_block_(data, len);
   return true;
 }
 
-bool Stm32Boot::write_options(const uint8_t *data, uint16_t len, uint32_t now) {
-  (void) now;
+bool Stm32Boot::write_options(const uint8_t *data, uint16_t len) {
   if (len != g030::OPTION_SIZE)
     return false;
   this->begin_();
-  this->command_(0x31);
+  this->command_(WRITE);
   this->address_(g030::OPTION_BASE);
-  uint8_t x = uint8_t(len - 1);
-  this->tx_[this->tx_len_++] = x;
-  for (uint16_t i = 0; i < len; i++) {
-    this->tx_[this->tx_len_++] = data[i];
-    x ^= data[i];
-  }
-  this->tx_[this->tx_len_++] = x;
-  this->add_(SEND_ACK, uint16_t(len + 2), ACK_MS);
+  this->data_block_(data, len);
   return true;
 }
 
-bool Stm32Boot::erase(const uint16_t *pages, uint8_t count, uint32_t now) {
-  (void) now;
+bool Stm32Boot::erase(const uint16_t *pages, uint8_t count) {
   if (count == 0 || count > g030::APP_PAGES)
     return false;
   for (uint8_t i = 0; i < count; i++)
     if (pages[i] >= g030::APP_PAGES)
       return false;  // pages 30 and 31 are never erased here
   this->begin_();
-  this->command_(0x44);
+  this->command_(EXT_ERASE);
   // The page count less one, then the pages, each high byte first, then the XOR of all of them.
   // (Counts from 0xFFF0 up are the special erases: never sent.)
   const uint16_t start = this->tx_len_;
@@ -146,10 +131,9 @@ bool Stm32Boot::erase(const uint16_t *pages, uint8_t count, uint32_t now) {
   return true;
 }
 
-void Stm32Boot::go(uint32_t address, uint32_t now) {
-  (void) now;
+void Stm32Boot::go(uint32_t address) {
   this->begin_();
-  this->command_(0x21);
+  this->command_(GO);
   this->address_(address);
 }
 
@@ -169,7 +153,7 @@ Stm32Boot::Status Stm32Boot::poll(uint32_t now) {
         this->port_->send(this->tx_ + s.off, s.len);
       this->sent_ = true;
       this->since_ = now;
-      this->counted_ = false;
+      this->have_count_ = false;
       this->want_ = 0;
     }
     const int c = this->port_->read();
@@ -195,8 +179,8 @@ Stm32Boot::Status Stm32Boot::poll(uint32_t now) {
         next = true;
         break;
       case RECV_COUNTED:
-        if (!this->counted_) {
-          this->counted_ = true;
+        if (!this->have_count_) {
+          this->have_count_ = true;
           this->want_ = uint16_t(c + 1);  // the count is the bytes that follow, less one
           break;
         }

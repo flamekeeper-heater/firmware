@@ -80,10 +80,10 @@ safety_link:
   reset_pin: GPIO23   # STM_NRST, driven open drain
   boot_pin: GPIO14    # STM_BOOT
   # The safety MCU firmware this build installs ("Update heater firmware"); build it first with
-  # stm32/build.sh. The version is the one its HELLO reports.
+  # stm32/build.sh. The version its HELLO reports comes from stm32/core/safety.h, or from a
+  # "version: major.minor.patch" here.
   # mcu_firmware:
   #   file: ../stm32/build/safety.bin
-  #   version: 0.1.0
 
 flamekeeper:
   # The label PIN comes from the board key production burns into eFuse key block 5 (purpose

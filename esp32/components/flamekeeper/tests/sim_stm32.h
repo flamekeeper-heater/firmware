@@ -24,14 +24,22 @@
 #include <utility>
 #include <vector>
 
+#include "../bytes.h"
 #include "../link.h"
 #include "../stm32_boot.h"
 
-struct SimStm32 : public esphome::flamekeeper::BootPort {
-  static const uint32_t FLASH_SIZE = 64 * 1024;
-  static const uint32_t FLASH_BASE = 0x08000000;
-  static const uint32_t PAGE = 2048;
-  static const uint32_t OPT_BASE = 0x1FFF7800;
+namespace fk = esphome::flamekeeper;
+
+struct SimStm32 : public fk::BootPort {
+  using Boot = fk::Stm32Boot;
+  // The memory map (g030_map.h); the flash, option-byte and boot behaviour below are this file's own.
+  static const uint32_t FLASH_BASE = G030_FLASH_BASE;
+  static const uint32_t PAGE = G030_PAGE_SIZE;
+  static const uint32_t FLASH_SIZE = G030_PAGES * PAGE;
+  static const uint32_t SAVED_PAGE = G030_SAVED_PAGE;  // pages 30 and 31
+  static const uint32_t RAM_BASE = G030_RAM_BASE;
+  static const uint32_t RAM_END = G030_RAM_END;
+  static const uint32_t OPT_BASE = G030_OPTION_BASE;
   static const uint32_t OPT_SIZE = 128;
   static const uint32_t FACTORY_OPTR = 0xDFFFE1AAu;  // WDG-15
   static const uint32_t ERASE_MS = 25;  // per page
@@ -45,7 +53,7 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
   uint32_t optr = FACTORY_OPTR;  // FLASH_OPTR as loaded
   bool optverr = false;
   bool empty = true;  // the EMPTY flag, from the last option load
-  uint16_t pid = 0x466;
+  uint16_t pid = G030_CHIP_ID;
   bool powered = true;
   Mode mode = RESET;
 
@@ -88,25 +96,25 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
 
   void set_optr(uint32_t value) {
     std::memset(this->opt, 0xFF, sizeof(this->opt));
-    put_le(this->opt, value);
-    put_le(this->opt + 4, ~value);
+    fk::put_u32(this->opt, value);
+    fk::put_u32(this->opt + 4, ~value);
     for (uint32_t i = 8; i < OPT_SIZE; i += 8) {  // the other option words, at their reset values
-      put_le(this->opt + i, 0x000000FFu);
-      put_le(this->opt + i + 4, ~0x000000FFu);
+      fk::put_u32(this->opt + i, 0x000000FFu);
+      fk::put_u32(this->opt + i + 4, ~0x000000FFu);
     }
     this->option_load();
   }
   // An application of the given version, size bytes (the vector table and the version at 0x100).
   void program_app(const std::vector<uint8_t> &image) {
-    for (uint32_t i = 0; i < 30 * PAGE; i++)
+    for (uint32_t i = 0; i < SAVED_PAGE * PAGE; i++)
       this->flash[i] = i < image.size() ? image[i] : 0xFF;
   }
   void fill_saved_pages() {
-    for (uint32_t i = 30 * PAGE; i < FLASH_SIZE; i++)
+    for (uint32_t i = SAVED_PAGE * PAGE; i < FLASH_SIZE; i++)
       this->flash[i] = uint8_t(0xA5 ^ i);
   }
   bool saved_pages_intact() const {
-    for (uint32_t i = 30 * PAGE; i < FLASH_SIZE; i++)
+    for (uint32_t i = SAVED_PAGE * PAGE; i < FLASH_SIZE; i++)
       if (this->flash[i] != uint8_t(0xA5 ^ i))
         return false;
     return true;
@@ -184,22 +192,12 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
 
   // ---------------------------------------------------------------- the chip
 
-  static void put_le(uint8_t *p, uint32_t v) {
-    p[0] = uint8_t(v);
-    p[1] = uint8_t(v >> 8);
-    p[2] = uint8_t(v >> 16);
-    p[3] = uint8_t(v >> 24);
-  }
-  static uint32_t get_le(const uint8_t *p) {
-    return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;
-  }
-
   // WDG-7: a word whose complement does not match loads every USR bit as 1 and RDP as level 1.
   void option_load() {
-    uint32_t v = get_le(this->opt), c = get_le(this->opt + 4);
+    uint32_t v = fk::get_u32(this->opt), c = fk::get_u32(this->opt + 4);
     this->optverr = v != ~c;
     this->optr = this->optverr ? 0xFFFFFFFFu : v;
-    this->empty = get_le(this->flash) == 0xFFFFFFFFu;
+    this->empty = fk::get_u32(this->flash) == 0xFFFFFFFFu;
   }
   bool rdp_level0() const { return (this->optr & 0xFF) == 0xAA; }
 
@@ -227,8 +225,8 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
   }
   void start_app(uint32_t address) {
     uint32_t off = address - FLASH_BASE;
-    uint32_t sp = get_le(this->flash + off), pc = get_le(this->flash + off + 4);
-    bool ok = sp > 0x20000000u && sp <= 0x20002000u && (pc & 1) && pc > address && pc < FLASH_BASE + FLASH_SIZE;
+    uint32_t sp = fk::get_u32(this->flash + off), pc = fk::get_u32(this->flash + off + 4);
+    bool ok = sp > RAM_BASE && sp <= RAM_END && (pc & 1) && pc > address && pc < FLASH_BASE + FLASH_SIZE;
     this->mode = ok ? APP : LOCKUP;
   }
 
@@ -258,7 +256,7 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
     this->delayed.push_back(b);
   }
   void nack() {
-    this->emit(0x1F);
+    this->emit(Boot::NACK);
     this->idle();
   }
   void idle() {
@@ -273,7 +271,7 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
   }
   bool readable(uint32_t a, uint32_t n) const {
     return (a >= FLASH_BASE && a + n <= FLASH_BASE + FLASH_SIZE) || (a >= OPT_BASE && a + n <= OPT_BASE + OPT_SIZE) ||
-           (a >= 0x20000000u && a + n <= 0x20002000u) || (a >= 0x1FFF0000u && a + n <= 0x1FFF2000u);
+           (a >= RAM_BASE && a + n <= RAM_END) || (a >= 0x1FFF0000u && a + n <= 0x1FFF2000u);
   }
 
   void boot_rx(uint8_t b) {
@@ -282,9 +280,9 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
     if (++this->in_count == this->drop_in_at)
       return;
     if (!this->synced) {
-      if (b == 0x7F) {
+      if (b == Boot::SYNC) {
         this->synced = true;
-        this->emit(0x79);
+        this->emit(Boot::ACK);
       }
       return;  // anything else before the sync: ignored
     }
@@ -307,22 +305,23 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
           return;
         }
         switch (this->cmd) {
-          case 0x00:  // Get
-            this->reply({0x79, 11, 0x53, 0x00, 0x01, 0x02, 0x11, 0x21, 0x31, 0x44, 0x63, 0x73, 0x82, 0x92, 0x79});
+          case Boot::GET:  // the version, then the commands it takes
+            this->reply({Boot::ACK, 11, 0x53, Boot::GET, 0x01, Boot::GET_ID, Boot::READ, Boot::GO, Boot::WRITE,
+                         Boot::EXT_ERASE, 0x63, 0x73, 0x82, 0x92, Boot::ACK});
             return this->idle();
-          case 0x02:  // Get ID
-            this->reply({0x79, 0x01, uint8_t(this->pid >> 8), uint8_t(this->pid), 0x79});
+          case Boot::GET_ID:
+            this->reply({Boot::ACK, 0x01, uint8_t(this->pid >> 8), uint8_t(this->pid), Boot::ACK});
             return this->idle();
-          case 0x11:
-          case 0x31:
-          case 0x44:
+          case Boot::READ:
+          case Boot::WRITE:
+          case Boot::EXT_ERASE:
             if (!this->rdp_level0())
               return this->nack();
-            this->emit(0x79);
+            this->emit(Boot::ACK);
             this->stage = 1;
             return;
-          case 0x21:
-            this->emit(0x79);
+          case Boot::GO:
+            this->emit(Boot::ACK);
             this->stage = 1;
             return;
           default:
@@ -330,7 +329,7 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
         }
       }
       case 1:
-        if (this->cmd == 0x44) {  // the page count, then the pages or a special erase
+        if (this->cmd == Boot::EXT_ERASE) {  // the page count, then the pages or a special erase
           if (v.size() < 2)
             return;
           this->stage = 2;
@@ -342,26 +341,26 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
           return this->nack();
         this->address = uint32_t(v[0]) << 24 | uint32_t(v[1]) << 16 | uint32_t(v[2]) << 8 | v[3];
         this->in.clear();
-        if (this->cmd == 0x21)
+        if (this->cmd == Boot::GO)
           return this->go();
-        if (!this->readable(this->address, 1) || (this->cmd == 0x31 && (this->address & 3)))
+        if (!this->readable(this->address, 1) || (this->cmd == Boot::WRITE && (this->address & 3)))
           return this->nack();
-        this->emit(0x79);
+        this->emit(Boot::ACK);
         this->stage = 2;
         return;
       case 2:
-        if (this->cmd == 0x11) {
+        if (this->cmd == Boot::READ) {
           if (v.size() < 2)
             return;
           if (uint8_t(v[0] ^ v[1]) != 0xFF || !this->readable(this->address, uint32_t(v[0]) + 1))
             return this->nack();
           const uint32_t n = uint32_t(v[0]) + 1;
-          this->emit(0x79);
+          this->emit(Boot::ACK);
           for (uint32_t i = 0; i < n; i++)
             this->emit(this->peek(this->address + i));
           return this->idle();
         }
-        if (this->cmd == 0x31) {
+        if (this->cmd == Boot::WRITE) {
           if (v.empty() || v.size() < size_t(v[0]) + 3)
             return;
           if (xor_of(v.data(), v.size() - 1) != v.back())
@@ -369,7 +368,7 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
           const std::vector<uint8_t> data(v.begin() + 1, v.end() - 1);
           return this->write(uint32_t(data.size()), data.data());
         }
-        // 0x44
+        // Extended Erase
         {
           const uint16_t n = uint16_t(v[0] << 8 | v[1]);
           if (n >= 0xFFF0) {  // mass or bank erase: the count, then a checksum
@@ -379,7 +378,7 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
               return this->nack();
             std::memset(this->flash, 0xFF, sizeof(this->flash));
             this->mass_erased = this->saved_touched = true;
-            this->later(ERASE_MS * 32, 0x79);
+            this->later(ERASE_MS * 32, Boot::ACK);
             return this->idle();
           }
           const size_t need = 2 + 2 * (size_t(n) + 1) + 1;
@@ -396,11 +395,11 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
             uint16_t page = uint16_t(v[2 + 2 * i] << 8 | v[3 + 2 * i]);
             std::memset(this->flash + page * PAGE, 0xFF, PAGE);
             this->erase_log.push_back(page);
-            if (page >= 30)
+            if (page >= SAVED_PAGE)
               this->saved_touched = true;
             this->erases++;
           }
-          this->later(ERASE_MS * (n + 1u), 0x79);
+          this->later(ERASE_MS * (n + 1u), Boot::ACK);
           return this->idle();
         }
       default:
@@ -428,12 +427,12 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
         std::memset(this->opt, 0xFF, OPT_SIZE);
         std::memcpy(this->opt, data, n);
       }
-      this->later(WRITE_MS, 0x79);
+      this->later(WRITE_MS, Boot::ACK);
       this->reset_after_reply = true;
       return;
     }
-    if (a >= 0x20000000u) {  // RAM
-      this->emit(0x79);
+    if (a >= RAM_BASE) {  // RAM
+      this->emit(Boot::ACK);
       return;
     }
     if (a < FLASH_BASE || a + n > FLASH_BASE + FLASH_SIZE || (a & 7) || (n & 7))
@@ -449,20 +448,20 @@ struct SimStm32 : public esphome::flamekeeper::BootPort {
       done = n / 2;
     std::memcpy(this->flash + off, data, done);
     this->write_log.push_back(a);
-    if ((off / PAGE) >= 30)
+    if ((off / PAGE) >= SAVED_PAGE)
       this->saved_touched = true;
     this->writes++;
     if (this->write_count == this->power_loss_write_at)
       return this->power_off();
     if (this->write_count == this->corrupt_write_at || int(off / PAGE) == this->bad_page)
       this->flash[off + n / 2] ^= 0x10;
-    this->later(WRITE_MS, 0x79);
+    this->later(WRITE_MS, Boot::ACK);
   }
 
   void go() {
     if (this->go_nack || !(this->address >= FLASH_BASE && this->address < FLASH_BASE + FLASH_SIZE))
       return this->nack();
-    this->emit(0x79);
+    this->emit(Boot::ACK);
     this->gos++;
     this->idle();
     this->synced = false;

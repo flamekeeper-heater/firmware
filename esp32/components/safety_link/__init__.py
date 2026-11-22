@@ -4,6 +4,9 @@
 With reset_pin and boot_pin (STM_NRST, STM_BOOT) and the safety MCU's image (mcu_firmware), the
 board can update the safety MCU through its ROM bootloader ("Update heater firmware")."""
 
+from pathlib import Path
+import re
+
 from esphome import pins
 import esphome.codegen as cg
 import esphome.config_validation as cv
@@ -21,6 +24,9 @@ CONF_MCU_FIRMWARE = "mcu_firmware"
 # The STM32G030K8's application flash: pages 30 and 31 hold its saved data.
 APP_SIZE = 30 * 2048
 
+# The safety MCU firmware's version, as its HELLO reports it, from this repository's source.
+SAFETY_H = Path(__file__).resolve().parents[3] / "stm32" / "core" / "safety.h"
+
 safety_link_ns = cg.esphome_ns.namespace("safety_link")
 SafetyLink = safety_link_ns.class_("SafetyLink", cg.Component, uart.UARTDevice, Heater)
 
@@ -33,13 +39,38 @@ def _version(value):
     return value
 
 
-MCU_FIRMWARE_SCHEMA = cv.Schema(
-    {
-        # build/safety.bin from stm32/build.sh, and the version its HELLO reports.
-        cv.Required(CONF_FILE): cv.file_,
-        cv.Required(CONF_VERSION): _version,
-        cv.GenerateID(CONF_RAW_DATA_ID): cv.declare_id(cg.uint8),
-    }
+def _source_version():
+    try:
+        text = SAFETY_H.read_text(encoding="utf-8")
+    except OSError as err:
+        raise cv.Invalid(f"no version given, and stm32/core/safety.h cannot be read ({err})") from err
+    parts = []
+    for name in ("MAJOR", "MINOR", "PATCH"):
+        m = re.search(rf"^#define SAFETY_VERSION_{name}\s+(\d+)\s*$", text, re.MULTILINE)
+        if m is None:
+            raise cv.Invalid(f"no version given, and stm32/core/safety.h has no SAFETY_VERSION_{name}")
+        parts.append(m.group(1))
+    return _version(".".join(parts))
+
+
+def _default_version(config):
+    if CONF_VERSION not in config:
+        config = config.copy()
+        config[CONF_VERSION] = _source_version()
+    return config
+
+
+MCU_FIRMWARE_SCHEMA = cv.All(
+    cv.Schema(
+        {
+            # build/safety.bin from stm32/build.sh, and the version its HELLO reports (by default
+            # SAFETY_VERSION_* in stm32/core/safety.h, the source it was built from).
+            cv.Required(CONF_FILE): cv.file_,
+            cv.Optional(CONF_VERSION): _version,
+            cv.GenerateID(CONF_RAW_DATA_ID): cv.declare_id(cg.uint8),
+        }
+    ),
+    _default_version,
 )
 
 CONFIG_SCHEMA = cv.All(

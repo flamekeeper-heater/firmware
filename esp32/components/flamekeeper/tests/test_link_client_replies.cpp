@@ -8,16 +8,7 @@
 #include <string>
 
 #include "../link_client.h"
-
-static int checks = 0, failures = 0;
-#define CHECK(c)                                               \
-  do {                                                         \
-    checks++;                                                  \
-    if (!(c)) {                                                \
-      failures++;                                              \
-      std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); \
-    }                                                          \
-  } while (0)
+#include "check.h"
 
 using esphome::flamekeeper::LinkClient;
 using esphome::flamekeeper::LinkTransport;
@@ -93,6 +84,5 @@ static void test_help_total_below_offset() {
 
 int main() {
   test_help_total_below_offset();
-  std::printf("link client replies: %d checks, %d failures\n", checks, failures);
-  return failures ? 1 : 0;
+  return report("link client replies");
 }
