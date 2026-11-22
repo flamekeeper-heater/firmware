@@ -12,38 +12,31 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "g030_map.h"
 #include "link_client.h"
 
 namespace esphome {
 namespace flamekeeper {
 
-// The STM32G030K8 as its ROM bootloader sees it (stm32/hal/stm32g030k8.ld).
+// The STM32G030K8 as its ROM bootloader sees it (g030_map.h, shared with the safety MCU).
 namespace g030 {
-static const uint16_t CHIP_ID = 0x466;  // Get ID (product id)
-static const uint32_t FLASH_BASE = 0x08000000;
-static const uint32_t PAGE_SIZE = 2048;
-static const uint16_t APP_PAGES = 30;  // pages 30 and 31 are the saved data: never erased or written here
-static const uint32_t APP_END = FLASH_BASE + APP_PAGES * PAGE_SIZE;  // 0x0800F000
-static const uint32_t RAM_BASE = 0x20000000;
-static const uint32_t RAM_END = 0x20002000;
+static const uint16_t CHIP_ID = G030_CHIP_ID;  // Get ID (product id)
+static const uint32_t FLASH_BASE = G030_FLASH_BASE;
+static const uint32_t PAGE_SIZE = G030_PAGE_SIZE;
+static const uint16_t APP_PAGES = G030_APP_PAGES;  // pages 30 and 31 are the saved data: never erased or written here
+static const uint32_t APP_END = G030_APP_END;      // 0x0800F000
+static const uint32_t RAM_BASE = G030_RAM_BASE;
+static const uint32_t RAM_END = G030_RAM_END;
 // The option bytes: double words, the value in the low word and its complement in the high word.
 // UNVERIFIED (WDG-13): that the bootloader reads and writes this area as such, and its length.
-static const uint32_t OPTION_BASE = 0x1FFF7800;
+static const uint32_t OPTION_BASE = G030_OPTION_BASE;
 static const uint16_t OPTION_SIZE = 128;
 // FLASH_OPTR, the first option word.
-static const uint32_t OPTR_RDP = 0xFFu;  // 0xAA: level 0, no read-out protection
-static const uint32_t RDP_LEVEL_0 = 0xAAu;
-static const uint32_t OPTR_IWDG_SW = 1u << 16;
-static const uint32_t OPTR_IWDG_STOP = 1u << 17;
-static const uint32_t OPTR_IWDG_STDBY = 1u << 18;
-static const uint32_t OPTR_NBOOT_SEL = 1u << 24;
-static const uint32_t OPTR_NBOOT1 = 1u << 25;
-static const uint32_t OPTR_NBOOT0 = 1u << 26;
-// WDG-1: the watchdog in hardware and running in stop and standby, boot from the BOOT0 pin with
-// main flash by default. Every other bit (RDP included) stays as it is.
-inline uint32_t optr_required(uint32_t optr) {
-  return (optr & ~(OPTR_IWDG_SW | OPTR_NBOOT_SEL)) | OPTR_IWDG_STOP | OPTR_IWDG_STDBY | OPTR_NBOOT1 | OPTR_NBOOT0;
-}
+static const uint32_t OPTR_RDP = G030_OPTR_RDP;
+static const uint32_t RDP_LEVEL_0 = G030_RDP_LEVEL_0;
+static const uint32_t OPTR_IWDG_SW = G030_OPTR_IWDG_SW;
+// WDG-1's bits set and cleared, every other bit (RDP included) as it is.
+inline uint32_t optr_required(uint32_t optr) { return g030_optr_required(optr); }
 }  // namespace g030
 
 // The link UART plus the safety MCU's reset and boot lines. Only the safety-MCU updater uses the

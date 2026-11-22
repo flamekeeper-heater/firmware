@@ -32,10 +32,14 @@ namespace fk = esphome::flamekeeper;
 
 struct SimStm32 : public fk::BootPort {
   using Boot = fk::Stm32Boot;
-  static const uint32_t FLASH_SIZE = 64 * 1024;
-  static const uint32_t FLASH_BASE = 0x08000000;
-  static const uint32_t PAGE = 2048;
-  static const uint32_t OPT_BASE = 0x1FFF7800;
+  // The memory map (g030_map.h); the flash, option-byte and boot behaviour below are this file's own.
+  static const uint32_t FLASH_BASE = G030_FLASH_BASE;
+  static const uint32_t PAGE = G030_PAGE_SIZE;
+  static const uint32_t FLASH_SIZE = G030_PAGES * PAGE;
+  static const uint32_t SAVED_PAGE = G030_SAVED_PAGE;  // pages 30 and 31
+  static const uint32_t RAM_BASE = G030_RAM_BASE;
+  static const uint32_t RAM_END = G030_RAM_END;
+  static const uint32_t OPT_BASE = G030_OPTION_BASE;
   static const uint32_t OPT_SIZE = 128;
   static const uint32_t FACTORY_OPTR = 0xDFFFE1AAu;  // WDG-15
   static const uint32_t ERASE_MS = 25;  // per page
@@ -49,7 +53,7 @@ struct SimStm32 : public fk::BootPort {
   uint32_t optr = FACTORY_OPTR;  // FLASH_OPTR as loaded
   bool optverr = false;
   bool empty = true;  // the EMPTY flag, from the last option load
-  uint16_t pid = 0x466;
+  uint16_t pid = G030_CHIP_ID;
   bool powered = true;
   Mode mode = RESET;
 
@@ -102,15 +106,15 @@ struct SimStm32 : public fk::BootPort {
   }
   // An application of the given version, size bytes (the vector table and the version at 0x100).
   void program_app(const std::vector<uint8_t> &image) {
-    for (uint32_t i = 0; i < 30 * PAGE; i++)
+    for (uint32_t i = 0; i < SAVED_PAGE * PAGE; i++)
       this->flash[i] = i < image.size() ? image[i] : 0xFF;
   }
   void fill_saved_pages() {
-    for (uint32_t i = 30 * PAGE; i < FLASH_SIZE; i++)
+    for (uint32_t i = SAVED_PAGE * PAGE; i < FLASH_SIZE; i++)
       this->flash[i] = uint8_t(0xA5 ^ i);
   }
   bool saved_pages_intact() const {
-    for (uint32_t i = 30 * PAGE; i < FLASH_SIZE; i++)
+    for (uint32_t i = SAVED_PAGE * PAGE; i < FLASH_SIZE; i++)
       if (this->flash[i] != uint8_t(0xA5 ^ i))
         return false;
     return true;
@@ -222,7 +226,7 @@ struct SimStm32 : public fk::BootPort {
   void start_app(uint32_t address) {
     uint32_t off = address - FLASH_BASE;
     uint32_t sp = fk::get_u32(this->flash + off), pc = fk::get_u32(this->flash + off + 4);
-    bool ok = sp > 0x20000000u && sp <= 0x20002000u && (pc & 1) && pc > address && pc < FLASH_BASE + FLASH_SIZE;
+    bool ok = sp > RAM_BASE && sp <= RAM_END && (pc & 1) && pc > address && pc < FLASH_BASE + FLASH_SIZE;
     this->mode = ok ? APP : LOCKUP;
   }
 
@@ -267,7 +271,7 @@ struct SimStm32 : public fk::BootPort {
   }
   bool readable(uint32_t a, uint32_t n) const {
     return (a >= FLASH_BASE && a + n <= FLASH_BASE + FLASH_SIZE) || (a >= OPT_BASE && a + n <= OPT_BASE + OPT_SIZE) ||
-           (a >= 0x20000000u && a + n <= 0x20002000u) || (a >= 0x1FFF0000u && a + n <= 0x1FFF2000u);
+           (a >= RAM_BASE && a + n <= RAM_END) || (a >= 0x1FFF0000u && a + n <= 0x1FFF2000u);
   }
 
   void boot_rx(uint8_t b) {
@@ -391,7 +395,7 @@ struct SimStm32 : public fk::BootPort {
             uint16_t page = uint16_t(v[2 + 2 * i] << 8 | v[3 + 2 * i]);
             std::memset(this->flash + page * PAGE, 0xFF, PAGE);
             this->erase_log.push_back(page);
-            if (page >= 30)
+            if (page >= SAVED_PAGE)
               this->saved_touched = true;
             this->erases++;
           }
@@ -427,7 +431,7 @@ struct SimStm32 : public fk::BootPort {
       this->reset_after_reply = true;
       return;
     }
-    if (a >= 0x20000000u) {  // RAM
+    if (a >= RAM_BASE) {  // RAM
       this->emit(Boot::ACK);
       return;
     }
@@ -444,7 +448,7 @@ struct SimStm32 : public fk::BootPort {
       done = n / 2;
     std::memcpy(this->flash + off, data, done);
     this->write_log.push_back(a);
-    if ((off / PAGE) >= 30)
+    if ((off / PAGE) >= SAVED_PAGE)
       this->saved_touched = true;
     this->writes++;
     if (this->write_count == this->power_loss_write_at)
