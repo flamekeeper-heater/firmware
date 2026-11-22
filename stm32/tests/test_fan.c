@@ -126,6 +126,9 @@ static void test_spin_up(void) {
   run(&r, 10000, 4800);
   CHECK(fabs(r.mo.rpm - 4800) < 150);
   CHECK(r.max_i < 8.0);
+  /* The feed-forward carries it there, the integral only trims (above 4294 rpm the feed-forward
+   * once overflowed 32 bits and the integral carried it all). */
+  CHECK(r.f.integ < 100 * 1000 && r.f.integ > -100 * 1000);
 }
 
 static void test_24v_cap(void) {

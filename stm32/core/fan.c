@@ -110,8 +110,8 @@ static uint16_t step(fan *f, uint32_t now_ms, uint16_t target_rpm, uint16_t open
   int32_t cap = fan_duty_cap(f, m->vin_cv);
   int32_t err = 0, integ = 0, want = open_permille;
   if (open_permille == 0) {
-    int32_t ff = (int32_t) ((uint32_t) target_rpm * p->v_max_cv * 1000u /
-                            ((uint32_t) p->rpm_at_v_max * (m->vin_cv ? m->vin_cv : 1u)));
+    int32_t ff = (int32_t) ((uint64_t) target_rpm * p->v_max_cv * 1000u /
+                            ((uint64_t) p->rpm_at_v_max * (m->vin_cv ? m->vin_cv : 1u)));
     err = (int32_t) target_rpm - (int32_t) m->rpm;
     integ = f->integ + (int32_t) p->ki_permille_per_krpm_s * err * (int32_t) dt / 1000;
     if (integ > cap * 1000)
