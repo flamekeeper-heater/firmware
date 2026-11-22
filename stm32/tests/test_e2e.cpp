@@ -45,6 +45,7 @@ struct Bench : LinkTransport {
   int glow_en = 0;
   double pump_i = 0;  // the pump coil's current, A (6 Ohm, 2 ms)
   uint32_t stroke_ms_total = 0;
+  uint32_t stroke_ms_unguarded = 0;  // PUMP_CMD driven without the overcurrent watchdog armed
   int max_heartbeat_gap_in_burn = 0;
   std::deque<uint8_t> to_esp;
   LinkClient client{this};
@@ -136,6 +137,8 @@ struct Bench : LinkTransport {
     pump_i += (v / 6.0 - pump_i) * 0.393;
     if (out.pump_duty)
       stroke_ms_total++;
+    if (out.pump_duty && !out.pump_oc_armed)
+      stroke_ms_unguarded++;
     hb_running_ms = out.heartbeat == CHECKS_HB_RUNNING ? hb_running_ms + 1 : 0;
     if (out.latch_reset)
       latch_armed = 1;
@@ -233,6 +236,7 @@ static void test_heat_cycle() {
   CHECK(hs.plug_warning);  // the flag reached the ESP32
   CHECK(b.s.pump.strokes > 100);  // real strokes through the run
   CHECK(b.stroke_ms_total == b.s.pump.strokes * 38);
+  CHECK(b.stroke_ms_unguarded == 0);  // PMP-7: armed for every stroke
   CHECK(b.s.glow.fault == GLOW_FAULT_NONE);
 }
 

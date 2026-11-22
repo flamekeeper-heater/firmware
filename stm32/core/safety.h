@@ -107,6 +107,7 @@ typedef struct {
   uint8_t latch_reset;    /* LATCH_RESET level */
   uint16_t pump_pulse_us; /* a self-test's single pump pulse */
   uint16_t pump_duty;     /* PUMP_CMD duty for this millisecond, permille (0 = low) */
+  uint8_t pump_oc_armed;  /* the pump's overcurrent watchdog guards this millisecond (PMP-7) */
 } safety_io;
 
 /* Every millisecond: the self-tests while one runs (the power-up test by itself after a reset,
