@@ -1,5 +1,6 @@
-/* The STM32G030's registers this firmware uses, from the reference manual (RM0444). Written by
- * hand to avoid a vendor HAL: only what hal_stm32g0.c touches. UNVERIFIED on silicon. */
+/* The STM32G030's registers this firmware uses (reference manual RM0454). Written by hand to avoid
+ * a vendor HAL: only what hal_stm32g0.c touches. Checked against ST's SVD by
+ * tools/check_registers.py (run it after any change here or in hal/); UNVERIFIED on silicon. */
 #ifndef FLAMEKEEPER_STM32G030_H
 #define FLAMEKEEPER_STM32G030_H
 
