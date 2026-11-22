@@ -141,8 +141,8 @@ current read in the last pulse scaled by the supply since:
   most 99 % duty. Duties too low for a readable pulse become 150 us pulses at a lower rate.
 - The power asked (90 W, 75 W on a low supply), reached by a gentle start from about 2.5 V.
 - A heat budget for the switching transistors (I² x t, drained only while the plug is off; a heat
-  start waits until half of it is free). It starts empty after a reset: the longer fan run before
-  the first glow stands in for it.
+  start waits until half of it is free). It starts empty after an MCU reset only (a fault reset
+  keeps it): the longer fan run before the first glow stands in for it.
 - Current between pulses (the low side stuck on) or repeated high-side trips: glow off at once
   and a fault that needs a reset. No airflow or a hot board: no glow.
 
@@ -157,8 +157,8 @@ current read in the last pulse scaled by the supply since:
   estimate is too coarse and the ramp runs on time alone.
 - Faults: a stalled motor (current, no Hall edges, 1 s), current at zero duty (the switch stuck
   on), and speed with no command, or 20 % over it for 0.5 s, once the fan has had 30 s to slow
-  down. A stall stops everything at once and the sequencer retries it; the others stop the fuel
-  and burn off.
+  down. A stall stops everything at once and the sequencer retries it (the stage clears the stall
+  itself once the fan is asked for 0); the others stop the fuel and burn off.
 
 `stm32/core/checks.*` tests the interlocks themselves, in 1 ms steps the hardware layer carries
 out (heartbeat modes, the glow enable, single short pump pulses, the latch reset line):
