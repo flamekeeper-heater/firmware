@@ -18,7 +18,7 @@ uint8_t alert_class(uint8_t bit) {
     case 10: return 3;                                           // CO alarm
     case 11: case 7: case 1: case 2: case 3: case 6: return 2;   // stopped, cannot start, frost blind
     case 0: case 5: return 1;                                    // fuel low, no clock
-    default: return 0;                                           // reminders (8, 9) and bit 4
+    default: return 0;                                           // reminders (8, 9, 12) and bit 4
   }
 }
 }  // namespace push
