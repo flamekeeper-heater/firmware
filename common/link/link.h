@@ -70,7 +70,8 @@ typedef struct {
   uint8_t header;
   uint8_t buf[LINK_FRAME_MAX];
   uint8_t count;
-  uint32_t bad; /* frames dropped for a bad CRC or length */
+  uint8_t handed; /* the length of the frame handed out last, consumed by the next byte; or 0 */
+  uint32_t bad;   /* frames dropped for a bad CRC or length */
 } link_parser;
 
 void link_parser_init(link_parser *p, uint8_t header);
@@ -89,6 +90,20 @@ static inline const uint8_t *link_reply_payload(const uint8_t *f) { return f + 5
 static inline size_t link_reply_payload_len(const uint8_t *f) { return (size_t) f[1] - 5; }
 
 /* ---------------------------------------------------------------- records */
+
+/* Little-endian fields, as every record lays them out. */
+static inline void link_put16(uint8_t *p, uint16_t v) {
+  p[0] = (uint8_t) v;
+  p[1] = (uint8_t) (v >> 8);
+}
+static inline void link_put32(uint8_t *p, uint32_t v) {
+  for (int i = 0; i < 4; i++)
+    p[i] = (uint8_t) (v >> (8 * i));
+}
+static inline uint16_t link_get16(const uint8_t *p) { return (uint16_t) (p[0] | ((uint16_t) p[1] << 8)); }
+static inline uint32_t link_get32(const uint8_t *p) {
+  return (uint32_t) p[0] | ((uint32_t) p[1] << 8) | ((uint32_t) p[2] << 16) | ((uint32_t) p[3] << 24);
+}
 
 /* Unknown values (as in the app protocol). */
 #define LINK_UNKNOWN_I16 ((int16_t) 0x8000)

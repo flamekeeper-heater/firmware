@@ -81,10 +81,11 @@ static int check(link_parser *p) {
 }
 
 int link_parser_feed(link_parser *p, uint8_t byte) {
-  /* A frame handed out last time is consumed now (a buffer that starts with a complete valid frame
-   * always was). After a resync it may have bytes behind it: they stay, from their first header. */
-  if (check(p) == 1) {
-    uint8_t i = (uint8_t) link_frame_len(p->buf);
+  /* The frame handed out last time is consumed now. After a resync it may have bytes behind it:
+   * they stay, from their first header. */
+  if (p->handed) {
+    uint8_t i = p->handed;
+    p->handed = 0;
     while (i < p->count && p->buf[i] != p->header)
       i++;
     memmove(p->buf, p->buf + i, p->count - i);
@@ -97,8 +98,10 @@ int link_parser_feed(link_parser *p, uint8_t byte) {
   p->buf[p->count++] = byte;
   for (;;) {
     int r = check(p);
-    if (r == 1)
+    if (r == 1) {
+      p->handed = (uint8_t) link_frame_len(p->buf);
       return 1;
+    }
     if (r == 0)
       return 0;
     p->bad++;
@@ -107,19 +110,6 @@ int link_parser_feed(link_parser *p, uint8_t byte) {
 }
 
 /* ---------------------------------------------------------------- records */
-
-static void put16(uint8_t *p, uint16_t v) {
-  p[0] = (uint8_t) v;
-  p[1] = (uint8_t) (v >> 8);
-}
-static void put32(uint8_t *p, uint32_t v) {
-  for (int i = 0; i < 4; i++)
-    p[i] = (uint8_t) (v >> (8 * i));
-}
-static uint16_t get16(const uint8_t *p) { return (uint16_t) (p[0] | ((uint16_t) p[1] << 8)); }
-static uint32_t get32(const uint8_t *p) {
-  return (uint32_t) p[0] | ((uint32_t) p[1] << 8) | ((uint32_t) p[2] << 16) | ((uint32_t) p[3] << 24);
-}
 
 static size_t put_text(uint8_t *p, const char *s, size_t max) {
   size_t n = strlen(s);
@@ -140,7 +130,7 @@ size_t link_encode_info(const link_info *in, uint8_t *out) {
   out[1] = in->minor;
   out[2] = in->kind;
   memcpy(out + 3, in->version, 3);
-  put32(out + 6, in->capabilities);
+  link_put32(out + 6, in->capabilities);
   out[10] = in->param_count;
   out[11] = in->reset_reason;
   out[12] = in->checks;
@@ -155,7 +145,7 @@ int link_decode_info(const uint8_t *in, size_t len, link_info *out) {
   out->minor = in[1];
   out->kind = in[2];
   memcpy(out->version, in + 3, 3);
-  out->capabilities = get32(in + 6);
+  out->capabilities = link_get32(in + 6);
   out->param_count = in[10];
   out->reset_reason = in[11];
   out->checks = in[12];
@@ -168,7 +158,7 @@ size_t link_encode_desired(const link_desired *in, uint8_t *out) {
   out[1] = in->mode;
   out[2] = in->power;
   out[3] = (uint8_t) in->fuel_trim;
-  put16(out + 4, (uint16_t) in->fan_trim);
+  link_put16(out + 4, (uint16_t) in->fan_trim);
   out[6] = in->flags;
   return LINK_DESIRED_SIZE;
 }
@@ -180,7 +170,7 @@ int link_decode_desired(const uint8_t *in, size_t len, link_desired *out) {
   out->mode = in[1];
   out->power = in[2];
   out->fuel_trim = (int8_t) in[3];
-  out->fan_trim = (int16_t) get16(in + 4);
+  out->fan_trim = (int16_t) link_get16(in + 4);
   out->flags = in[6];
   return 1;
 }
@@ -194,13 +184,13 @@ size_t link_encode_status(const link_status *in, uint8_t *out) {
   out[5] = in->start_ack;
   out[6] = in->start_result;
   out[7] = in->power;
-  put16(out + 8, (uint16_t) in->heat_exchanger);
-  put16(out + 10, in->supply);
-  put16(out + 12, in->fan_rpm);
-  put16(out + 14, in->pump);
-  put16(out + 16, in->glow_w);
-  put16(out + 18, in->prime_left_s);
-  put32(out + 20, in->run_time_s);
+  link_put16(out + 8, (uint16_t) in->heat_exchanger);
+  link_put16(out + 10, in->supply);
+  link_put16(out + 12, in->fan_rpm);
+  link_put16(out + 14, in->pump);
+  link_put16(out + 16, in->glow_w);
+  link_put16(out + 18, in->prime_left_s);
+  link_put32(out + 20, in->run_time_s);
   return LINK_STATUS_SIZE;
 }
 
@@ -215,27 +205,27 @@ int link_decode_status(const uint8_t *in, size_t len, link_status *out) {
   out->start_ack = in[5];
   out->start_result = in[6];
   out->power = in[7];
-  out->heat_exchanger = (int16_t) get16(in + 8);
-  out->supply = get16(in + 10);
-  out->fan_rpm = get16(in + 12);
-  out->pump = get16(in + 14);
-  out->glow_w = get16(in + 16);
-  out->prime_left_s = get16(in + 18);
-  out->run_time_s = get32(in + 20);
+  out->heat_exchanger = (int16_t) link_get16(in + 8);
+  out->supply = link_get16(in + 10);
+  out->fan_rpm = link_get16(in + 12);
+  out->pump = link_get16(in + 14);
+  out->glow_w = link_get16(in + 16);
+  out->prime_left_s = link_get16(in + 18);
+  out->run_time_s = link_get32(in + 20);
   return 1;
 }
 
 size_t link_encode_detail(const link_detail *in, uint8_t *out) {
-  put16(out + 0, (uint16_t) in->board);
-  put16(out + 2, (uint16_t) in->ts_fan);
-  put16(out + 4, (uint16_t) in->ts_glow);
-  put16(out + 6, in->glow_v);
-  put16(out + 8, in->glow_a);
-  put16(out + 10, in->fan_v);
-  put16(out + 12, in->fan_a);
-  put16(out + 14, in->pump_ma);
-  put16(out + 16, in->co_ppm);
-  put16(out + 18, in->vdda_mv);
+  link_put16(out + 0, (uint16_t) in->board);
+  link_put16(out + 2, (uint16_t) in->ts_fan);
+  link_put16(out + 4, (uint16_t) in->ts_glow);
+  link_put16(out + 6, in->glow_v);
+  link_put16(out + 8, in->glow_a);
+  link_put16(out + 10, in->fan_v);
+  link_put16(out + 12, in->fan_a);
+  link_put16(out + 14, in->pump_ma);
+  link_put16(out + 16, in->co_ppm);
+  link_put16(out + 18, in->vdda_mv);
   out[20] = in->co_state;
   return LINK_DETAIL_SIZE;
 }
@@ -243,16 +233,16 @@ size_t link_encode_detail(const link_detail *in, uint8_t *out) {
 int link_decode_detail(const uint8_t *in, size_t len, link_detail *out) {
   if (len < LINK_DETAIL_SIZE)
     return 0;
-  out->board = (int16_t) get16(in + 0);
-  out->ts_fan = (int16_t) get16(in + 2);
-  out->ts_glow = (int16_t) get16(in + 4);
-  out->glow_v = get16(in + 6);
-  out->glow_a = get16(in + 8);
-  out->fan_v = get16(in + 10);
-  out->fan_a = get16(in + 12);
-  out->pump_ma = get16(in + 14);
-  out->co_ppm = get16(in + 16);
-  out->vdda_mv = get16(in + 18);
+  out->board = (int16_t) link_get16(in + 0);
+  out->ts_fan = (int16_t) link_get16(in + 2);
+  out->ts_glow = (int16_t) link_get16(in + 4);
+  out->glow_v = link_get16(in + 6);
+  out->glow_a = link_get16(in + 8);
+  out->fan_v = link_get16(in + 10);
+  out->fan_a = link_get16(in + 12);
+  out->pump_ma = link_get16(in + 14);
+  out->co_ppm = link_get16(in + 16);
+  out->vdda_mv = link_get16(in + 18);
   out->co_state = in[20];
   return 1;
 }
@@ -260,13 +250,13 @@ int link_decode_detail(const uint8_t *in, size_t len, link_detail *out) {
 size_t link_encode_param_desc(const link_param_desc *in, uint8_t *out) {
   out[0] = in->index;
   out[1] = in->count;
-  put16(out + 2, in->id);
+  link_put16(out + 2, in->id);
   out[4] = in->flags;
   out[5] = in->unit;
   out[6] = in->decimals;
-  put32(out + 7, (uint32_t) in->min);
-  put32(out + 11, (uint32_t) in->max);
-  put32(out + 15, (uint32_t) in->step);
+  link_put32(out + 7, (uint32_t) in->min);
+  link_put32(out + 11, (uint32_t) in->max);
+  link_put32(out + 15, (uint32_t) in->step);
   out[19] = in->group;
   out[20] = in->level;
   return LINK_PARAM_DESC_FIXED + put_text(out + LINK_PARAM_DESC_FIXED, in->name, LINK_PARAM_NAME_MAX);
@@ -278,13 +268,13 @@ int link_decode_param_desc(const uint8_t *in, size_t len, link_param_desc *out) 
   memset(out, 0, sizeof(*out));
   out->index = in[0];
   out->count = in[1];
-  out->id = get16(in + 2);
+  out->id = link_get16(in + 2);
   out->flags = in[4];
   out->unit = in[5];
   out->decimals = in[6];
-  out->min = (int32_t) get32(in + 7);
-  out->max = (int32_t) get32(in + 11);
-  out->step = (int32_t) get32(in + 15);
+  out->min = (int32_t) link_get32(in + 7);
+  out->max = (int32_t) link_get32(in + 11);
+  out->step = (int32_t) link_get32(in + 15);
   out->group = in[19];
   out->level = in[20];
   get_text(in + LINK_PARAM_DESC_FIXED, len - LINK_PARAM_DESC_FIXED, out->name, LINK_PARAM_NAME_MAX);
@@ -292,20 +282,20 @@ int link_decode_param_desc(const uint8_t *in, size_t len, link_param_desc *out) 
 }
 
 size_t link_encode_param_value(const link_param_value *in, uint8_t *out) {
-  put16(out, in->id);
+  link_put16(out, in->id);
   out[2] = in->flags;
-  put32(out + 3, (uint32_t) in->value);
-  put32(out + 7, (uint32_t) in->staged);
+  link_put32(out + 3, (uint32_t) in->value);
+  link_put32(out + 7, (uint32_t) in->staged);
   return LINK_PARAM_VALUE_SIZE;
 }
 
 int link_decode_param_value(const uint8_t *in, size_t len, link_param_value *out) {
   if (len < LINK_PARAM_VALUE_SIZE)
     return 0;
-  out->id = get16(in);
+  out->id = link_get16(in);
   out->flags = in[2];
-  out->value = (int32_t) get32(in + 3);
-  out->staged = (int32_t) get32(in + 7);
+  out->value = (int32_t) link_get32(in + 3);
+  out->staged = (int32_t) link_get32(in + 7);
   return 1;
 }
 
@@ -397,14 +387,14 @@ size_t link_server_handle(const link_mcu *m, const uint8_t *req, uint8_t *reply)
       NEED(2);
       link_param_value v;
       memset(&v, 0, sizeof(v));
-      result = HAVE(param_get) ? m->param_get(m->ctx, get16(in), &v) : LINK_NOT_SUPPORTED;
+      result = HAVE(param_get) ? m->param_get(m->ctx, link_get16(in), &v) : LINK_NOT_SUPPORTED;
       if (result == LINK_OK)
         len = link_encode_param_value(&v, out);
       break;
     }
     case LINK_OP_PARAM_SET:
       NEED(6);
-      result = HAVE(param_set) ? m->param_set(m->ctx, get16(in), (int32_t) get32(in + 2)) : LINK_NOT_SUPPORTED;
+      result = HAVE(param_set) ? m->param_set(m->ctx, link_get16(in), (int32_t) link_get32(in + 2)) : LINK_NOT_SUPPORTED;
       break;
     case LINK_OP_PARAM_APPLY:
       NEED(1);
@@ -429,7 +419,7 @@ size_t link_server_handle(const link_mcu *m, const uint8_t *req, uint8_t *reply)
     case LINK_OP_PARAM_HELP: {
       NEED(3);
       const char *text = "";
-      uint16_t id = get16(in);
+      uint16_t id = link_get16(in);
       result = HAVE(param_help) ? m->param_help(m->ctx, id, &text) : LINK_NOT_SUPPORTED;
       if (result != LINK_OK)
         break;
@@ -443,7 +433,7 @@ size_t link_server_handle(const link_mcu *m, const uint8_t *req, uint8_t *reply)
       chunk = total - off;
       if (chunk > LINK_PARAM_HELP_CHUNK)
         chunk = LINK_PARAM_HELP_CHUNK;
-      put16(out, id);
+      link_put16(out, id);
       out[2] = (uint8_t) off;
       out[3] = (uint8_t) total;
       if (chunk != 0)
