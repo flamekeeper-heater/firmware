@@ -63,7 +63,7 @@ UID_BASE = 0x1FFF7590  # 96-bit unique id (ST's CMSIS header, UID_BASE)
 FLASHSIZE_BASE = 0x1FFF75E0  # flash size in KB, 16 bits
 DBG_IDCODE = 0x40015800  # DEV_ID in bits 11:0
 DBG_APB_FZ1 = 0x40015808
-DBG_IWDG_STOP = 1 << 12  # the IWDG frozen while the core is halted (UNVERIFIED bit position)
+DBG_IWDG_STOP = 1 << 12  # the IWDG frozen while the core is halted (DBG_APB_FZ1, as in ST's stm32g030xx.h)
 RCC_APBENR1 = 0x4002103C
 RCC_APBENR1_DBGEN = 1 << 27
 
