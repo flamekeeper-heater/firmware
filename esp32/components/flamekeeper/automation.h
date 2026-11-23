@@ -237,13 +237,17 @@ class Automation {
   bool fault_alerted_{false};  // the current fault has raised its alert (or step_co_ raises it)
   bool fault_retried_{false};  // ...it is a retry the heater has not given up yet
 
-  // burn check
+  // burn check: the heat exchanger every 10 s over 5 minutes, and the fuel and air it burns on
   bool priming_run_{false};  // the current run is a fuel prime
-  float hx_window_[12];
+  float hx_window_[30];
   size_t hx_count_{0};
   uint32_t hx_last_ms_{0};
   uint32_t heating_since_ms_{0};
-  bool burn_warned_{false};
+  bool burn_warned_{false};    // the fast fall or the fading flame has been alerted this run
+  float fuel_ref_hz_{NAN};     // the pump rate since the last fuel cut (it follows rises)
+  float air_ref_rpm_{NAN};     // the fan speed since the last air rise (it follows falls)
+  uint32_t steady_since_ms_{0};  // fuel and air steady since (the last cut, or heating began)
+  float fading_from_c_{NAN};   // the level the fading flame was warned from; NAN = not fading
 
   // battery
   uint32_t battery_low_since_ms_{0};

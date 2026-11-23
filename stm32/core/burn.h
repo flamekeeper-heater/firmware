@@ -136,6 +136,8 @@ typedef struct {
   /* Flame, from the heat exchanger, 0.1 C. */
   int16_t flame_rise_c10;     /* rise over the start temperature that means flame */
   int16_t flame_lost_c10;     /* fall below the run's peak that means the flame went out */
+  uint16_t flame_settle_s;    /* after a fuel cut, the peak may follow the cooling down this long */
+  uint16_t flame_follow_c10_min; /* ...at most this fast (a dying flame cools much faster) */
   uint16_t warm_up_s;         /* fuel and fan ramp to the asked power */
 
   /* Limits. */
@@ -210,6 +212,8 @@ typedef struct {
   held fan_low;            /* the fan below the stall speed while asked to turn */
   held supply_bad;         /* the supply outside its range */
   int16_t start_c10, peak_c10;
+  uint32_t fuel_cut_ms;    /* when the running fuel was last cut (0 = not this run) */
+  uint32_t follow_acc;     /* the peak's fall after a cut, below one step (0.1 C x ms / min) */
   uint32_t flame_ms;       /* when the flame was seen */
   /* Glow on-time: this attempt's, and the last 10 minutes' in one-minute buckets (ms): the
    * current minute and the ten before it. */

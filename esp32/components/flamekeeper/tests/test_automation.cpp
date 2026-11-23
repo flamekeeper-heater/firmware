@@ -593,6 +593,102 @@ static void test_burn_alerts() {
         r.alerts.back().second.find("overheat") != std::string::npos);
 }
 
+// A steady burn at 1.6 Hz and 2075 rpm, the heat exchanger at `hx` for `ms`.
+static void burn_steady(Rig &r, float hx, uint32_t ms) {
+  r.h.st.pump_hz = 1.6f;
+  r.h.st.fan_rpm = 2075.0f;
+  r.h.st.heat_exchanger_c = hx;
+  r.step(ms);
+}
+
+static void test_fading_flame() {
+  // A blocked exhaust: the fuel and the air stay steady while the heat exchanger turns over and
+  // falls 2-8 C a minute and the flame smokes. Every 30 s:
+  static const float FALL[] = {187.6f, 187.4f, 187.0f, 186.3f, 185.0f, 184.0f, 183.0f, 182.0f, 179.5f, 177.0f,
+                               175.0f, 172.0f, 169.0f, 166.0f, 163.0f, 159.5f, 155.5f, 152.0f, 148.5f, 144.5f,
+                               140.2f, 137.0f, 133.5f, 130.0f, 126.5f, 123.0f};
+  {
+    Rig r;
+    CHECK(r.c.set_mode(Mode::HEAT, Source::PHONE).accepted());
+    r.heater_follows();
+    burn_steady(r, 187.0f, 30 * MIN);
+    CHECK(!(r.c.status().alerts & al::BURN));
+    size_t warned = 0, stopped = 0;
+    for (size_t i = 0; i < sizeof(FALL) / sizeof(FALL[0]); i++) {
+      r.h.st.heat_exchanger_c = FALL[i];
+      r.step(30 * SEC);
+      if (warned == 0 && (r.c.status().alerts & al::BURN))
+        warned = i;
+      if (stopped == 0 && r.c.status().mode == Mode::OFF)
+        stopped = i;
+    }
+    CHECK(warned >= 8 && warned <= 10);   // 4-5 minutes after it turned, 10 C down
+    CHECK(stopped > warned && stopped <= 15);  // 25 C down from where it was steady
+    CHECK(r.count(2) == 2);                // the warning, then the stop
+    CHECK(r.alerts[r.alerts.size() - 2].second.find("stopped") != std::string::npos ||
+          r.alerts.back().second.find("stopped") != std::string::npos);
+    CHECK(r.c.status().alerts & al::AUTO_OFF);  // frost protection and timers do not start it again
+  }
+  {
+    // The pump steps down (1.9 to 1.6 Hz) and the heat exchanger follows, 17 C in 5 minutes: no
+    // warning. Neither does the jitter of a steady pump (1.6 / 1.7 Hz) with +-3 C of noise.
+    Rig r;
+    CHECK(r.c.set_mode(Mode::HEAT, Source::PHONE).accepted());
+    r.heater_follows();
+    r.h.st.pump_hz = 1.9f;
+    r.h.st.fan_rpm = 2075.0f;
+    r.h.st.heat_exchanger_c = 199.0f;
+    r.step(30 * MIN);
+    r.h.st.pump_hz = 1.6f;
+    for (int i = 0; i < 10; i++) {
+      r.h.st.heat_exchanger_c -= 1.7f;
+      r.step(30 * SEC);
+    }
+    for (int i = 0; i < 120; i++) {
+      r.h.st.pump_hz = (i % 7 == 0) ? 1.7f : 1.6f;
+      r.h.st.heat_exchanger_c = 182.0f + float((i * 5) % 7) - 3.0f;
+      r.step(30 * SEC);
+    }
+    CHECK(!(r.c.status().alerts & al::BURN));
+    CHECK(r.c.status().mode == Mode::HEAT);
+  }
+  {
+    // More air cools it too: the fan rises 15 % and the heat exchanger falls 12 C. No warning.
+    Rig r;
+    CHECK(r.c.set_mode(Mode::HEAT, Source::PHONE).accepted());
+    r.heater_follows();
+    burn_steady(r, 187.0f, 30 * MIN);
+    r.h.st.fan_rpm = 2400.0f;
+    for (int i = 0; i < 12; i++) {
+      r.h.st.heat_exchanger_c -= 1.0f;
+      r.step(30 * SEC);
+    }
+    r.step(10 * MIN);
+    CHECK(!(r.c.status().alerts & al::BURN));
+  }
+  {
+    // A fall that recovers: warned, not stopped.
+    Rig r;
+    CHECK(r.c.set_mode(Mode::HEAT, Source::PHONE).accepted());
+    r.heater_follows();
+    burn_steady(r, 187.0f, 30 * MIN);
+    for (int i = 0; i < 6; i++) {
+      r.h.st.heat_exchanger_c -= 2.5f;
+      r.step(30 * SEC);
+    }
+    CHECK(r.c.status().alerts & al::BURN);
+    burn_steady(r, 186.0f, 5 * MIN);
+    for (int i = 0; i < 6; i++) {
+      r.h.st.heat_exchanger_c -= 3.0f;  // 18 C below: under the stop
+      r.step(30 * SEC);
+    }
+    burn_steady(r, 186.0f, 5 * MIN);
+    CHECK(r.c.status().mode == Mode::HEAT);
+    CHECK(!(r.c.status().alerts & al::AUTO_OFF));
+    CHECK(r.count(2) == 1);
+  }
+}
+
 static void test_bluetooth_room() {
   Rig r;
   fk::RoomSensors &rs = r.a.sensors();
@@ -1274,6 +1370,7 @@ int main() {
   test_quoted_time_zones();
   test_timers();
   test_burn_alerts();
+  test_fading_flame();
   test_bluetooth_room();
   test_protocol();
   test_low_battery();

@@ -68,6 +68,8 @@ void burn_params_default(burn_params *p) {
   p->purge_s = 60;
   p->flame_rise_c10 = 150;
   p->flame_lost_c10 = 400;
+  p->flame_settle_s = 600;
+  p->flame_follow_c10_min = 100;
   p->warm_up_s = 60;
   p->overheat_derate_c10 = 2450;
   p->overheat_stop_c10 = 2550;
@@ -497,8 +499,18 @@ static void checks(burn *b, uint32_t now, uint32_t dt, const burn_inputs *in) {
   }
 }
 
-/* The flame's peak, and its loss: a fall below the peak by flame_lost_c10 stops the run (1). */
-static int flame_lost(burn *b, uint32_t now, const burn_inputs *in) {
+/* The flame's peak, and its loss: a fall below the peak by flame_lost_c10 stops the run (1).
+ * Less fuel cools the heat exchanger by itself: for flame_settle_s after a fuel cut the peak
+ * follows it down, at most flame_follow_c10_min a minute. A flame that dies cools much faster and
+ * still falls flame_lost_c10 below it. */
+static int flame_lost(burn *b, uint32_t now, uint32_t dt, const burn_inputs *in) {
+  if (b->fuel_cut_ms != 0 && since(now, b->fuel_cut_ms) < MS(b->p.flame_settle_s) && b->peak_c10 > in->hx_c10) {
+    b->follow_acc += (uint32_t) b->p.flame_follow_c10_min * dt;
+    int32_t step = (int32_t) (b->follow_acc / 60000u);
+    b->follow_acc %= 60000u;
+    int32_t peak = (int32_t) b->peak_c10 - step;
+    b->peak_c10 = (int16_t) (peak > in->hx_c10 ? peak : in->hx_c10);
+  }
   if (in->hx_c10 > b->peak_c10)
     b->peak_c10 = in->hx_c10;
   if (in->hx_c10 < b->peak_c10 - b->p.flame_lost_c10) {
@@ -584,6 +596,7 @@ static void sequence(burn *b, uint32_t now, uint32_t dt, const burn_inputs *in) 
       if (in->hx_c10 >= b->start_c10 + p->flame_rise_c10) {
         b->flame_ms = now;
         b->peak_c10 = in->hx_c10;
+        b->fuel_cut_ms = 0, b->follow_acc = 0;
         enter(b, BURN_STEP_WARM_UP, now);
       } else if (in_step >= MS(p->ignition_s)) {
         if (b->attempt < p->attempts)
@@ -609,7 +622,7 @@ static void sequence(burn *b, uint32_t now, uint32_t dt, const burn_inputs *in) 
       o->pump_cHz = lerp16(p->pump_start_cHz, pump_for(p, target), in_step, ramp);
       b->running_power = (uint8_t) (in_step >= ramp ? target : (uint32_t) target * in_step / ramp);
       want_glow = since(now, b->flame_ms) < MS(p->glow_after_flame_s);
-      if (!flame_lost(b, now, in) && in_step >= ramp) {
+      if (!flame_lost(b, now, dt, in) && in_step >= ramp) {
         b->fuel_mp = b->air_mp = (uint32_t) target * 1000u;
         enter(b, BURN_STEP_RUNNING, now);
       }
@@ -622,8 +635,10 @@ static void sequence(burn *b, uint32_t now, uint32_t dt, const burn_inputs *in) 
        * and falls slowly; the fan is never below the fuel. */
       uint32_t up = (uint32_t) p->fuel_up_percent_s * dt;
       uint32_t down = (uint32_t) p->air_down_percent_s * dt;
-      if (want < b->fuel_mp)
+      if (want < b->fuel_mp) {
         b->fuel_mp = want;
+        b->fuel_cut_ms = now == 0 ? 1 : now;
+      }
       else
         b->fuel_mp = b->fuel_mp + up < want ? b->fuel_mp + up : want;
       if (want > b->air_mp)
@@ -635,7 +650,7 @@ static void sequence(burn *b, uint32_t now, uint32_t dt, const burn_inputs *in) 
       o->fan_rpm = fan_for(p, (uint8_t) ((b->air_mp + 999u) / 1000u));
       o->pump_cHz = pump_for(p, (uint8_t) (b->fuel_mp / 1000u));
       b->running_power = (uint8_t) (b->fuel_mp / 1000u);
-      (void) flame_lost(b, now, in);
+      (void) flame_lost(b, now, dt, in);
       break;
     }
 

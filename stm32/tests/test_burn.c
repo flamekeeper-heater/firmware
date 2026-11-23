@@ -219,6 +219,36 @@ static void test_flame_out(void) {
   CHECK_EQ(r.b.fault, BURN_FAULT_FLAME_OUT);
 }
 
+static void test_flame_out_after_cut(void) {
+  /* A big power cut cools the heat exchanger by itself: no flame-out. A flame that dies just
+   * after the cut, or long after, still stops the run. */
+  rig r;
+  rig_init(&r, 0, 10);
+  CHECK_EQ(start(&r, HEAT, 100), 0);
+  CHECK(run_until_step(&r, BURN_STEP_RUNNING, 5 * MIN));
+  run(&r, 10 * MIN);
+  int16_t hot = r.m.hx_c10 > 0 ? (int16_t) r.m.hx_c10 : 0;
+  burn_set_power(&r.b, 10);
+  run(&r, 15 * MIN);
+  CHECK_EQ(r.b.step, BURN_STEP_RUNNING);
+  CHECK_EQ(r.b.fault, BURN_FAULT_NONE);
+  CHECK(hot - (int16_t) r.m.hx_c10 > r.b.p.flame_lost_c10); /* the test means it: it fell further */
+  r.m.kill_flame = 1;
+  CHECK(run_until_step(&r, BURN_STEP_BURN_OFF, 3 * MIN));
+  CHECK_EQ(r.b.fault, BURN_FAULT_FLAME_OUT);
+
+  rig q;
+  rig_init(&q, 0, 10);
+  CHECK_EQ(start(&q, HEAT, 100), 0);
+  CHECK(run_until_step(&q, BURN_STEP_RUNNING, 5 * MIN));
+  run(&q, 10 * MIN);
+  burn_set_power(&q.b, 10);
+  run(&q, 20 * SEC);
+  q.m.kill_flame = 1;
+  CHECK(run_until_step(&q, BURN_STEP_BURN_OFF, 3 * MIN));
+  CHECK_EQ(q.b.fault, BURN_FAULT_FLAME_OUT);
+}
+
 static void test_overheat_derate_holds(void) {
   /* A heater that runs too hot at full power: the derate holds it near 245 C, short of the stop. */
   rig r;
@@ -883,6 +913,7 @@ int main(void) {
   test_glow_needs_airflow();
   test_no_ignition();
   test_flame_out();
+  test_flame_out_after_cut();
   test_overheat_derate_holds();
   test_overheat_limit();
   test_overheat_latch();

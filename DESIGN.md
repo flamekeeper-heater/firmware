@@ -41,7 +41,10 @@ apps (Bluetooth, Wi-Fi, relay)    Home Assistant entities    board inputs
   updates (`board_update.*`) and the factory reset, with everything they keep in NVS.
 - **Automation** (`automation.*`): frost protection, timers, fuel meters and tank, alerts,
   maintenance and the event log. A refused or failed automatic start disarms frost protection and
-  timers until the user re-arms them; they never retry by themselves.
+  timers until the user re-arms them; they never retry by themselves. A fading flame (the heat
+  exchanger cooling 10 C in 5 minutes while the pump and the fan are steady: a blocked exhaust,
+  fuel running out) raises the burn alert before it becomes a fault; 25 C down, the board stops
+  the run and disarms them too.
 - **Bluetooth thermometers**: `flamekeeper_thermo` listens to ESPHome's BLE tracker, and
   `ble_thermo.*` decodes the adverts.
 
@@ -114,7 +117,9 @@ off -> fan only -> off          off -> pre-check -> priming -> off
 - Glow on-time is capped per attempt and per 10 minutes, so a start that would exceed the cap
   waits.
 - Flame is seen as a rise of the heat exchanger temperature; a fall from the run's peak is a
-  flame-out. Every stop after fuel has gone in burns off and cools down; a fan stall stops
+  flame-out. Less fuel cools the heat exchanger by itself, so for 10 minutes after a fuel cut the
+  peak follows it down at up to 10 C a minute: a power cut is not a flame-out, a flame that dies
+  cools much faster and still is. Every stop after fuel has gone in burns off and cools down; a fan stall stops
   everything at once.
 - A stalled fan tries again after 5 s: a run that had fuel cools down, an earlier start or a
   fan-only run carries on. After two retries the next stall locks the fan out until a fault reset;

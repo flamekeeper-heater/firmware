@@ -384,6 +384,7 @@ void Automation::step_runs_(uint32_t now, const Status &s) {
     this->burn_warned_ = false;
     this->heating_since_ms_ = 0;
     this->hx_count_ = 0;
+    this->fading_from_c_ = NAN;
     this->priming_run_ = s.mode == Mode::PRIME;
   } else if (this->prev_run_ != Source::NONE && run == Source::NONE) {
     this->save_meter_();
@@ -477,15 +478,59 @@ void Automation::step_fault_(const Status &s) {
   this->prev_reason_ = s.panel_fault;
 }
 
+// The burn check. A flame that goes out cools the heat exchanger fast: 30 C within 2 minutes is
+// alerted at once. A flame that fades (a blocked exhaust or air intake, fuel running out, coking)
+// cools it slowly while the fuel and the air stay as they were, and it smokes while it does: a fall
+// of FADE_WARN_C below the last 5 minutes' highest, with the pump and the fan steady for
+// STEADY_MS, is alerted; a fall of FADE_STOP_C below where that started stops the run and turns
+// the automatic starts off, so that frost protection or a timer does not start it again into
+// the same fault. A pump cut (more than FUEL_CUT_HZ below its level) or a fan rise (more than
+// AIR_RISE of its level) cools the heat exchanger by itself, so it restarts the wait.
+namespace {
+const uint32_t BURN_SAMPLE_MS = 10000;
+const size_t FAST_SAMPLES = 12;           // 2 minutes
+const float FAST_FALL_C = 30.0f;
+const uint32_t BURN_SETTLE_MS = 5 * 60 * 1000;  // heating this long before either check
+const uint32_t STEADY_MS = 10 * 60 * 1000;
+const float FUEL_CUT_HZ = 0.15f;
+const float AIR_RISE = 0.10f;
+const float FADE_WARN_C = 10.0f;
+const float FADE_STOP_C = 25.0f;
+}  // namespace
+
 void Automation::step_burn_(uint32_t now, const Status &s) {
   if (s.state != HeaterState::HEATING || !std::isfinite(s.heat_exchanger_c)) {
     this->heating_since_ms_ = 0;
     this->hx_count_ = 0;
+    this->fading_from_c_ = NAN;
     return;
   }
-  if (this->heating_since_ms_ == 0)
+  if (this->heating_since_ms_ == 0) {
     this->heating_since_ms_ = now == 0 ? 1 : now;
-  if (this->hx_count_ != 0 && uint32_t(now - this->hx_last_ms_) < 10000)
+    this->steady_since_ms_ = this->heating_since_ms_;
+    this->fuel_ref_hz_ = s.pump_hz;
+    this->air_ref_rpm_ = s.fan_rpm;
+  }
+  // Fuel and air: a cut of the fuel or a rise of the air starts the wait for a steady burn again.
+  bool cut = false;
+  if (std::isfinite(s.pump_hz)) {
+    if (!std::isfinite(this->fuel_ref_hz_) || s.pump_hz > this->fuel_ref_hz_)
+      this->fuel_ref_hz_ = s.pump_hz;
+    else if (s.pump_hz < this->fuel_ref_hz_ - FUEL_CUT_HZ)
+      this->fuel_ref_hz_ = s.pump_hz, cut = true;
+  }
+  if (std::isfinite(s.fan_rpm)) {
+    if (!std::isfinite(this->air_ref_rpm_) || s.fan_rpm < this->air_ref_rpm_)
+      this->air_ref_rpm_ = s.fan_rpm;
+    else if (s.fan_rpm > this->air_ref_rpm_ * (1.0f + AIR_RISE))
+      this->air_ref_rpm_ = s.fan_rpm, cut = true;
+  }
+  if (cut) {
+    this->steady_since_ms_ = now;
+    this->fading_from_c_ = NAN;
+  }
+
+  if (this->hx_count_ != 0 && uint32_t(now - this->hx_last_ms_) < BURN_SAMPLE_MS)
     return;
   this->hx_last_ms_ = now;
   const size_t N = sizeof(this->hx_window_) / sizeof(this->hx_window_[0]);
@@ -494,15 +539,53 @@ void Automation::step_burn_(uint32_t now, const Status &s) {
       this->hx_window_[i - 1] = this->hx_window_[i];
     this->hx_count_--;
   }
-  this->hx_window_[this->hx_count_++] = s.heat_exchanger_c;
-  float top = s.heat_exchanger_c;
+  const float hx = s.heat_exchanger_c;
+  this->hx_window_[this->hx_count_++] = hx;
+  if (uint32_t(now - this->heating_since_ms_) < BURN_SETTLE_MS)
+    return;
+
+  // The flame went out: fast, whatever the fuel does.
+  if (this->hx_count_ >= FAST_SAMPLES) {
+    float top = hx;
+    for (size_t i = this->hx_count_ - FAST_SAMPLES; i < this->hx_count_; i++)
+      top = std::max(top, this->hx_window_[i]);
+    if (!this->burn_warned_ && top - hx >= FAST_FALL_C) {
+      this->burn_warned_ = true;
+      this->raise_(alert::BURN, "the heat exchanger is cooling while the heater burns: the flame may be failing");
+    }
+  }
+
+  // The flame fades: slowly, with the fuel and the air steady. Needs the pump rate.
+  if (!std::isfinite(s.pump_hz) || s.pump_hz <= 0.0f || uint32_t(now - this->steady_since_ms_) < STEADY_MS ||
+      this->hx_count_ < N)
+    return;
+  float top = hx;
   for (size_t i = 0; i < this->hx_count_; i++)
     top = std::max(top, this->hx_window_[i]);
-  if (!this->burn_warned_ && this->hx_count_ == N && uint32_t(now - this->heating_since_ms_) >= 5 * 60 * 1000 &&
-      top - s.heat_exchanger_c >= 30.0f) {
-    this->burn_warned_ = true;
-    this->raise_(alert::BURN, "the heat exchanger is cooling while the heater burns: the flame may be failing");
+  if (!std::isfinite(this->fading_from_c_)) {
+    if (top - hx < FADE_WARN_C)
+      return;
+    this->fading_from_c_ = top;
+    if (!this->burn_warned_) {
+      this->burn_warned_ = true;
+      this->raise_(alert::BURN,
+                   "the heat exchanger is cooling while the fuel is steady: the flame may be failing. Check the "
+                   "exhaust, fuel and air intake");
+    }
+    return;
   }
+  if (hx > this->fading_from_c_ - FADE_WARN_C / 2.0f) {  // it recovered
+    this->fading_from_c_ = NAN;
+    return;
+  }
+  if (this->fading_from_c_ - hx < FADE_STOP_C || this->stop_asked_)
+    return;
+  this->fading_from_c_ = NAN;
+  this->stop_(Source::BOARD, "the flame was failing");
+  this->raise_(alert::BURN,
+               "the heater was stopped: its flame was failing. Check the exhaust, fuel and air intake before the "
+               "next start");
+  this->disarm_("the heater was stopped because its flame was failing");
 }
 
 void Automation::step_frost_(uint32_t now, const Status &s) {
