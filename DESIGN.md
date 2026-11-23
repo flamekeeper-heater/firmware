@@ -194,6 +194,25 @@ flash record, with the setting it was checked against. A warm start needs that r
 and a reading that fits it. On a 24 V supply a mismatch or a missing check refuses the start; on a
 12 V supply it is only a warning. A plug outside every range never starts.
 
+`stm32/core/faultlog.*` is the safety MCU's fault log, its last 32 entries, which the link reads
+newest first (FAULT_LOG) and Status numbers (the newest entry's number, 1-255, 0 when empty):
+
+- An entry when the sequencer's fault or stop reason changes to one not noted since it last had
+  none: a run or a start that ended with a fault, a fault latched while off, a retried fan stall, a
+  dead-man stop. Two latched causes the sequencer shows by turns make two entries, not one a pass.
+- An entry at boot for every reset but a power-up with the heater cold: the watchdog, a software or
+  pin reset, a power loss mid-run (the heat exchanger still hot). The same reason twice in a row
+  makes one.
+- Each holds the fault and its reason (or the reset's), the step it happened in, the uptime, and the
+  heat exchanger, supply and board temperature then.
+- In flash: 16-byte slots (the entry and a CRC) in the parameter page past the parameter image,
+  written only with the heater off, like every saved value. A run's entries reach flash once it is
+  off; an MCU reset or a power loss before that loses them (the reset's own entry still shows). A
+  torn slot fails its CRC and is skipped. A parameter save erases the page and writes the 32
+  entries back after the image; a full log (112 slots) does the same with the image flash holds, at
+  most once an hour of uptime, so a reset loop never wears the page out. FAULT_LOG_CLEAR empties the
+  log with a marker slot, not an erase.
+
 `stm32/core/params.*` is the heater's parameter table, which the apps show through the link: the
 pump and fan ranges, the start-up and shut-down timings, the glow power and the overheat limits,
 each with a name, unit, range, step and help text. Changes are staged, then applied together only

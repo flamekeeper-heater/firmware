@@ -55,17 +55,32 @@ static void test_notes(void) {
   /* Another why for the same fault is news. */
   faultlog_note(&l, 60010, BURN_FAULT_OVERHEAT, BURN_WHY_BOARD_HOT, BURN_STEP_COOLDOWN, &in);
   CHECK_EQ(l.count, 2);
+  /* Two latched causes the sequencer shows by turns, a pass each: no entry for each turn. */
+  for (int i = 0; i < 10; i++) {
+    faultlog_note(&l, 60020, BURN_FAULT_OVERHEAT, BURN_WHY_OVERHEAT_LIMIT, BURN_STEP_OFF, &in);
+    faultlog_note(&l, 60030, BURN_FAULT_OVERHEAT, BURN_WHY_BOARD_HOT, BURN_STEP_OFF, &in);
+  }
+  CHECK_EQ(l.count, 2);
+  /* Remembered up to four: a fifth pushes out the oldest, which is news again. */
+  faultlog_note(&l, 60040, BURN_FAULT_FAN, BURN_WHY_FAN_STAGE, BURN_STEP_OFF, &in);
+  faultlog_note(&l, 60040, BURN_FAULT_PUMP, BURN_WHY_PUMP_STAGE, BURN_STEP_OFF, &in);
+  faultlog_note(&l, 60040, BURN_FAULT_CO, BURN_WHY_CO, BURN_STEP_OFF, &in);
+  CHECK_EQ(l.count, 5);
+  faultlog_note(&l, 60040, BURN_FAULT_OVERHEAT, BURN_WHY_BOARD_HOT, BURN_STEP_OFF, &in);
+  CHECK_EQ(l.count, 5);
+  faultlog_note(&l, 60040, BURN_FAULT_OVERHEAT, BURN_WHY_OVERHEAT_LIMIT, BURN_STEP_OFF, &in);
+  CHECK_EQ(l.count, 6);
   /* A new start clears it; the same fault again is a new entry. */
   faultlog_note(&l, 70000, 0, 0, BURN_STEP_OFF, &in);
   faultlog_note(&l, 80000, BURN_FAULT_OVERHEAT, BURN_WHY_BOARD_HOT, BURN_STEP_RUNNING, &in);
-  CHECK_EQ(l.count, 3);
-  CHECK_EQ(newest(&l).seq, 3);
+  CHECK_EQ(l.count, 7);
+  CHECK_EQ(newest(&l).seq, 7);
   /* A stop for a reason, without a fault: the dead-man. Unknown readings stay unknown. */
   faultlog_note(&l, 90000, 0, 0, BURN_STEP_OFF, &in);
   in = readings(BURN_UNKNOWN_TEMP, 1200, BURN_UNKNOWN_TEMP);
   faultlog_note(&l, 91000, BURN_FAULT_NONE, BURN_WHY_DEADMAN, BURN_STEP_WARM_UP, &in);
   e = newest(&l);
-  CHECK_EQ(l.count, 4);
+  CHECK_EQ(l.count, 8);
   CHECK(e.kind == LINK_LOG_FAULT && e.code == 0 && e.why == BURN_WHY_DEADMAN && e.step == BURN_STEP_WARM_UP);
   CHECK_EQ(e.hx, LINK_UNKNOWN_I16);
   CHECK_EQ(e.board_c, LINK_UNKNOWN_I8);

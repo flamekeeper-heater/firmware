@@ -13,6 +13,11 @@
  * record, so a new R0 costs one double-word write and the page is erased only when the log is full
  * or the plug record changes (the STM32G0's flash is rated for 1000 erases).
  *
+ * The fault log (../core/faultlog.h) is the same kind of log in the parameter page: 16-byte slots
+ * past the parameter image, written with the heater off. A parameter save erases the page and
+ * writes the log's 32 entries back after the image; a full log erases it the same way, keeping the
+ * image as flash holds it, at most once an hour of uptime (a reset loop never erases it).
+ *
  * Plain C99 over hal.h. Host-tested in ../tests/test_board.c with a fake chip. */
 #ifndef FLAMEKEEPER_BOARD_H
 #define FLAMEKEEPER_BOARD_H
@@ -36,6 +41,8 @@ typedef struct {
   uint32_t last_glow_ms, last_loop_ms, last_co_ms;
   uint16_t oc_raw;           /* the pump's overcurrent threshold, as last armed */
   uint16_t co_log_next;      /* the R0 log's next free slot */
+  uint16_t log_next;         /* the fault log's next free slot */
+  uint32_t log_erased_s;     /* the fault log's own last erase, in uptime seconds (0: the reset) */
   uint32_t loops, bursts;    /* loop passes (each refreshes the watchdog) and heartbeat bursts */
 } board;
 
@@ -49,6 +56,11 @@ void board_ms(board *b, uint32_t now_ms);
 #define BOARD_CO_LOG_START 256u
 #define BOARD_CO_LOG_SLOT 8u
 #define BOARD_CO_LOG_SLOTS ((HAL_FLASH_PAGE_SIZE - BOARD_CO_LOG_START) / BOARD_CO_LOG_SLOT)
+
+/* The fault log in the parameter page (exposed for the tests). */
+#define BOARD_FAULT_LOG_START 256u
+#define BOARD_FAULT_LOG_SLOTS ((HAL_FLASH_PAGE_SIZE - BOARD_FAULT_LOG_START) / FAULTLOG_SLOT)
+#define BOARD_FAULT_LOG_ERASE_S 3600u /* a full log erases its page at most this often */
 
 #ifdef __cplusplus
 }

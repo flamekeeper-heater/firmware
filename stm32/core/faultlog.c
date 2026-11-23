@@ -52,13 +52,18 @@ static void add(faultlog *l, uint8_t kind, uint8_t code, uint8_t why, uint8_t st
 void faultlog_note(faultlog *l, uint32_t now, uint8_t fault, uint8_t why, uint8_t step, const burn_inputs *in) {
   faultlog_tick(l, now);
   if (fault == 0 && why == 0) {
-    l->fault = l->why = 0;
+    l->seen_n = 0;
     return;
   }
-  if (fault == l->fault && why == l->why)
-    return;
-  l->fault = fault;
-  l->why = why;
+  uint16_t key = (uint16_t) (fault << 8 | why);
+  for (unsigned i = 0; i < l->seen_n; i++)
+    if (l->seen[i] == key)
+      return;
+  if (l->seen_n == FAULTLOG_SEEN) {
+    memmove(l->seen, l->seen + 1, (FAULTLOG_SEEN - 1u) * sizeof(l->seen[0]));
+    l->seen_n--;
+  }
+  l->seen[l->seen_n++] = key;
   add(l, LINK_LOG_FAULT, fault, why, step, in);
 }
 

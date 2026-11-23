@@ -35,6 +35,8 @@
 //               parameter table as applied
 //   wire        the MCU answers exactly the frames a parser on the wire sees, and every reply
 //               parses on the ESP32's side
+//   fault_log   every new fault (and dead-man stop) is the fault log's newest entry at once, and in
+//               "flash" after the next write with the heater off; flash keeps it over MCU resets
 //
 //   test_soak                         the quick, fixed seeds (part of run.sh)
 //   test_soak --seeds A-B --hours H   seeds A to B, H simulated hours each
@@ -101,12 +103,13 @@ struct Stats {
   uint64_t sim_ms = 0;
   uint32_t starts = 0, running = 0, stalls = 0, lockouts = 0, deadman = 0, resets = 0, latched = 0,
            fault_resets = 0, glow_s = 0, frames = 0, bad_frames = 0, events = 0, co_alarms = 0, co_faults = 0,
-           pump_cuts = 0;
+           pump_cuts = 0, logged = 0;
   void add(const Stats &o) {
     sim_ms += o.sim_ms, starts += o.starts, running += o.running, stalls += o.stalls;
     lockouts += o.lockouts, deadman += o.deadman, resets += o.resets, latched += o.latched;
     fault_resets += o.fault_resets, glow_s += o.glow_s, frames += o.frames, bad_frames += o.bad_frames;
     events += o.events, co_alarms += o.co_alarms, co_faults += o.co_faults, pump_cuts += o.pump_cuts;
+    logged += o.logged;
   }
 };
 
@@ -118,6 +121,11 @@ struct Bench : HeaterBench<Bench> {
   // what "flash" keeps across MCU resets
   std::vector<uint8_t> params_flash, plug_flash;
   uint32_t co_r0_flash = 0;    // the clean-air R0
+  std::vector<std::vector<uint8_t>> log_flash;  // the fault log's slots, oldest first (the board's page)
+  // The fault log: the stop the core holds now, and the entries flash must have after its next write.
+  std::vector<uint16_t> log_seen;  // fault << 8 | why since the burn last had neither
+  struct LogExpect { uint8_t fault, why, seq; };
+  std::vector<LogExpect> log_expect;
 
   uint8_t last_result = 0;
   bool pulsed = false, stroked = false;  // this pass
@@ -176,6 +184,11 @@ struct Bench : HeaterBench<Bench> {
       safety_load_plug(&s, plug_flash.data(), plug_flash.size());
     if (co_r0_flash)
       safety_load_co_r0(&s, co_r0_flash);
+    for (const std::vector<uint8_t> &slot : log_flash)
+      faultlog_load_slot(&s.log, slot.data());
+    safety_log_reset(&s);
+    log_seen.clear();
+    log_expect.clear();  // entries not yet in flash are lost with the reset (DESIGN.md)
     co_shadow = co_alarm_shadow = co_fault_shadow = false;
     link_parser_init(&mirror, LINK_REQUEST);
     oracle_seen = false;
@@ -247,6 +260,55 @@ struct Bench : HeaterBench<Bench> {
     if (latched_shadow && !s.burn.fault_latched && (s.co.alarm || s.co.fault))
       return fail("co", "a fault reset cleared the latch while the CO module still holds one");
     latched_shadow = s.burn.fault_latched;
+    check_log();
+  }
+
+  // The fault log: a fault or stop reason not seen since the burn last had none is its newest entry
+  // at once (the log may repeat one, never miss one).
+  void check_log() {
+    uint8_t f = s.burn.fault, w = s.burn.why;
+    if (f == 0 && w == 0) {
+      log_seen.clear();
+      return;
+    }
+    uint16_t key = uint16_t(f << 8 | w);
+    if (std::find(log_seen.begin(), log_seen.end(), key) != log_seen.end())
+      return;
+    log_seen.push_back(key);
+    link_fault_entry e;
+    if (faultlog_read(&s.log, 0, &e, 1) != 1 || e.kind != LINK_LOG_FAULT || e.code != f || e.why != w)
+      return fail("fault_log", "a new fault that is not the fault log's newest entry");
+    if (faultlog_newest_seq(&s.log) != e.seq)
+      return fail("fault_log", "Status's log number is not the newest entry's");
+    log_expect.push_back({f, w, e.seq});
+  }
+
+  // The board's write with the heater off: the unsaved slots go to "flash" (a full page keeps the
+  // newest), then every fault noted since the last write must be there.
+  void flush_log() {
+    if (!burn_is_off(&s.burn))
+      return;
+    unsigned n = faultlog_unsaved_slots(&s.log);
+    for (unsigned i = 0; i < n; i++) {
+      std::vector<uint8_t> slot(FAULTLOG_SLOT);
+      faultlog_unsaved_slot(&s.log, i, slot.data());
+      log_flash.push_back(slot);
+    }
+    faultlog_saved(&s.log);
+    if (log_flash.size() > 112)
+      log_flash.erase(log_flash.begin(), log_flash.end() - FAULTLOG_SIZE);
+    for (const LogExpect &x : log_expect) {
+      bool found = false;
+      for (size_t i = log_flash.size(); i-- > 0 && !found;) {
+        link_fault_entry e;
+        link_decode_fault_entry(log_flash[i].data(), FAULTLOG_SLOT, &e);
+        found = e.kind == LINK_LOG_FAULT && e.seq == x.seq && e.code == x.fault && e.why == x.why;
+      }
+      if (!found)
+        return fail("fault_log", "a fault noted before a write with the heater off is not in flash");
+      st.logged++;
+    }
+    log_expect.clear();
   }
 
   // ---------------------------------------------------------------- the board's calls into the core
@@ -310,6 +372,7 @@ struct Bench : HeaterBench<Bench> {
     if (!latched_shadow && s.burn.fault_latched)
       st.latched++;
     latched_shadow = s.burn.fault_latched;
+    check_log();
   }
 
   void pass_out(const burn_inputs &in) {
@@ -325,6 +388,7 @@ struct Bench : HeaterBench<Bench> {
       plug_pack(&s.plug, plug_flash.data(), plug_flash.size());
       safety_plug_saved(&s);
     }
+    flush_log();
     esp_alive = now >= silent_until;
     HeaterBench::pass_out(in);
   }
@@ -851,11 +915,11 @@ int main(int argc, char **argv) {
   }
   std::printf("soak: %u seeds x %u h = %.1f h simulated, %u events, %u starts, %u reached running, %u stall "
               "retries, %u lockouts, %u dead-man stops, %u MCU resets, %u faults latched, %u fault resets, "
-              "%u glow s, %u frames (%u bad), %u CO alarms, %u CO sensor faults, %u pump cuts; %d regressions; "
-              "%d failures\n",
+              "%u glow s, %u frames (%u bad), %u CO alarms, %u CO sensor faults, %u pump cuts, %u fault log "
+              "entries in flash; %d regressions; %d failures\n",
               last - first + 1, hours, total.sim_ms / 3600000.0, total.events, total.starts, total.running,
               total.stalls, total.lockouts, total.deadman, total.resets, total.latched, total.fault_resets,
               total.glow_s, total.frames, total.bad_frames, total.co_alarms, total.co_faults, total.pump_cuts,
-              regressions_run, failed + regressions_failed);
+              total.logged, regressions_run, failed + regressions_failed);
   return failed + regressions_failed ? 1 : 0;
 }

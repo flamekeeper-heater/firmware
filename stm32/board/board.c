@@ -66,6 +66,78 @@ static int co_log_append(board *b, uint32_t r0) {
   return hal_flash_program(HAL_PAGE_PLUG, at, e, sizeof(e));
 }
 
+/* ---------------------------------------------------------------- the fault log (parameter page) */
+
+/* The parameter image must end before the log. */
+typedef char params_before_fault_log[PARAMS_IMAGE_MAX <= BOARD_FAULT_LOG_START ? 1 : -1];
+
+static int fault_slot_erased(const uint8_t *e) {
+  for (unsigned i = 0; i < FAULTLOG_SLOT; i++)
+    if (e[i] != 0xFFu)
+      return 0;
+  return 1;
+}
+
+/* At boot: the log's slots, oldest first, into the core's log; notes the next free slot. */
+static void fault_log_scan(board *b) {
+  const uint8_t *page = hal_flash_page(HAL_PAGE_PARAMS);
+  b->log_next = 0;
+  for (unsigned i = 0; i < BOARD_FAULT_LOG_SLOTS; i++) {
+    const uint8_t *e = page + BOARD_FAULT_LOG_START + i * FAULTLOG_SLOT;
+    if (fault_slot_erased(e))
+      continue;
+    b->log_next = (uint16_t) (i + 1u); /* written, or torn: skipped either way */
+    (void) faultlog_load_slot(&b->s.log, e);
+  }
+}
+
+/* A failed slot counts as written too: the next goes after it. */
+static void fault_log_program(board *b, const uint8_t *slot) {
+  uint16_t at = (uint16_t) (BOARD_FAULT_LOG_START + b->log_next * FAULTLOG_SLOT);
+  b->log_next++;
+  (void) hal_flash_program(HAL_PAGE_PARAMS, at, slot, FAULTLOG_SLOT);
+}
+
+/* Erases the parameter page and writes img there, then the whole fault log after it. */
+static int params_page_write(board *b, const uint8_t *img, size_t n) {
+  if (hal_flash_write(HAL_PAGE_PARAMS, img, n) != 0)
+    return -1;
+  b->log_next = 0;
+  uint8_t slot[FAULTLOG_SLOT];
+  for (unsigned i = 0; i < b->s.log.count; i++) {
+    faultlog_slot(&b->s.log, i, slot);
+    fault_log_program(b, slot);
+  }
+  faultlog_saved(&b->s.log);
+  return 0;
+}
+
+/* The entries noted since the last write (and a clear), with the heater off. A full log rewrites
+ * the page with the parameter image flash holds (not the applied values: those may be unsaved). */
+static __attribute__((noinline)) void fault_log_flush(board *b) {
+  faultlog *l = &b->s.log;
+  unsigned n = faultlog_unsaved_slots(l);
+  if (n == 0)
+    return;
+  if (b->log_next + n > BOARD_FAULT_LOG_SLOTS) {
+    if (l->uptime_s - b->log_erased_s < BOARD_FAULT_LOG_ERASE_S)
+      return; /* they wait in RAM */
+    b->log_erased_s = l->uptime_s;
+    uint8_t img[PARAMS_IMAGE_MAX];
+    size_t len = hal_flash_read(HAL_PAGE_PARAMS, img, sizeof(img));
+    while (len > 0 && img[len - 1u] == 0xFFu)
+      len--;
+    (void) params_page_write(b, img, len);
+    return;
+  }
+  uint8_t slot[FAULTLOG_SLOT];
+  for (unsigned i = 0; i < n; i++) {
+    faultlog_unsaved_slot(l, i, slot);
+    fault_log_program(b, slot);
+  }
+  faultlog_saved(l);
+}
+
 /* noinline here and in save(): the page buffer stays out of board_ms's frame, under the link's. */
 static __attribute__((noinline)) void load(board *b) {
   uint8_t buf[PARAMS_IMAGE_MAX];
@@ -76,6 +148,11 @@ static __attribute__((noinline)) void load(board *b) {
     b->s.params.save_pending = 1;
   else if (n > 0)
     safety_load_params(&b->s, buf, n);
+  /* The fault log: slots that fail their CRC are skipped. An ECC error in it (a torn slot) has the
+   * page rewritten too, with the parameters as loaded and the log's good entries. */
+  fault_log_scan(b);
+  if (hal_flash_unreadable(HAL_PAGE_PARAMS))
+    b->s.params.save_pending = 1;
   n = hal_flash_read(HAL_PAGE_PLUG, buf, sizeof(buf));
   uint32_t r0 = co_log_scan(b);
   if (hal_flash_unreadable(HAL_PAGE_PLUG)) {
@@ -96,6 +173,7 @@ void board_init(board *b, uint32_t now, uint8_t reset_reason, uint8_t option_fau
   burn_inputs in = read_inputs(b, analog_vin_cv(b->raw[HAL_ADC_VIN], b->vdda_mv));
   safety_init(&b->s, now, &in, reset_reason, option_faults);
   load(b);
+  safety_log_reset(&b->s); /* after the log's slots: the reset's entry is the newest */
   b->last_glow_ms = b->last_loop_ms = b->last_co_ms = now;
   hal_co_heater(safety_co_heater(&b->s)); /* CO-5: heated whenever the board is awake, if fitted */
 }
@@ -112,7 +190,7 @@ static void fill_detail(board *b, const burn_inputs *in, uint16_t fan_ma, uint16
   d->vdda_mv = v;
 }
 
-/* Saved parameters, the plug record and R0 go to flash only with the heater off: erasing stalls
+/* Saved parameters, the plug record, R0 and the fault log go to flash only with the heater off: erasing stalls
  * the CPU for longer than a heartbeat burst lasts. */
 static __attribute__((noinline)) void save(board *b) {
   if (!burn_is_off(&b->s.burn))
@@ -120,7 +198,7 @@ static __attribute__((noinline)) void save(board *b) {
   if (safety_params_save_pending(&b->s)) {
     uint8_t buf[PARAMS_IMAGE_MAX];
     size_t n = params_pack(&b->s.params, buf, sizeof(buf));
-    if (n > 0 && hal_flash_write(HAL_PAGE_PARAMS, buf, n) == 0)
+    if (n > 0 && params_page_write(b, buf, n) == 0) /* the fault log goes back after the image */
       safety_params_saved(&b->s);
   }
   /* The erase takes the R0 log too: the saved R0 goes back first. */
@@ -136,6 +214,7 @@ static __attribute__((noinline)) void save(board *b) {
     (void) co_log_append(b, r0);
     safety_co_r0_saved(&b->s, r0);
   }
+  fault_log_flush(b);
 }
 
 void board_ms(board *b, uint32_t now) {

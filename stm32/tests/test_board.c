@@ -439,6 +439,7 @@ static void test_co_r0_in_flash(void) {
   /* A changed R0 an hour on waits while the heater runs. */
   b.s.co_r0_saved = r0 / 2;
   b.s.co_r0_saved_ms = chip.now - 2u * 3600000u;
+  link_deadman_feed(&b.s.deadman, chip.now); /* the ESP32 is there: no dead-man stop to log */
   b.s.burn.step = BURN_STEP_RUNNING;
   run(&b, 100);
   CHECK(chip.flash_programs == 1);
@@ -541,6 +542,210 @@ static void test_flash_ecc_error(void) {
   CHECK(b2.s.burn.p.fan_max_rpm == 4500 && b2.s.plug.rec.verified_v == 0 && chip.unreadable == 0);
 }
 
+/* ---------------------------------------------------------------- the fault log in flash */
+
+/* The fault log's slots in use in page 30. */
+static unsigned fault_slots_used(void) {
+  unsigned used = 0;
+  for (unsigned i = 0; i < BOARD_FAULT_LOG_SLOTS; i++) {
+    const uint8_t *e = chip.flash[HAL_PAGE_PARAMS] + BOARD_FAULT_LOG_START + i * FAULTLOG_SLOT;
+    for (unsigned k = 0; k < FAULTLOG_SLOT; k++)
+      if (e[k] != 0xFF) {
+        used++;
+        break;
+      }
+  }
+  return used;
+}
+
+/* An entry noted in the core as a pass would note it (a flame-out in the running step). */
+static void note_fault(board *b, uint8_t fault) {
+  burn_inputs in = b->s.in;
+  faultlog_note(&b->s.log, b->now, 0, 0, BURN_STEP_OFF, &in);
+  faultlog_note(&b->s.log, b->now, fault, BURN_WHY_FLAME_LOST, BURN_STEP_RUNNING, &in);
+}
+
+static void test_fault_log_flash(void) {
+  chip_reset();
+  /* A cold power-up: nothing to log, nothing written (DESIGN.md). */
+  board b;
+  board_init(&b, chip.now, LINK_RESET_POWER_ON, 0);
+  run(&b, 50);
+  CHECK(b.s.log.count == 0 && chip.flash_programs == 0 && chip.flash_writes == 0);
+  /* A watchdog reset: its entry, written in the first pass with the heater off, one slot, no erase. */
+  board_init(&b, chip.now, LINK_RESET_WATCHDOG, 0);
+  CHECK(b.s.log.count == 1 && b.s.log.unsaved == 1);
+  run(&b, 20);
+  CHECK(chip.flash_programs == 1 && chip.flash_writes == 0 && fault_slots_used() == 1 && b.s.log.unsaved == 0);
+  CHECK_EQ(b.log_next, 1);
+  /* The same reset again: no second slot (a reset loop costs one). */
+  board_init(&b, chip.now, LINK_RESET_WATCHDOG, 0);
+  run(&b, 20);
+  CHECK(chip.flash_programs == 1 && b.s.log.count == 1 && faultlog_newest_seq(&b.s.log) == 1);
+
+  /* A fault while the heater runs: in RAM (the link reads it) but not in flash until it is off. */
+  link_deadman_feed(&b.s.deadman, chip.now); /* the ESP32 is there: no dead-man stop */
+  b.s.burn.step = BURN_STEP_RUNNING;
+  note_fault(&b, BURN_FAULT_FLAME_OUT);
+  run(&b, 100);
+  CHECK(chip.flash_programs == 1 && b.s.log.count == 2 && b.s.log.unsaved == 1);
+  b.s.burn.step = BURN_STEP_OFF;
+  run(&b, 20);
+  CHECK(chip.flash_programs == 2 && fault_slots_used() == 2 && b.s.log.unsaved == 0);
+  /* A reset loads both, and the numbers go on. */
+  board b2;
+  board_init(&b2, chip.now, LINK_RESET_POWER_ON, 0);
+  CHECK(b2.s.log.count == 2 && faultlog_newest_seq(&b2.s.log) == 2 && b2.log_next == 2);
+  link_fault_entry e[2];
+  CHECK_EQ(faultlog_read(&b2.s.log, 0, e, 2), 2);
+  CHECK(e[0].kind == LINK_LOG_FAULT && e[0].code == BURN_FAULT_FLAME_OUT && e[0].step == BURN_STEP_RUNNING);
+  CHECK(e[1].kind == LINK_LOG_RESET && e[1].code == LINK_RESET_WATCHDOG);
+
+  /* An entry still unsaved when the MCU resets is lost (the heater was running). */
+  link_deadman_feed(&b2.s.deadman, chip.now);
+  b2.s.burn.step = BURN_STEP_RUNNING;
+  note_fault(&b2, BURN_FAULT_SENSOR);
+  run(&b2, 20);
+  board b3;
+  board_init(&b3, chip.now, LINK_RESET_POWER_ON, 0);
+  CHECK(b3.s.log.count == 2 && faultlog_newest_seq(&b3.s.log) == 2);
+
+  /* A torn slot (the power lost between its two double words): skipped, and the next one goes
+   * after it. */
+  note_fault(&b3, BURN_FAULT_SENSOR);
+  run(&b3, 20);
+  CHECK(fault_slots_used() == 3);
+  memset(chip.flash[HAL_PAGE_PARAMS] + BOARD_FAULT_LOG_START + 2 * FAULTLOG_SLOT + 8, 0xFF, 8);
+  board b4;
+  board_init(&b4, chip.now, LINK_RESET_POWER_ON, 0);
+  CHECK(b4.s.log.count == 2 && b4.log_next == 3);
+  note_fault(&b4, BURN_FAULT_START);
+  run(&b4, 20);
+  CHECK(b4.log_next == 4 && chip.flash_bad_programs == 0 && b4.s.log.count == 3);
+
+  /* Cleared: one slot (the marker), no erase; empty after a reset, and the numbers go on. */
+  uint32_t writes = chip.flash_writes;
+  faultlog_clear(&b4.s.log);
+  run(&b4, 20);
+  CHECK(chip.flash_writes == writes && b4.log_next == 5 && b4.s.log.count == 0);
+  board b5;
+  board_init(&b5, chip.now, LINK_RESET_POWER_ON, 0);
+  CHECK(b5.s.log.count == 0 && b5.log_next == 5);
+  note_fault(&b5, BURN_FAULT_GLOW);
+  CHECK_EQ(faultlog_newest_seq(&b5.s.log), 4);
+}
+
+/* Fills page 30's log with valid slots from the n-th on (as earlier boots would have). */
+static void fill_fault_log(unsigned from) {
+  faultlog l;
+  faultlog_init(&l, 0);
+  burn_inputs in;
+  memset(&in, 0, sizeof(in));
+  for (unsigned i = from; i < BOARD_FAULT_LOG_SLOTS; i++) {
+    faultlog_note(&l, 0, 0, 0, BURN_STEP_OFF, &in);
+    faultlog_note(&l, 0, BURN_FAULT_FLAME_OUT, BURN_WHY_FLAME_LOST, BURN_STEP_RUNNING, &in);
+    uint8_t slot[FAULTLOG_SLOT];
+    faultlog_unsaved_slot(&l, 0, slot);
+    faultlog_saved(&l);
+    CHECK(hal_flash_program(HAL_PAGE_PARAMS, (uint16_t) (BOARD_FAULT_LOG_START + i * FAULTLOG_SLOT), slot,
+                            FAULTLOG_SLOT) == 0);
+  }
+}
+
+static void test_fault_log_full(void) {
+  /* Saved parameters (fan max 5000) and a full log. */
+  chip_reset();
+  params ps;
+  params_init(&ps);
+  params_set(&ps, 0x11, 5000);
+  CHECK(params_apply(&ps, 1, 1) == LINK_OK);
+  uint8_t img[PARAMS_IMAGE_MAX];
+  size_t n = params_pack(&ps, img, sizeof(img));
+  CHECK(hal_flash_write(HAL_PAGE_PARAMS, img, n) == 0);
+  fill_fault_log(0);
+  uint8_t before[BOARD_FAULT_LOG_START];
+  memcpy(before, chip.flash[HAL_PAGE_PARAMS], sizeof(before));
+  board b;
+  board_init(&b, chip.now, LINK_RESET_POWER_ON, 0);
+  CHECK(b.log_next == BOARD_FAULT_LOG_SLOTS && b.s.log.count == FAULTLOG_SIZE);
+  CHECK_EQ(faultlog_newest_seq(&b.s.log), BOARD_FAULT_LOG_SLOTS);
+  CHECK_EQ(b.s.burn.p.fan_max_rpm, 5000);
+  /* A new entry with the log full and the MCU up less than an hour: no erase; it waits in RAM. */
+  uint32_t writes = chip.flash_writes;
+  note_fault(&b, BURN_FAULT_FAN);
+  run(&b, 20);
+  CHECK(chip.flash_writes == writes && b.s.log.unsaved == 1);
+  /* An hour up: the page is erased once, the parameter image goes back as it was, then the newest
+   * 32 entries, the new one with them. */
+  b.s.log.uptime_s = BOARD_FAULT_LOG_ERASE_S;
+  run(&b, 20);
+  CHECK(chip.flash_writes == writes + 1 && b.s.log.unsaved == 0 && chip.flash_bad_programs == 0);
+  CHECK(memcmp(before, chip.flash[HAL_PAGE_PARAMS], n) == 0);
+  CHECK_EQ(b.log_next, FAULTLOG_SIZE);
+  CHECK_EQ(fault_slots_used(), FAULTLOG_SIZE);
+  board b2;
+  board_init(&b2, chip.now, LINK_RESET_POWER_ON, 0);
+  CHECK(b2.s.burn.p.fan_max_rpm == 5000 && b2.s.log.count == FAULTLOG_SIZE && b2.log_next == FAULTLOG_SIZE);
+  link_fault_entry e;
+  CHECK_EQ(faultlog_read(&b2.s.log, 0, &e, 1), 1);
+  CHECK(e.code == BURN_FAULT_FAN && e.seq == BOARD_FAULT_LOG_SLOTS + 1);
+  CHECK_EQ(faultlog_read(&b2.s.log, FAULTLOG_SIZE - 1, &e, 1), 1);
+  CHECK_EQ(e.seq, BOARD_FAULT_LOG_SLOTS + 1 - FAULTLOG_SIZE + 1);
+
+  /* Full again soon after: the next erase waits for another hour of uptime. */
+  fill_fault_log(FAULTLOG_SIZE);
+  board_init(&b2, chip.now, LINK_RESET_POWER_ON, 0);
+  b2.s.log.uptime_s = 2u * BOARD_FAULT_LOG_ERASE_S;
+  run(&b2, 20);
+  note_fault(&b2, BURN_FAULT_PUMP);
+  run(&b2, 20);
+  CHECK(chip.flash_writes == writes + 2 && b2.s.log.unsaved == 0);
+  fill_fault_log(FAULTLOG_SIZE);
+  note_fault(&b2, BURN_FAULT_GLOW);
+  b2.log_next = BOARD_FAULT_LOG_SLOTS; /* as if the slots had been written here */
+  b2.s.log.uptime_s += BOARD_FAULT_LOG_ERASE_S - 1u;
+  run(&b2, 20);
+  CHECK(chip.flash_writes == writes + 2 && b2.s.log.unsaved == 1);
+  b2.s.log.uptime_s += 1u;
+  run(&b2, 20);
+  CHECK(chip.flash_writes == writes + 3 && b2.s.log.unsaved == 0);
+}
+
+static void test_fault_log_page_rewrite(void) {
+  /* Saving the parameters erases page 30: the log goes back after the new image. */
+  chip_reset();
+  board b;
+  board_init(&b, chip.now, LINK_RESET_SOFTWARE, 0);
+  note_fault(&b, BURN_FAULT_OVERHEAT);
+  run(&b, 20);
+  CHECK(fault_slots_used() == 2 && chip.flash_writes == 0);
+  b.s.params.live.fan_max_rpm = 4800;
+  b.s.params.save_pending = 1;
+  run(&b, 20);
+  CHECK(chip.flash_writes == 1 && fault_slots_used() == 2 && chip.flash_bad_programs == 0 && b.log_next == 2);
+  board b2;
+  board_init(&b2, chip.now, LINK_RESET_POWER_ON, 0);
+  CHECK(b2.s.burn.p.fan_max_rpm == 4800 && b2.s.log.count == 2 && faultlog_newest_seq(&b2.s.log) == 2);
+  /* Unsaved entries go in with the rewrite (the heater is off for both). */
+  note_fault(&b2, BURN_FAULT_SENSOR);
+  b2.s.params.save_pending = 1;
+  run(&b2, 20);
+  CHECK(chip.flash_writes == 2 && fault_slots_used() == 3 && b2.s.log.unsaved == 0);
+
+  /* The page reads with an ECC error: the parameters' defaults, the log's entries whose CRCs hold,
+   * and the next pass rewrites the page with both. */
+  chip.ecc_bad[HAL_PAGE_PARAMS] = 1;
+  board b3;
+  board_init(&b3, chip.now, LINK_RESET_POWER_ON, 0);
+  CHECK(b3.s.burn.p.fan_max_rpm == 4500 && b3.s.params.save_pending && b3.s.log.count == 3);
+  run(&b3, 20);
+  CHECK(chip.flash_writes == 3 && !chip.ecc_bad[HAL_PAGE_PARAMS] && chip.unreadable == 0);
+  CHECK(fault_slots_used() == 3 && b3.log_next == 3);
+  board b4;
+  board_init(&b4, chip.now, LINK_RESET_POWER_ON, 0);
+  CHECK(b4.s.log.count == 3 && faultlog_newest_seq(&b4.s.log) == 3 && chip.unreadable == 0);
+}
+
 int main(void) {
   test_conversions();
   test_pump_oc_threshold();
@@ -556,5 +761,8 @@ int main(void) {
   test_co_not_fitted();
   test_co_r0_in_flash();
   test_flash_ecc_error();
+  test_fault_log_flash();
+  test_fault_log_full();
+  test_fault_log_page_rewrite();
   return check_report("board");
 }

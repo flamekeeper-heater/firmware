@@ -4,8 +4,9 @@
  *
  * Entries are the link's (link_fault_entry). A fault entry is noted when the sequencer's fault and
  * why change to something other than none: a run or a start that ended with a fault, a fault
- * latched while off, a fan stall that is retried, a dead-man stop. The same fault and why again
- * makes no new entry until the burn has had neither in between (a new start, a fault reset). A
+ * latched while off, a fan stall that is retried, a dead-man stop. A fault and why already noted
+ * makes no new entry until the burn has had neither in between (a new start, a fault reset), so
+ * two latched causes the sequencer shows by turns make two entries, not one a pass. A
  * reset entry is noted at boot for every reset except a plain power-up with the heater cold, and
  * only once for the same reason in a row (a reset loop writes one slot, not one per reset).
  *
@@ -30,6 +31,7 @@ extern "C" {
  * all 0xFF. A slot whose kind is FAULTLOG_CLEARED is the clear marker: what came before it goes. */
 #define FAULTLOG_SLOT 16u
 #define FAULTLOG_CLEARED 0x43u /* 'C' */
+#define FAULTLOG_SEEN 4         /* faults remembered as noted, until the burn has none */
 
 typedef struct {
   link_fault_entry e[FAULTLOG_SIZE]; /* a ring: the newest at head - 1 */
@@ -38,7 +40,8 @@ typedef struct {
   uint8_t unsaved;       /* the newest entries flash does not hold yet */
   uint8_t clear_unsaved; /* a clear flash does not hold yet ... */
   uint8_t clear_seq;     /* ... and the last seq given before it */
-  uint8_t fault, why;    /* the stop noted last (0, 0: none since) */
+  uint16_t seen[FAULTLOG_SEEN]; /* fault << 8 | why noted since the burn last had neither ... */
+  uint8_t seen_n;               /* ... how many (the oldest goes when full) */
   uint32_t last_ms, ms_part, uptime_s; /* the MCU's uptime, seconds (no 49-day wrap) */
 } faultlog;
 

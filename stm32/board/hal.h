@@ -70,8 +70,8 @@ void hal_uart_write(const uint8_t *data, size_t len);
 
 void hal_iwdg_refresh(void);                 /* WDG-16: only ever from the safety loop pass */
 
-/* Flash pages for the saved parameters and the plug record (the plug page also holds the CO
- * sensor's R0 log past the record: board.c). Erasing stalls the CPU: the board layer only writes
+/* Flash pages for the saved parameters and the plug record (past their images, the parameter page
+ * also holds the fault log and the plug page the CO sensor's R0 log: board.c). Erasing stalls the CPU: the board layer only writes
  * while the heater is off. hal_flash_write erases the page and writes an image of up to 256 bytes
  * from its start; hal_flash_read reads up to 256 bytes from the start. */
 enum { HAL_PAGE_PARAMS = 0, HAL_PAGE_PLUG = 1 };
