@@ -84,7 +84,9 @@ that key. To go back to official releases, flash an official image over USB.
    ```
 
 3. **First install, over USB.** Switch the heater off. Hold the board's BOOT button while you plug
-   in the USB-C cable, then write the factory image and your signed app over it:
+   in the USB-C cable, then write the factory image (bootloader, the 8 MB partition table, and the
+   app) and your signed app over it. Updates over the air keep that table; a new one needs this
+   step again.
 
    ```bash
    uv run --with esphome==2026.10.2 esptool --chip esp32c6 write-flash 0x0 .esphome/build/flamekeeper/build/firmware.factory.bin
