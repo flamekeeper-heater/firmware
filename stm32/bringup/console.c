@@ -311,6 +311,7 @@ static const char *const HELP[] = {
     "io                          interlock lines, heartbeat, stage outputs",
     "watch <ms>                  a status line every <ms> (100-60000), 0 off",
     "opt                         option bytes (FLASH_OPTR) against WDG-1",
+    "uid                         the chip's 96-bit unique id",
     "flash <page> [<off> <len>]  hex dump of flash page 0-31 (read only)",
     "par | par <id> <value> | par apply | par save | par discard",
     "tune [<name> <value>]       figures outside the table, RAM only",
@@ -744,6 +745,18 @@ static void io_line(console *c) {
   nl(c);
 }
 
+/* "uid w0 w1 w2": the three words in address order, as the factory test names its report. */
+static void uid_line(console *c) {
+  uint8_t id[12];
+  bringup_sys_read(CONSOLE_UID_ADDR, id, sizeof(id));
+  put(c, "uid");
+  for (int w = 0; w < 3; w++) {
+    put_ch(c, ' ');
+    put_hex(c, link_get32(id + 4 * w), 8);
+  }
+  nl(c);
+}
+
 static void glow_sample_line(console *c, const char *what, const hal_glow_sample *g) {
   uint16_t v = c->b->vdda_mv;
   put(c, what);
@@ -871,6 +884,10 @@ static const char *execute(console *c, char *line) {
     return job(c, JOB_ADC);
   if (eq(w0, "opt"))
     return job(c, JOB_OPT);
+  if (eq(w0, "uid") && ws.n == 1) {
+    uid_line(c);
+    return NULL;
+  }
   if (eq(w0, "io")) {
     io_line(c);
     return NULL;

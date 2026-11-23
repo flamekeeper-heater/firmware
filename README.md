@@ -111,6 +111,37 @@ with a text console on the link UART (J_DEBUG pins 6 and 7, 115200 8N1) that sho
 and runs single, time-limited uses of each stage through the same drivers and interlocks.
 `stm32/bringup/console.h` lists its commands; `stm32/bringup/bringup.py` drives it from a USB-UART.
 
+## Production
+
+Two tools in `stm32/tools/`, neither tried on a chip yet. They need an SWD probe (ST-Link, CMSIS-DAP
+or J-Link) on J_DEBUG pins 1-5 (GND, V3V3, SWDIO, SWCLK, NRST), with the ESP32 kept off the
+STM32's boot pin, and [pyocd](https://pyocd.io), which uv fetches:
+
+```bash
+uv run --with pyocd python3 stm32/tools/program.py stm32/build/bringup.bin   # a blank board
+uv run --with pyocd python3 stm32/tools/factory_test.py /dev/cu.usbserial-XXXX
+python3 stm32/tools/program.py --dry-run stm32/build/safety.bin              # every step, no probe
+python3 -I -B -m unittest discover -s stm32/tools/tests                      # their tests
+```
+
+- **`program.py`** mass-erases a blank chip, writes the image, reads it back, sets the option bytes
+  to the watchdog and boot settings the firmware checks (the IWDG started by hardware, boot from
+  the BOOT0 pin) and reloads them. On a board whose parameter pages (30 and 31) hold data it stops
+  unless told `--keep-saved` (only the image's pages are erased) or `--wipe-saved`. Read-out
+  protection stays off; `--rdp-level1` exists, but a protected board can no longer be read over
+  SWD or updated by the ESP32, and unprotecting it erases everything.
+- **`factory_test.py`** runs a board with the bring-up image on a test fixture (the loads and
+  stand-ins are listed in `factory.toml`, with every window) through the checks that need no hand
+  measurement: power-up, reset reason, option bytes, the watchdog reset, the clock, every ADC
+  channel, the interlocks and heartbeat, the fan, one glow probe, a pump stroke, the overcurrent
+  cut, the CO sensor and a link HELLO. It stops at the first failure of a protective check. If
+  every step passes it writes the production image with `program.py` and checks its HELLO.
+  `--no-flash` leaves the bring-up image on.
+- **The report** is named by the chip's 96-bit unique id, in `./factory-reports/` as `.json` (every
+  check's value and window, the configuration and its SHA-256, the production image's SHA-256
+  and the option bytes read back), `.txt` (the same for people) and `.log` (the console
+  transcript).
+
 ## Tests
 
 ```bash

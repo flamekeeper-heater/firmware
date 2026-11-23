@@ -1,0 +1,77 @@
+# The factory test's windows (stm32/tools/factory_test.py), for a board on the test fixture:
+#   - bench supply at 12.0 V into VIN (current limit 3 A), the ESP32 off the link UART;
+#   - a 47 kOhm resistor on the heat-exchanger NTC input (reads about 26 C);
+#   - a fan, or a Hall stand-in, that turns at the asked speed (the glow probe needs 1000 rpm);
+#   - a 10 Ohm 25 W resistor on the pump output (about 1.2 A at 12 V: strokes, and the lowered
+#     overcurrent cut acts on it);
+#   - a 0.5 Ohm power resistor (or a 12 V glow plug) on the glow output: one 150 us probe;
+#   - the CO sensor fitted (or set fitted = false below).
+# Every window is PROVISIONAL until the first boards have been measured: change them here, not in
+# the tool. Units are the bring-up console's (V, A, mA, C, rpm, % of VDDA).
+
+[boot]
+wait_s = 20.0                  # for the boot line after the tool starts (switch the board on then)
+reasons = ["power_on"]         # the reset reason the boot line must give
+powerup_wait_s = 5.0           # for "* powerup passed"
+
+[options]
+optr = 0xDEFEE1AA              # factory 0xDFFFE1AA with IWDG_SW and nBOOT_SEL cleared (WDG-1)
+
+[watchdog]
+boot_ms = [40, 600]            # "wdg stop" to the new boot line, USB-UART latency included
+
+[clock]
+seconds = 5.0                  # between two readings of the MCU's uptime
+ratio = [0.98, 1.02]           # MCU milliseconds per host millisecond (HSI16 within 2 %)
+loops_per_s = [95, 105]        # board loop passes (each refreshes the watchdog)
+
+[adc]                          # idle readings, nothing driven
+vin = [11.70, 12.30]           # V
+vref = [3200, 3400]            # VDDA, mV
+ntc = [22.0, 30.0]             # C, the 47 kOhm stand-in
+board = [10.0, 45.0]           # C, room temperature
+glow_v = [0.00, 2.40]          # V, off level under 20 % of VIN (GLW-22)
+pump_v = [0.00, 9.60]          # V, off level under 80 % of VIN (PMP-14)
+fan_i = [0.000, 0.050]         # A
+pump_i = [0, 60]               # mA
+glow_i = [0.00, 0.50]          # A
+co = [1.4, 70.0]               # % of VDDA (CO-3: at least 1.4 % in clean air)
+hall_rpm = [0, 0]              # the fan stopped
+
+[interlocks]
+hb_s = 1                       # a heartbeat alone for this long
+pump_oc_ma = 3300              # the overcurrent cut's setting (PMP-7)
+
+[fan]
+rpm = 1500                     # the speed loop's target (the glow probe needs 1000 rpm or more)
+seconds = 30                   # the fan action's length; the glow probe runs inside it
+settle_s = 5.0
+rpm_window = [1350, 1650]
+fan_i = [0.020, 3.000]         # A
+
+[glow]
+i = [15.0, 35.0]               # A, the probe current into the dummy plug
+r_mohm = [300, 800]
+cold_type = 12
+pulse_a = [15.0, 35.0]         # "glow read": the in-pulse reading
+gap_a = [0.00, 0.50]
+
+[pump]
+strokes = 1
+peak_ma = [300, 2000]
+
+[pump_oc]
+ma = 500                       # the lowered cut: below the dummy load's current, so it must act
+
+[co]
+fitted = true
+states = ["warming_up", "learning", "ok"]   # not fitted: ["not_fitted"] (parameter 0x52 saved as 0)
+
+[link]
+text = "Flamekeeper bring-up"
+
+[production]
+image = "../build/safety.bin"  # relative to this file
+saved_pages = "wipe"           # "wipe": the board leaves with the defaults; "keep": pages 30 and 31 kept
+text = "Flamekeeper safety"    # HELLO's text once the production image runs
+hello_wait_s = 5.0

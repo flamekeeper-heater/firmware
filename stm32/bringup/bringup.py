@@ -52,11 +52,21 @@ class Port:
             termios.tcflush(self.fd, termios.TCIOFLUSH)
 
     def write_line(self, line):
-        data = line.encode("ascii") + b"\n"
+        self.write_bytes(line.encode("ascii") + b"\n")
+
+    def write_bytes(self, data):
         if self.ser:
             self.ser.write(data)
         else:
             os.write(self.fd, data)
+
+    def read_bytes(self, timeout):
+        """Whatever is buffered and arrives within timeout seconds, raw (a link frame is read so)."""
+        data, self.buf = self.buf, b""
+        return data + self._read(timeout)
+
+    def unread(self, data):
+        self.buf = data + self.buf
 
     def _read(self, timeout):
         if self.ser:
@@ -81,22 +91,66 @@ class Port:
 
 
 class Session:
-    def __init__(self, port, log=None):
+    """echo=False keeps the lines off the screen; every line is kept in .transcript, and unasked
+    lines ("* ...") in .events until wait_event takes them."""
+
+    def __init__(self, port, log=None, echo=True):
         self.port = port
         self.log = open(log, "a") if log else None
+        self.echo = echo
         self.t0 = time.monotonic()
+        self.transcript = []
+        self.events = []
 
     def show(self, line):
         stamp = "%8.3f" % (time.monotonic() - self.t0)
-        print(stamp, line, flush=True)
+        self.transcript.append("%s %s" % (stamp, line))
+        if self.echo:
+            print(stamp, line, flush=True)
         if self.log:
             self.log.write("%s %s %s\n" % (time.strftime("%H:%M:%S"), stamp, line))
             self.log.flush()
 
     def send(self, cmd):
+        self.transcript.append("%8.3f send %s" % (time.monotonic() - self.t0, cmd))
         if self.log:
             self.log.write("%s send %s\n" % (time.strftime("%H:%M:%S"), cmd))
         self.port.write_line(cmd)
+
+    def take(self, line, quiet=False):
+        """A line read: shown (unless quiet and ordinary), kept if an event."""
+        if line.startswith("* "):
+            self.events.append(line)
+        if not quiet or line.startswith(("err", "*")):
+            self.show(line)
+
+    def wait_event(self, match, timeout):
+        """The first event (kept or arriving within timeout s) for which match(line) is true, or None.
+        Events before it are dropped."""
+        end = time.monotonic() + timeout
+        while True:
+            while self.events:
+                line = self.events.pop(0)
+                if match(line):
+                    return line
+            left = end - time.monotonic()
+            if left <= 0:
+                return None
+            line = self.port.readline(left)
+            if line:
+                self.take(line)
+
+    def drain(self, seconds=0.2):
+        """Read (and keep) whatever comes within seconds, then forget the events."""
+        self.events_for(seconds)
+        self.events.clear()
+
+    def events_for(self, seconds):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            line = self.port.readline(end - time.monotonic())
+            if line:
+                self.take(line)
 
     def command(self, cmd, timeout=10.0, quiet=False):
         """Send one command; return (ok, lines) once its "ok" or "err" line arrives."""
@@ -109,8 +163,7 @@ class Session:
                 break
             if not line:
                 continue
-            if not quiet or line.startswith(("err", "*")):
-                self.show(line)
+            self.take(line, quiet)
             if line == "> " + cmd:
                 echoed = True
                 continue
@@ -125,12 +178,6 @@ class Session:
         self.show("-- no answer to: " + cmd)
         return False, lines
 
-    def events(self, seconds):
-        end = time.monotonic() + seconds
-        while time.monotonic() < end:
-            line = self.port.readline(end - time.monotonic())
-            if line:
-                self.show(line)
 
 
 def dump(session, page, path):
@@ -212,7 +259,7 @@ def main():
                 ok = ok and good
                 if not good:
                     break
-            session.events(args.events)
+            session.events_for(args.events)
         except KeyboardInterrupt:
             session.send("stop")
             ok = False
