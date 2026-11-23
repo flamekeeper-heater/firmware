@@ -38,7 +38,7 @@ CONFIG_SCHEMA = cv.All(
             cv.GenerateID(CONF_FLAMEKEEPER_ID): cv.use_id(FlamekeeperHub),
             cv.Optional(CONF_PORT, default=80): cv.port,
             # A browser app's build folder (index.html and its assets), relative to this YAML file.
-            # Missing: the board serves a placeholder page.
+            # Left out: the board serves a placeholder page. Set but missing: the build stops.
             cv.Optional(CONF_WEB_APP): cv.string_strict,
         }
     ).extend(cv.COMPONENT_SCHEMA),
@@ -54,12 +54,11 @@ def _web_page(config) -> str:
         return header([], "none (web_app not set)")
     dist = Path(CORE.relative_config_path(config[CONF_WEB_APP])).resolve()
     if not dist.is_dir():
-        _LOGGER.warning(
-            "flamekeeper_net: no web app at %s "
-            "the board serves a placeholder page",
-            dist,
+        # Set but not built: fail, so an image never ships without the page it was meant to carry.
+        raise EsphomeError(
+            f"flamekeeper_net web_app: no web app at {dist}; build it first, or leave web_app out "
+            "for a placeholder page"
         )
-        return header([], f"none ({dist} missing)")
     try:
         files = collect(dist)
     except WebPageError as e:

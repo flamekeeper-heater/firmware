@@ -57,8 +57,8 @@ uv run --with esphome==2026.10.2 esphome compile flamekeeper-rev-a2.yaml
 The ESPHome build stops if `stm32/build/safety.bin` is missing, older than any of its sources, or
 not the version in `stm32/core/safety.h`: run `stm32/build.sh` again. The image ends up in
 `esp32/.esphome/build/flamekeeper/build/`. To serve the app's web page from the board, pass its
-build folder at compile time with `-s web_app <folder>`. Without it the board serves a placeholder
-page.
+build folder at compile time with `-s web_app <folder>`; the build stops if that folder is missing.
+Without `web_app` the board serves a placeholder page.
 
 ## Install on your board
 
