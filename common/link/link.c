@@ -191,6 +191,7 @@ size_t link_encode_status(const link_status *in, uint8_t *out) {
   link_put16(out + 16, in->glow_w);
   link_put16(out + 18, in->prime_left_s);
   link_put32(out + 20, in->run_time_s);
+  out[24] = in->log_seq;
   return LINK_STATUS_SIZE;
 }
 
@@ -212,6 +213,7 @@ int link_decode_status(const uint8_t *in, size_t len, link_status *out) {
   out->glow_w = link_get16(in + 16);
   out->prime_left_s = link_get16(in + 18);
   out->run_time_s = link_get32(in + 20);
+  out->log_seq = in[24];
   return 1;
 }
 
@@ -296,6 +298,34 @@ int link_decode_param_value(const uint8_t *in, size_t len, link_param_value *out
   out->flags = in[2];
   out->value = (int32_t) link_get32(in + 3);
   out->staged = (int32_t) link_get32(in + 7);
+  return 1;
+}
+
+size_t link_encode_fault_entry(const link_fault_entry *in, uint8_t *out) {
+  out[0] = in->kind;
+  out[1] = in->code;
+  out[2] = in->why;
+  out[3] = in->step;
+  out[4] = in->seq;
+  out[5] = (uint8_t) in->board_c;
+  link_put16(out + 6, (uint16_t) in->hx);
+  link_put16(out + 8, in->supply);
+  link_put32(out + 10, in->uptime_s);
+  return LINK_FAULT_ENTRY_SIZE;
+}
+
+int link_decode_fault_entry(const uint8_t *in, size_t len, link_fault_entry *out) {
+  if (len < LINK_FAULT_ENTRY_SIZE)
+    return 0;
+  out->kind = in[0];
+  out->code = in[1];
+  out->why = in[2];
+  out->step = in[3];
+  out->seq = in[4];
+  out->board_c = (int8_t) in[5];
+  out->hx = (int16_t) link_get16(in + 6);
+  out->supply = link_get16(in + 8);
+  out->uptime_s = link_get32(in + 10);
   return 1;
 }
 
@@ -448,6 +478,28 @@ size_t link_server_handle(const link_mcu *m, const uint8_t *req, uint8_t *reply)
     case LINK_OP_GLOW_NEW_PLUG:
       NEED(0);
       result = HAVE(glow_new_plug) ? m->glow_new_plug(m->ctx) : LINK_NOT_SUPPORTED;
+      break;
+    case LINK_OP_FAULT_LOG: {
+      NEED(1);
+      if (!HAVE(fault_log)) {
+        result = LINK_NOT_SUPPORTED;
+        break;
+      }
+      link_fault_entry e[LINK_FAULT_LOG_PAGE];
+      uint8_t total = 0, got = m->fault_log(m->ctx, in[0], e, &total);
+      out[0] = total;
+      len = 1;
+      for (uint8_t i = 0; i < got && i < LINK_FAULT_LOG_PAGE; i++)
+        len += link_encode_fault_entry(&e[i], out + len);
+      break;
+    }
+    case LINK_OP_FAULT_LOG_CLEAR:
+      NEED(2);
+      if (in[0] != 'C' || in[1] != 'L') {
+        result = LINK_REFUSED;
+        break;
+      }
+      result = HAVE(fault_log_clear) ? m->fault_log_clear(m->ctx) : LINK_NOT_SUPPORTED;
       break;
     case LINK_OP_UPDATE_PREPARE: {
       NEED(0);

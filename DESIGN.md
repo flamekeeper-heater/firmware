@@ -73,11 +73,13 @@ high byte first. `seq` (1-255) is echoed in the reply, and result codes are the 
 | Op | Request | Reply |
 |---|---|---|
 | `01` HELLO | the ESP32's link version | Info: version, MCU kind, firmware version, capabilities, parameter count, reset reason, start-up check results |
-| `02` POLL | the desired state: start number, mode, power, fuel and fan trims | Status: heater state, fault, flags, start number acted on, measurements |
+| `02` POLL | the desired state: start number, mode, power, fuel and fan trims | Status: heater state, fault, flags, start number acted on, measurements, the fault log's newest entry number |
 | `03` DETAIL | | slower measurements: stage temperatures, glow and fan voltage and current, pump current, CO |
 | `20`-`26` | parameters: describe, get, set, apply, discard, defaults, help | |
 | `30` FAULT_RESET | | clears a latched fault once its cause is gone |
 | `31` GLOW_NEW_PLUG | | a new glow plug is fitted: its remembered type check goes (Status flag bit 6 reports a start that ran with a plug-type warning) |
+| `32` FAULT_LOG | the first entry wanted, counted back from the newest (0) | the log's entry count, then up to 4 entries of 14 bytes, newest first |
+| `33` FAULT_LOG_CLEAR | `C` `L` | empties the fault log |
 | `40` UPDATE_PREPARE | | agrees to an update; refuses starts until reset |
 
 **Timing.** The ESP32 polls every 100 ms; the MCU replies within 20 ms. Three missed replies and the

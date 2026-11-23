@@ -113,13 +113,18 @@ static void test_records(void) {
   s.heat_exchanger = -123;
   s.supply = 1240;
   s.run_time_s = 3600000;
-  CHECK_EQ(link_encode_status(&s, b), 24);
+  CHECK_EQ(s.log_seq, 0); /* no fault log entry */
+  s.log_seq = 201;
+  CHECK_EQ(link_encode_status(&s, b), 25);
   CHECK_EQ(b[8] | (b[9] << 8), 0xFF85);
+  CHECK_EQ(b[24], 201); /* the fault log's newest entry, after the run time */
   link_status s2;
-  CHECK(link_decode_status(b, 24, &s2));
+  CHECK(link_decode_status(b, 25, &s2));
   CHECK_EQ(s2.heat_exchanger, -123);
   CHECK_EQ(s2.run_time_s, 3600000);
   CHECK_EQ(s2.detail, 0xFF);
+  CHECK_EQ(s2.log_seq, 201);
+  CHECK(!link_decode_status(b, 24, &s2));
 
   link_detail t;
   link_detail_unknown(&t);
@@ -146,6 +151,21 @@ static void test_records(void) {
   CHECK_EQ(pd2.min, -50);
   CHECK_EQ(pd2.id, 0x110);
   CHECK_EQ(strlen(pd2.name), 24);
+
+  /* A fault log entry: 14 bytes, little-endian. */
+  link_fault_entry fe = {LINK_LOG_FAULT, 6, 5, 6, 77, -12, 2513, 2380, 0x01020304};
+  CHECK_EQ(link_encode_fault_entry(&fe, b), LINK_FAULT_ENTRY_SIZE);
+  CHECK_EQ(LINK_FAULT_ENTRY_SIZE, 14);
+  const uint8_t fe_bytes[14] = {1, 6, 5, 6, 77, 0xF4, 0xD1, 0x09, 0x4C, 0x09, 4, 3, 2, 1};
+  CHECK(memcmp(b, fe_bytes, 14) == 0);
+  link_fault_entry fe2;
+  CHECK(link_decode_fault_entry(b, 14, &fe2));
+  CHECK(fe2.kind == fe.kind && fe2.code == fe.code && fe2.why == fe.why && fe2.step == fe.step);
+  CHECK(fe2.seq == fe.seq && fe2.board_c == -12 && fe2.hx == 2513 && fe2.supply == 2380);
+  CHECK_EQ(fe2.uptime_s, 0x01020304);
+  CHECK(!link_decode_fault_entry(b, 13, &fe2));
+  /* A page of them fills a reply: the total, then four entries. */
+  CHECK_EQ(1 + LINK_FAULT_LOG_PAGE * LINK_FAULT_ENTRY_SIZE, LINK_REPLY_PAYLOAD_MAX);
 
   link_param_value pv = {7, LINK_PARAM_KNOWN | LINK_PARAM_STAGED, 60, -70};
   CHECK_EQ(link_encode_param_value(&pv, b), 11);
@@ -218,6 +238,28 @@ static int f_apply(void *c, uint8_t save) {
 }
 static int f_defaults(void *c) {
   ((fake_mcu *) c)->defaults++;
+  return LINK_OK;
+}
+
+/* A fault log of `n` entries, seq 1..n (n newest). */
+typedef struct {
+  uint8_t n, clears;
+} fake_log;
+static uint8_t f_log(void *c, uint8_t from, link_fault_entry *out, uint8_t *total) {
+  fake_log *l = (fake_log *) c;
+  *total = l->n;
+  uint8_t got = 0;
+  for (unsigned i = from; i < l->n && got < LINK_FAULT_LOG_PAGE; i++, got++) {
+    memset(&out[got], 0, sizeof(out[got]));
+    out[got].kind = LINK_LOG_FAULT;
+    out[got].seq = (uint8_t) (l->n - i);
+  }
+  return got;
+}
+static int f_log_clear(void *c) {
+  fake_log *l = (fake_log *) c;
+  l->n = 0;
+  l->clears++;
   return LINK_OK;
 }
 
@@ -362,6 +404,58 @@ static void test_server(void) {
   roundtrip(&np, LINK_OP_GLOW_NEW_PLUG, set, 1, r);
   CHECK_EQ(link_reply_result(r), LINK_BAD_LENGTH);
   CHECK_EQ(new_plugs, 1);
+
+  /* The fault log: not provided by this MCU. */
+  const uint8_t from0[1] = {0}, cl[2] = {'C', 'L'};
+  roundtrip(&m, LINK_OP_FAULT_LOG, from0, 1, r);
+  CHECK_EQ(link_reply_result(r), LINK_NOT_SUPPORTED);
+  CHECK_EQ(link_reply_payload_len(r), 0);
+  roundtrip(&m, LINK_OP_FAULT_LOG_CLEAR, cl, 2, r);
+  CHECK_EQ(link_reply_result(r), LINK_NOT_SUPPORTED);
+
+  /* A fault log of 6: pages of 4 newest first, then 2, then none. */
+  {
+    fake_log fl = {6, 0};
+    link_mcu lm;
+    memset(&lm, 0, sizeof(lm));
+    lm.ctx = &fl;
+    lm.fault_log = f_log;
+    lm.fault_log_clear = f_log_clear;
+    roundtrip(&lm, LINK_OP_FAULT_LOG, from0, 1, r);
+    CHECK_EQ(link_reply_result(r), LINK_OK);
+    CHECK_EQ(link_reply_payload_len(r), 1 + 4 * LINK_FAULT_ENTRY_SIZE);
+    CHECK_EQ(link_reply_payload(r)[0], 6);
+    link_fault_entry e;
+    CHECK(link_decode_fault_entry(link_reply_payload(r) + 1, LINK_FAULT_ENTRY_SIZE, &e));
+    CHECK_EQ(e.seq, 6);
+    CHECK(link_decode_fault_entry(link_reply_payload(r) + 1 + 3 * LINK_FAULT_ENTRY_SIZE, LINK_FAULT_ENTRY_SIZE, &e));
+    CHECK_EQ(e.seq, 3);
+    const uint8_t from4[1] = {4}, from6[1] = {6}, from9[1] = {9};
+    roundtrip(&lm, LINK_OP_FAULT_LOG, from4, 1, r);
+    CHECK_EQ(link_reply_payload_len(r), 1 + 2 * LINK_FAULT_ENTRY_SIZE);
+    CHECK(link_decode_fault_entry(link_reply_payload(r) + 1 + LINK_FAULT_ENTRY_SIZE, LINK_FAULT_ENTRY_SIZE, &e));
+    CHECK_EQ(e.seq, 1);
+    roundtrip(&lm, LINK_OP_FAULT_LOG, from6, 1, r);
+    CHECK_EQ(link_reply_result(r), LINK_OK);
+    CHECK_EQ(link_reply_payload_len(r), 1);
+    roundtrip(&lm, LINK_OP_FAULT_LOG, from9, 1, r);
+    CHECK_EQ(link_reply_payload_len(r), 1);
+    roundtrip(&lm, LINK_OP_FAULT_LOG, NULL, 0, r);
+    CHECK_EQ(link_reply_result(r), LINK_BAD_LENGTH);
+    /* Clearing needs its two confirmation bytes, as PARAM_DEFAULTS does. */
+    const uint8_t bad[2] = {'C', 'X'};
+    roundtrip(&lm, LINK_OP_FAULT_LOG_CLEAR, bad, 2, r);
+    CHECK_EQ(link_reply_result(r), LINK_REFUSED);
+    roundtrip(&lm, LINK_OP_FAULT_LOG_CLEAR, cl, 1, r);
+    CHECK_EQ(link_reply_result(r), LINK_BAD_LENGTH);
+    CHECK_EQ(fl.clears, 0);
+    roundtrip(&lm, LINK_OP_FAULT_LOG_CLEAR, cl, 2, r);
+    CHECK_EQ(link_reply_result(r), LINK_OK);
+    CHECK_EQ(fl.clears, 1);
+    roundtrip(&lm, LINK_OP_FAULT_LOG, from0, 1, r);
+    CHECK_EQ(link_reply_payload(r)[0], 0);
+    CHECK_EQ(link_reply_payload_len(r), 1);
+  }
 
   /* With the major checked: no POLL before a HELLO, nor after one of an unknown major. */
   uint8_t client_major = 0;

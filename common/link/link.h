@@ -40,6 +40,8 @@ enum {
   LINK_OP_PARAM_HELP = 0x26,
   LINK_OP_FAULT_RESET = 0x30,
   LINK_OP_GLOW_NEW_PLUG = 0x31, /* a new glow plug is fitted: its remembered type check goes */
+  LINK_OP_FAULT_LOG = 0x32,       /* the MCU's fault log, a page at a time, newest first */
+  LINK_OP_FAULT_LOG_CLEAR = 0x33, /* empties it ('C' 'L' as confirmation) */
   LINK_OP_UPDATE_PREPARE = 0x40,
 };
 
@@ -106,6 +108,7 @@ static inline uint32_t link_get32(const uint8_t *p) {
 }
 
 /* Unknown values (as in the app protocol). */
+#define LINK_UNKNOWN_I8 ((int8_t) -128)
 #define LINK_UNKNOWN_I16 ((int16_t) 0x8000)
 #define LINK_UNKNOWN_U16 0xFFFFu
 #define LINK_UNKNOWN_U8 0xFFu
@@ -127,6 +130,7 @@ static inline uint32_t link_get32(const uint8_t *p) {
 #define LINK_CAP_OVERHEAT_LATCH (1u << 12)
 #define LINK_CAP_DEADMAN (1u << 13)
 #define LINK_CAP_RUN_SWITCH (1u << 14) /* heat <-> fan during a run, without a new start */
+#define LINK_CAP_FAULT_LOG (1u << 15)  /* FAULT_LOG and FAULT_LOG_CLEAR; Status log_seq */
 
 enum { LINK_KIND_EMULATOR = 1, LINK_KIND_STM32 = 2 };
 enum {
@@ -187,8 +191,9 @@ typedef struct {
   uint16_t glow_w;
   uint16_t prime_left_s;
   uint32_t run_time_s;    /* lifetime */
+  uint8_t log_seq;        /* the fault log's newest entry (its seq), 0 when the log is empty */
 } link_status;
-#define LINK_STATUS_SIZE 24
+#define LINK_STATUS_SIZE 25
 
 typedef struct {
   int16_t board, ts_fan, ts_glow; /* 0.1 C */
@@ -224,6 +229,24 @@ typedef struct {
 } link_param_value;
 #define LINK_PARAM_VALUE_SIZE 11
 
+/* FAULT_LOG: one entry of the MCU's fault log (DESIGN.md). A fault entry is a run or a start that
+ * ended with a fault, or a stop for a reason without one (code 0: the dead-man); a reset entry is an
+ * MCU reset other than a plain power-up. */
+enum { LINK_LOG_FAULT = 1, LINK_LOG_RESET = 2 };
+typedef struct {
+  uint8_t kind;      /* LINK_LOG_* */
+  uint8_t code;      /* FAULT: the fault (link_status.fault); RESET: the reason, LINK_RESET_* */
+  uint8_t why;       /* FAULT: why it stopped (link_status.fault_detail); RESET: 0 */
+  uint8_t step;      /* FAULT: the sequencer's step it happened in; RESET: the step after it (link_status.detail) */
+  uint8_t seq;       /* 1-255, one more for each entry, wrapping past 0 */
+  int8_t board_c;    /* the board's temperature then, whole C, or LINK_UNKNOWN_I8 */
+  int16_t hx;        /* the heat exchanger then, 0.1 C */
+  uint16_t supply;   /* the supply then, 0.01 V */
+  uint32_t uptime_s; /* seconds since the MCU's last reset */
+} link_fault_entry;
+#define LINK_FAULT_ENTRY_SIZE 14
+#define LINK_FAULT_LOG_PAGE 4 /* entries in one FAULT_LOG reply, after the log's entry count */
+
 /* encode: return the length written into out (at least the record's size). decode: return 1 when
  * len is long enough (extra trailing bytes are ignored: newer minor versions append fields). */
 size_t link_encode_info(const link_info *in, uint8_t *out);
@@ -238,6 +261,8 @@ size_t link_encode_param_desc(const link_param_desc *in, uint8_t *out);
 int link_decode_param_desc(const uint8_t *in, size_t len, link_param_desc *out);
 size_t link_encode_param_value(const link_param_value *in, uint8_t *out);
 int link_decode_param_value(const uint8_t *in, size_t len, link_param_value *out);
+size_t link_encode_fault_entry(const link_fault_entry *in, uint8_t *out);
+int link_decode_fault_entry(const uint8_t *in, size_t len, link_fault_entry *out);
 
 /* Every field unknown / zero, as an MCU fills them before it knows anything. */
 void link_status_unknown(link_status *s);
@@ -264,6 +289,10 @@ typedef struct {
   int (*fault_reset)(void *ctx);
   int (*glow_new_plug)(void *ctx);
   int (*update_prepare)(void *ctx, uint8_t *method);
+  /* FAULT_LOG: up to LINK_FAULT_LOG_PAGE entries into out, from the `from`th newest (0: the
+   * newest) towards the oldest; returns how many, and *total the entries the log holds. */
+  uint8_t (*fault_log)(void *ctx, uint8_t from, link_fault_entry *out, uint8_t *total);
+  int (*fault_log_clear)(void *ctx);
   /* Where the server keeps the ESP32's link major from its last HELLO (0 = none yet). With it set,
    * POLL is refused with LINK_NOT_SUPPORTED until a HELLO of this major (DESIGN.md);
    * NULL = not checked. */
