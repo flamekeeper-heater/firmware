@@ -12,6 +12,7 @@
 #include "burn.h"
 #include "checks.h"
 #include "fan.h"
+#include "faultlog.h"
 #include "glow.h"
 #include "params.h"
 #include "plug.h"
@@ -33,7 +34,7 @@ extern "C" {
 /* What this firmware can do today (link Info capabilities). */
 #define SAFETY_CAPABILITIES                                                                     \
   (LINK_CAP_FAN_ONLY | LINK_CAP_PRIME | LINK_CAP_PRIME_STOP | LINK_CAP_SUPPLY_PRESENT |        \
-   LINK_CAP_OVERHEAT_LATCH | LINK_CAP_DEADMAN | LINK_CAP_PARAMETERS)
+   LINK_CAP_OVERHEAT_LATCH | LINK_CAP_DEADMAN | LINK_CAP_PARAMETERS | LINK_CAP_FAULT_LOG)
 
 /* Supply present (link Status flag): above this the power stages have a supply, 0.01 V. */
 #define SAFETY_SUPPLY_PRESENT_CV 600u
@@ -74,6 +75,7 @@ typedef struct {
   uint32_t now;
   uint32_t run_ms;       /* lifetime burning time not yet counted in run_time_s */
   uint32_t run_time_s;
+  faultlog log;          /* the fault log (faultlog.h); the board keeps it in flash */
 #ifdef SAFETY_BENCH
   /* The bring-up build only (stm32/bringup/): single bench actions, honoured only while the burn
    * is off and no self-test runs, through the same stage drivers as a run, with every rule they
@@ -140,6 +142,10 @@ void safety_load_co_r0(safety *s, uint32_t r0_ohm);
 uint32_t safety_co_r0_to_save(const safety *s);
 void safety_co_r0_saved(safety *s, uint32_t r0_ohm);
 #define SAFETY_CO_R0_SAVE_MIN_MS (60u * 60u * 1000u)
+
+/* The fault log (faultlog.h). Once at boot, after the board has loaded its slots into s->log: the
+ * reset's own entry. */
+void safety_log_reset(safety *s);
 
 /* What the millisecond step asks of the hardware. */
 typedef struct {

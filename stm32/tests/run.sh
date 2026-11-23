@@ -59,17 +59,17 @@ need() { # need WHAT LANE: waits for the other lane's objects; fails if that lan
   done
 }
 
-core_objs="burn glow fan checks pump params plug safety link co_alarm"
+core_objs="burn glow fan checks pump params plug faultlog safety link co_alarm"
 
 # Lane 1: the firmware's objects, the stages' tests, the link fuzzer's seeds and 300 mutated
 # inputs, the board layer and the bring-up build.
 lane1() {
-  for f in burn glow fan checks pump params plug safety; do obj $f "$core/$f.c" $strict; done
+  for f in burn glow fan checks pump params plug faultlog safety; do obj $f "$core/$f.c" $strict; done
   obj link "$common/link/link.c" $strict
   obj co_alarm "$common/co/co_alarm.c" $strict
   obj heater_model "$here/heater_model.c" $ctest
   touch "$out/core.ready"
-  for t in plug params pump checks fan glow burn; do obj test_$t "$here/test_$t.c" $ctest; done
+  for t in plug params pump checks fan glow burn faultlog; do obj test_$t "$here/test_$t.c" $ctest; done
   exe test_plug plug link
   run test_plug
   exe test_params params burn link
@@ -84,6 +84,8 @@ lane1() {
   run test_glow
   exe test_burn burn heater_model
   run test_burn
+  exe test_faultlog $core_objs
+  run test_faultlog
 
   obj fuzz_link "$here/fuzz_link.cpp"
   need client lane2
@@ -103,7 +105,7 @@ lane1() {
   obj bench_fake_chip "$here/fake_chip.c" $strict $bench $taps
   obj test_bringup "$here/test_bringup.c" $ctest $bench
   exe test_bringup bench_fake_chip bench_board bench_safety bench console analog pump_oc \
-    burn glow fan checks pump params plug link co_alarm
+    burn glow fan checks pump params plug faultlog link co_alarm
   run test_bringup
 }
 
@@ -136,7 +138,7 @@ lane2() {
   touch "$out/lane2.ok"
 ) &
 wait
-for t in test_plug test_params test_pump test_checks test_fan test_glow test_burn test_e2e fuzz_link test_soak \
+for t in test_plug test_params test_pump test_checks test_fan test_glow test_burn test_faultlog test_e2e fuzz_link test_soak \
   test_board test_bringup test_hal; do
   if [ -f "$out/$t.log" ]; then cat "$out/$t.log"; fi
 done

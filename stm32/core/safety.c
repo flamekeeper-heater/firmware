@@ -59,11 +59,13 @@ static void fill_status(safety *s, link_status *o) {
   o->glow_w = b->out.glow_w;
   o->prime_left_s = burn_prime_left_s(b, s->now);
   o->run_time_s = s->run_time_s;
+  o->log_seq = faultlog_newest_seq(&s->log);
 }
 
 static void on_poll(void *ctx, const link_desired *want, link_status *out) {
   safety *s = (safety *) ctx;
   burn *b = &s->burn;
+  uint8_t step = b->step;
   s->esp_updating = (want->flags & LINK_WANT_UPDATING) != 0;
 
   if (link_start_gate_check(&s->gate, want->start, want->mode)) {
@@ -92,6 +94,7 @@ static void on_poll(void *ctx, const link_desired *want, link_status *out) {
   } else {
     burn_set_power(b, want->power);
   }
+  faultlog_note(&s->log, s->now, b->fault, b->why, step, &s->in); /* a refused start */
   fill_status(s, out);
 }
 
@@ -289,8 +292,25 @@ static int on_fault_reset(void *ctx) {
     s->in.co_alarm = 0;
     s->in.co_fault = 0;
   }
+  /* The fault the reset cleared may come back at once: that is a new entry. */
+  faultlog_note(&s->log, s->now, s->burn.fault, s->burn.why, s->burn.step, &s->in);
   return r;
 }
+
+/* ---------------------------------------------------------------- the fault log */
+
+static uint8_t on_fault_log(void *ctx, uint8_t from, link_fault_entry *out, uint8_t *total) {
+  safety *s = (safety *) ctx;
+  *total = s->log.count;
+  return faultlog_read(&s->log, from, out, LINK_FAULT_LOG_PAGE);
+}
+
+static int on_fault_log_clear(void *ctx) {
+  faultlog_clear(&((safety *) ctx)->log);
+  return LINK_OK;
+}
+
+void safety_log_reset(safety *s) { faultlog_reset(&s->log, s->reset_reason, s->burn.step, &s->in); }
 
 static int on_update_prepare(void *ctx, uint8_t *method) {
   safety *s = (safety *) ctx;
@@ -354,6 +374,9 @@ void safety_init(safety *s, uint32_t now, const burn_inputs *in, uint8_t reset_r
   s->mcu.param_defaults = on_param_defaults;
   s->mcu.param_help = on_param_help;
   s->mcu.glow_new_plug = on_glow_new_plug;
+  s->mcu.fault_log = on_fault_log;
+  s->mcu.fault_log_clear = on_fault_log_clear;
+  faultlog_init(&s->log, now);
   s->mcu.client_major = &s->client_major;
 }
 
@@ -367,6 +390,7 @@ size_t safety_receive(safety *s, uint8_t byte, uint32_t now, uint8_t *reply) {
 }
 
 void safety_step(safety *s, uint32_t now, const burn_inputs *in) {
+  uint8_t step = s->burn.step;
   uint32_t dt = (uint32_t) (now - s->now);
   s->now = now;
   s->in = *in;
@@ -388,6 +412,7 @@ void safety_step(safety *s, uint32_t now, const burn_inputs *in) {
   if (link_deadman_expired(&s->deadman, now, burn_active(&s->burn)))
     burn_stop(&s->burn, BURN_WHY_DEADMAN, now); /* a full burn-off and cooldown, on its own */
   burn_step(&s->burn, now, &s->in);
+  faultlog_note(&s->log, now, s->burn.fault, s->burn.why, step, &s->in);
 }
 
 const burn_outputs *safety_outputs(const safety *s) { return &s->burn.out; }
