@@ -72,6 +72,8 @@ enum class SensorKey : uint8_t {
   FUEL_USED,      // lifetime, L
   BURNER_HOURS,   // lifetime, the board's own count
   GLOW_PLUG_HOURS,
+  // The heater's fault log (the safety MCU's).
+  HEATER_FAULT_LOG_ENTRIES,
 };
 
 enum class TextKey : uint8_t {
@@ -84,6 +86,8 @@ enum class TextKey : uint8_t {
   RUN_STARTED_BY,
   ALERTS,
   RELAY,
+  // The heater's fault log (the safety MCU's): its newest entry in words.
+  LAST_HEATER_FAULT,
 };
 
 class FlamekeeperHub : public Component {
@@ -148,6 +152,7 @@ class FlamekeeperHub : public Component {
   uint32_t last_rtc_ms_{0};
   uint32_t app_clock_ms_{0};
   std::string alerts_text_;
+  char heater_log_text_[200]{};  // TextKey::LAST_HEATER_FAULT
 #ifdef USE_TIME
   time::RealTimeClock *rtc_{nullptr};
 #endif
@@ -285,6 +290,8 @@ enum class ButtonKind : uint8_t {
   CLEAR_ALERTS,
   CARBON_BURNOFF,
   GLOW_NEW_PLUG,
+  // The heater's fault log (the safety MCU's): empties it.
+  CLEAR_HEATER_FAULT_LOG,
 };
 class FlamekeeperButton : public button::Button, public Component {
  public:

@@ -1,4 +1,5 @@
 #include "flamekeeper.h"
+#include "heater_log.h"
 
 #include <esp_random.h>
 #include <esp_system.h>
@@ -198,6 +199,8 @@ void FlamekeeperHub::publish_(uint32_t now, bool force) {
       case SensorKey::FUEL_USED: v = float(this->automation_->meter().saved().life_fuel_ml / 1000.0); break;
       case SensorKey::BURNER_HOURS: v = float(this->automation_->meter().saved().life_burn_s / 3600.0); break;
       case SensorKey::GLOW_PLUG_HOURS: v = float(this->automation_->meter().saved().life_glow_s / 3600.0); break;
+      // The heater's fault log: entries as last read (kept while it does not answer).
+      case SensorKey::HEATER_FAULT_LOG_ENTRIES: v = float(s.fault_log_count); break;
     }
     bool same = (std::isnan(v) && std::isnan(slot.last)) || v == slot.last;
     if (same && !force && slot.last_ms != 0)
@@ -250,6 +253,14 @@ void FlamekeeperHub::publish_(uint32_t now, bool force) {
           }
         }
         t = this->alerts_text_.empty() ? "None" : this->alerts_text_.c_str();
+        break;
+      }
+      // The heater's fault log: its newest entry, as last read.
+      case TextKey::LAST_HEATER_FAULT: {
+        HeaterLogEntry e;
+        const bool any = this->controller_->fault_log(0, &e, 1) == 1;
+        heater_log_text(any ? &e : nullptr, this->heater_log_text_, sizeof(this->heater_log_text_));
+        t = this->heater_log_text_;
         break;
       }
     }
@@ -484,6 +495,7 @@ void FlamekeeperButton::press_action() {
       break;
     }
     case ButtonKind::GLOW_NEW_PLUG: this->hub_->automation().glow_new_plug(); break;
+    case ButtonKind::CLEAR_HEATER_FAULT_LOG: c.clear_fault_log(src); break;
   }
 }
 #endif

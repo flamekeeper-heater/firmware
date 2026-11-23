@@ -247,6 +247,19 @@ Outcome Controller::reset_fault(Source source) {
   return this->finish_("reset heater fault", source, this->heater_->reset_fault());
 }
 
+// ---------------------------------------------------------------- the heater's fault log
+
+size_t Controller::fault_log(size_t from, HeaterLogEntry *out, size_t max) const {
+  return this->heater_->fault_log(from, out, max);  // as last read, answering or not
+}
+
+Outcome Controller::clear_fault_log(Source source) {
+  if (!(this->heater_->capabilities() & cap::FAULT_LOG))
+    return this->finish_("clear the heater's fault log", source,
+                         Outcome::refuse(Result::NOT_SUPPORTED, "this heater has no fault log"));
+  return this->finish_("clear the heater's fault log", source, this->heater_->clear_fault_log());
+}
+
 size_t Controller::param_count() const {
   size_t n = (this->heater_->capabilities() & cap::PARAMETERS) ? this->heater_->param_count() : 0;
   return n + Tuning::count();

@@ -27,6 +27,8 @@ TYPES = {
     "clear_alerts": (ButtonKind.CLEAR_ALERTS, "mdi:bell-cancel", None),
     "carbon_burnoff": (ButtonKind.CARBON_BURNOFF, "mdi:fire-alert", None),
     "glow_new_plug": (ButtonKind.GLOW_NEW_PLUG, "mdi:lightbulb-on-outline", ENTITY_CATEGORY_CONFIG),
+    # Empties the heater's fault log (the safety MCU's).
+    "clear_heater_fault_log": (ButtonKind.CLEAR_HEATER_FAULT_LOG, "mdi:delete-sweep-outline", ENTITY_CATEGORY_CONFIG),
 }
 
 

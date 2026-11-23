@@ -305,7 +305,8 @@ size_t encode_info(uint8_t board, uint32_t heater_capabilities, const BoardInfo 
   put_u32(out + 6, (heater_capabilities & 0x3Fu) | (info.ha_switchable ? CAP_HA_SWITCH : 0) |
                        ((heater_capabilities & cap::BLUETOOTH_ROOM) ? CAP_BLUETOOTH_ROOM : 0) |
                        (info.can_update ? CAP_BOARD_UPDATE : 0) | (info.has_relay ? CAP_RELAY : 0) |
-                       ((heater_capabilities & cap::HA_ROOM) ? CAP_HA_ROOM : 0));
+                       ((heater_capabilities & cap::HA_ROOM) ? CAP_HA_ROOM : 0) |
+                       ((heater_capabilities & cap::FAULT_LOG) ? CAP_HEATER_LOG : 0));
   out[10] = info.bonds;
   out[11] = info.max_bonds;
   out[12] = nibbles(info.app_keys, info.browser_keys);
@@ -344,6 +345,7 @@ size_t encode_state(const Status &s, uint8_t *out) {
   out[23] = s.timer_slot;
   put_u32(out + 24, s.timer_end_utc);
   put_u32(out + 28, s.run_id);
+  out[32] = s.fault_log_seq;  // the heater's fault log: its newest entry (0 none); read it when this changes
   return STATE_SIZE;
 }
 
@@ -473,6 +475,36 @@ size_t handle_command(const uint8_t *in, size_t len, Controller &c, Link &link, 
       if (!need(0))
         break;
       return outcome(req, opcode, c.reset_fault(PHONE), out, cap);
+    case op::HEATER_LOG: {
+      if (!need(1))
+        break;
+      if (!(c.heater()->capabilities() & cap::FAULT_LOG))
+        return result(req, opcode, Result::NOT_SUPPORTED, "this heater has no fault log", out, cap);
+      // The entry count, then up to 8 entries from the arg-th newest, as the safety MCU's link has them.
+      HeaterLogEntry e[HEATER_LOG_PAGE];
+      const size_t got = c.fault_log(arg[0], e, HEATER_LOG_PAGE);
+      HeaterStatus hs;
+      c.heater()->read_status(hs);
+      size_t k = result(req, opcode, Result::OK, nullptr, out, cap);
+      out[k++] = hs.fault_log_count;
+      for (size_t i = 0; i < got; i++, k += HEATER_LOG_ENTRY_SIZE) {
+        uint8_t *p = out + k;
+        p[0] = e[i].kind;
+        p[1] = e[i].code;
+        p[2] = e[i].why;
+        p[3] = e[i].step;
+        p[4] = e[i].seq;
+        p[5] = uint8_t(e[i].board_c);
+        put_u16(p + 6, uint16_t(e[i].hx_c10));
+        put_u16(p + 8, e[i].supply_cv);
+        put_u32(p + 10, e[i].uptime_s);
+      }
+      return k;
+    }
+    case op::HEATER_LOG_CLEAR:
+      if (!need(0))
+        break;
+      return outcome(req, opcode, c.clear_fault_log(PHONE), out, cap);
 
     case op::PARAM_DESCRIBE:
     case op::PARAM_DESCRIBE_ID: {

@@ -116,6 +116,10 @@ class Controller : public HeaterListener {
   Outcome param_discard(Source source);
   Outcome reset_fault(Source source);
 
+  // --- the heater's own fault log (cap::FAULT_LOG): read, and cleared as a request ---
+  size_t fault_log(size_t from, HeaterLogEntry *out, size_t max) const;
+  Outcome clear_fault_log(Source source);
+
   // --- the parameter table: the heater's, then the board's own (tuning.h) ---
   size_t param_count() const;
   bool param_info(size_t index, ParamInfo &out) const;

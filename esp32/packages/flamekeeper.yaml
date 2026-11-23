@@ -400,6 +400,9 @@ button:
   - platform: flamekeeper
     type: glow_new_plug
     name: New glow plug fitted
+  - platform: flamekeeper
+    type: clear_heater_fault_log
+    name: Clear heater fault log
   - platform: flamekeeper_ble
     type: allow_pairing
     name: Allow Bluetooth pairing
@@ -452,6 +455,8 @@ sensor:
       name: Heater firmware update progress
     failsafe_time_left:
       name: Failsafe time left
+    heater_fault_log_entries:
+      name: Heater fault log entries
   - platform: flamekeeper_ble
     paired_phones:
       name: Bluetooth devices
@@ -489,6 +494,8 @@ text_sensor:
       name: Heater firmware update status
     relay:
       name: Relay
+    last_heater_fault:
+      name: Last heater fault
   - platform: debug
     reset_reason:
       name: Last reset reason

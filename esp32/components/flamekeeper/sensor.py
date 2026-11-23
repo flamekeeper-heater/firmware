@@ -78,6 +78,11 @@ SENSORS = {
         SensorKey.GLOW_PLUG_HOURS,
         _s("h", 2, DEVICE_CLASS_DURATION, state_class=STATE_CLASS_TOTAL_INCREASING, category=DIAG),
     ),
+    # The heater's fault log (the safety MCU's): entries it holds, at most 32.
+    "heater_fault_log_entries": (
+        SensorKey.HEATER_FAULT_LOG_ENTRIES,
+        _s(None, 0, icon="mdi:format-list-numbered", state_class=None, category=DIAG),
+    ),
 }
 
 CONFIG_SCHEMA = cv.Schema(

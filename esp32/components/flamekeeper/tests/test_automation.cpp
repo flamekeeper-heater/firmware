@@ -736,7 +736,7 @@ static void test_protocol() {
   CHECK(cmd({17, ble::op::TANK_SET, 40}) && out[2] == 0);
   r.step(2 * SEC);
   uint8_t st[ble::STATE_SIZE];
-  CHECK_EQ(ble::encode_state(r.c.status(), st), 32);
+  CHECK_EQ(ble::encode_state(r.c.status(), st), 33);
   CHECK_EQ(st[21], 40);
   CHECK_EQ(st[20] & fk::automatic::CLOCK_KNOWN, fk::automatic::CLOCK_KNOWN);
   n = ble::encode_event(fk::Event::ALERT, Result::OK, 2, "heater fault: Overheat", out, sizeof(out), 0x01020304u);

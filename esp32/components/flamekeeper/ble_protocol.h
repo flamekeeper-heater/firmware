@@ -29,7 +29,7 @@ void uuid_bytes(uint16_t short_id, uint8_t out[16]);
 enum Board : uint8_t { BOARD_FLAMEKEEPER_REV_A2 = 2 };  // other codes: other boards
 
 static const size_t INFO_SIZE = 24;
-static const size_t STATE_SIZE = 32;
+static const size_t STATE_SIZE = 33;
 static const size_t TELEMETRY_SIZE = 41;
 // What a result or event record may grow to: one indication at the minimum ATT MTU of 135.
 static const size_t RESULT_MAX = 132;
@@ -50,6 +50,8 @@ static const uint8_t SET_ROOM_SOURCE = 0x06;
 static const uint8_t PRIME_START = 0x07;
 static const uint8_t PRIME_STOP = 0x08;
 static const uint8_t FAULT_RESET = 0x09;
+static const uint8_t HEATER_LOG = 0x0A;        // the heater's own fault log, newest first
+static const uint8_t HEATER_LOG_CLEAR = 0x0B;
 static const uint8_t PARAM_DESCRIBE = 0x20;
 static const uint8_t PARAM_GET = 0x21;
 static const uint8_t PARAM_SET = 0x22;
@@ -106,6 +108,9 @@ static const uint32_t CAP_BOARD_UPDATE = 1u << 8;
 // Capability bit 9: the internet relay and push notifications (RELAY_*, PUSH_*).
 static const uint32_t CAP_RELAY = 1u << 9;
 static const uint32_t CAP_HA_ROOM = 1u << 10;  // a Home Assistant room temperature sensor is set up
+static const uint32_t CAP_HEATER_LOG = 1u << 11;  // the heater keeps a fault log (HEATER_LOG, State byte 32)
+static const size_t HEATER_LOG_ENTRY_SIZE = 14;
+static const size_t HEATER_LOG_PAGE = 8;  // entries in one HEATER_LOG result
 static const size_t PUSH_PREFS_SIZE = 5;
 // Bluetooth: an Update data write is the ATT MTU less the ATT header (3) and the offset (4).
 static const size_t UPDATE_BLE_OVERHEAD = 7;

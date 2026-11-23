@@ -176,9 +176,9 @@ static void test_info() {
   CHECK_EQ(out[2], 2);
   CHECK_EQ(out[3], 0x01);
   CHECK_EQ(u16(out + 4), 117);
-  // The heater's bits 0-5, bit 7 (Bluetooth thermometers), bit 10 (a Home Assistant room sensor);
-  // bit 6 is the board's.
-  CHECK_EQ(i32(out + 6), 0x4BF);
+  // The heater's bits 0-5, bit 7 (Bluetooth thermometers), bit 10 (a Home Assistant room sensor),
+  // bit 11 (the heater's fault log); bit 6 is the board's.
+  CHECK_EQ(i32(out + 6), 0xCBF);
   CHECK_EQ(out[10], 2);
   CHECK_EQ(out[11], 8);
   CHECK_EQ(out[12], 0x31);
@@ -204,7 +204,8 @@ static void test_state_and_telemetry() {
   uint8_t out[64];
   // Everything unknown.
   s.target_c = NAN;
-  CHECK_EQ(ble::encode_state(s, out), 32);
+  CHECK_EQ(ble::encode_state(s, out), 33);
+  CHECK_EQ(out[32], 0);  // the heater's fault log: empty, or none
   CHECK_EQ(out[0], 0);
   CHECK_EQ(u16(out + 4), 0x8000);
   CHECK_EQ(u16(out + 6), 0x8000);
@@ -284,6 +285,9 @@ static void test_state_and_telemetry() {
   s.failsafe_left_s = 70000;  // held below the marker
   ble::encode_state(s, out);
   CHECK_EQ(u16(out + 16), 0xFFFF);
+  s.fault_log_seq = 201;  // the heater's fault log's newest entry: read it again when this changes
+  ble::encode_state(s, out);
+  CHECK_EQ(out[32], 201);
 
   s.heat_exchanger_c = 187.26f;
   s.supply_v = 12.34f;
@@ -612,6 +616,58 @@ static void test_unsupported() {
   CHECK(r.res() == Result::NOT_SUPPORTED);
 }
 
+static void test_heater_log() {
+  Rig r;
+  // No fault log in this heater: not supported, either way.
+  r.cmd({1, ble::op::HEATER_LOG, 0});
+  CHECK(r.res() == Result::NOT_SUPPORTED);
+  r.cmd({2, ble::op::HEATER_LOG_CLEAR});
+  CHECK(r.res() == Result::NOT_SUPPORTED);
+  CHECK_EQ(r.h.log_clears, 0);
+  // Ten entries, newest first: 8 then 2, each the link's 14 bytes.
+  r.h.caps |= fk::cap::FAULT_LOG;
+  for (int i = 10; i >= 1; i--) {
+    fk::HeaterLogEntry e;
+    e.kind = i == 1 ? fk::HEATER_LOG_RESET : fk::HEATER_LOG_FAULT;
+    e.code = uint8_t(i == 1 ? 2 : 6);
+    e.why = 5;
+    e.step = 6;
+    e.seq = uint8_t(i);
+    e.board_c = -12;
+    e.hx_c10 = 2513;
+    e.supply_cv = 2380;
+    e.uptime_s = 0x01020304u;
+    r.h.log.push_back(e);
+  }
+  r.h.st.fault_log_count = 10;
+  r.h.st.fault_log_seq = 10;
+  r.cmd({3, ble::op::HEATER_LOG, 0});
+  CHECK(r.res() == Result::OK);
+  CHECK_EQ(r.n, 3 + 1 + 8 * 14);
+  CHECK(r.n <= ble::RESULT_MAX);
+  CHECK_EQ(r.out[3], 10);  // entries in the log
+  const uint8_t first[14] = {1, 6, 5, 6, 10, 0xF4, 0xD1, 0x09, 0x4C, 0x09, 4, 3, 2, 1};
+  CHECK(std::memcmp(r.out + 4, first, 14) == 0);
+  CHECK_EQ(r.out[4 + 7 * 14 + 4], 3);  // the eighth: seq 3
+  r.cmd({4, ble::op::HEATER_LOG, 8});
+  CHECK_EQ(r.n, 3 + 1 + 2 * 14);
+  CHECK(r.out[4 + 14] == 2 && r.out[4 + 14 + 1] == 2 && r.out[4 + 14 + 4] == 1);  // a reset, the watchdog
+  r.cmd({5, ble::op::HEATER_LOG, 10});
+  CHECK(r.res() == Result::OK);
+  CHECK_EQ(r.n, 3 + 1);
+  r.cmd({6, ble::op::HEATER_LOG});
+  CHECK(r.res() == Result::BAD_LENGTH);
+  // Clearing goes through the controller to the heater.
+  r.cmd({7, ble::op::HEATER_LOG_CLEAR, 0});
+  CHECK(r.res() == Result::BAD_LENGTH);
+  r.cmd({8, ble::op::HEATER_LOG_CLEAR});
+  CHECK(r.res() == Result::OK);
+  CHECK_EQ(r.h.log_clears, 1);
+  r.cmd({9, ble::op::HEATER_LOG, 0});
+  CHECK_EQ(r.n, 3 + 1);
+  CHECK_EQ(r.out[3], 0);
+}
+
 static void test_params() {
   Rig r;
   r.h.params.push_back({{14, fk::pflag::NEEDS_OFF, fk::Unit::SECONDS, 1, 20, 150, 5, "Self-test time",
@@ -780,6 +836,7 @@ int main() {
   test_update_commands();
   test_relay_commands();
   test_unsupported();
+  test_heater_log();
   test_params();
   test_param_groups();
   test_events();

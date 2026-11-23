@@ -20,6 +20,8 @@ TEXTS = {
     "settings_status": (TextKey.SETTINGS_STATUS, "mdi:playlist-check", DIAG),
     "firmware_update_status": (TextKey.FIRMWARE_UPDATE_STATUS, "mdi:progress-upload", DIAG),
     "relay": (TextKey.RELAY, "mdi:cloud-outline", DIAG),
+    # The heater's fault log (the safety MCU's): its newest entry.
+    "last_heater_fault": (TextKey.LAST_HEATER_FAULT, "mdi:alert-box-outline", DIAG),
 }
 
 

@@ -57,8 +57,8 @@ five failed pairings, power-up no longer opens it. Up to 8 phones can be bonded.
   refuses the command with `13`.
 - **State** (`1002`): what is asked of the heater and what the controller is doing: mode, heat mode,
   power, target and room temperature, heater state, controller status, fault, who started the run,
-  alerts, automatic starts, fuel level, and the run's identity. Notified on change, at most 4 times
-  a second.
+  alerts, automatic starts, fuel level, the run's identity, and the number of the newest entry in the
+  heater's fault log. Notified on change, at most 4 times a second.
 - **Telemetry** (`1003`): measurements: heat exchanger and intake temperatures, supply voltage, fan,
   pump and glow plug, CO, altitude and pressure, running times, and each room temperature source.
   Notified every second while the heater runs, every 10 s otherwise.
@@ -74,7 +74,7 @@ as text. Send the next command after the previous result.
 
 | Opcodes | Group |
 |---|---|
-| `01`-`09` | Heater: SET_MODE, SET_HEAT_MODE, SET_POWER, SET_TARGET, SET_ROOM_SOURCE, PRIME_START (needs the confirmation byte `A5`), PRIME_STOP, FAULT_RESET |
+| `01`-`0B` | Heater: SET_MODE, SET_HEAT_MODE, SET_POWER, SET_TARGET, SET_ROOM_SOURCE, PRIME_START (needs the confirmation byte `A5`), PRIME_STOP, FAULT_RESET, HEATER_LOG, HEATER_LOG_CLEAR |
 | `20`-`27` | Parameters: DESCRIBE, GET, SET, APPLY, DISCARD, GROUP, HELP, DESCRIBE_ID |
 | `30`, `32` | Access: FORGET_ME, WIFI_KEY (Bluetooth only) |
 | `40`, `41` | PIN_SET, WEB_PASSWORD_SET |
@@ -100,6 +100,26 @@ Opcode values and argument layouts are in `ble_protocol.h` (`namespace op`).
 Apps treat an unknown result code as a refusal. **Events** use request id 0: parameters applied or
 saved, a parameter changed elsewhere, the failsafe stopped the heater, a Wi-Fi change finished, a
 fault reset answered, a factory reset answered, an alert came on.
+
+**The heater's fault log** (capability bit 11): the safety MCU's own record of its last 32 faults,
+dead-man stops and resets, kept over its resets. HEATER_LOG (`0A`) takes the first entry wanted,
+counted back from the newest (u8, 0 = the newest), and returns the number of entries in the log
+(u8), then up to 8 entries, newest first, of 14 bytes each:
+
+| Bytes | Field |
+|---|---|
+| 0 | kind: 1 a fault, or a stop for a reason without one (code 0); 2 a reset of the safety MCU |
+| 1 | code: the fault (as State's), or the reset's reason (0 unknown, 1 power-up, 2 watchdog, 3 reset pin, 4 brown-out, 5 bootloader, 6 software) |
+| 2 | why: the heater's own reason code (as Telemetry byte 19, `stm32/core/burn.h` `BURN_WHY_*`); 0 for a reset |
+| 3 | the heater's step it happened in (`BURN_STEP_*`: 0 off, 1 fan check, 2 preheat, 3 ignition, 4 purge, 5 warm-up, 6 running, 7 burn-off, 8 cooldown, 9 fan only, 10 priming, 11 pre-start self-test, 12 fan retry); for a reset, the step it started in (8: hot, it cools down) |
+| 4 | its number, 1-255, one more for each entry, wrapping past 0 |
+| 5 | the board's temperature, °C (i8, `0x80` unknown) |
+| 6-7 | the heat exchanger, 0.1 °C (i16) |
+| 8-9 | the supply, 0.01 V (u16) |
+| 10-13 | seconds since the safety MCU's last reset (u32) |
+
+State byte 32 is the newest entry's number (0: empty): read the log again when it changes.
+HEATER_LOG_CLEAR (`0B`) empties it, in the safety MCU too.
 
 **Parameters.** The heater's parameters and the board's own settings come as one table the board
 describes (name, unit, range, step, menu, level), so the app holds no list of its own. Heater

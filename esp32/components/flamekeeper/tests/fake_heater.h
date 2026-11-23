@@ -84,6 +84,22 @@ class FakeHeater : public fk::Heater {
     st.fault = fk::Fault::NONE;
     return fk::Outcome::ok();
   }
+  // The heater's fault log (cap::FAULT_LOG when a test sets it), newest first.
+  std::vector<fk::HeaterLogEntry> log;
+  int log_clears = 0;
+  size_t fault_log(size_t from, fk::HeaterLogEntry *out, size_t max) const override {
+    size_t n = 0;
+    for (size_t i = from; i < log.size() && n < max; i++)
+      out[n++] = log[i];
+    return n;
+  }
+  fk::Outcome clear_fault_log() override {
+    log_clears++;
+    log.clear();
+    st.fault_log_seq = 0;
+    st.fault_log_count = 0;
+    return fk::Outcome::ok();
+  }
 
   size_t param_count() const override { return params.size(); }
   bool param_info(size_t i, fk::ParamInfo &out) const override {

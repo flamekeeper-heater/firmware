@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -159,7 +160,7 @@ static void records() {
   {
     struct V {
       const char *name;
-      uint32_t mask;  // the 7 capability bits as Info carries them (bit 6 is the board's)
+      uint32_t mask;  // the capability bits as Info carries them (bits 6 and 8 are the board's)
       bool window, full, pin, webpw;
       uint8_t bonds, max_bonds, app, max_app, browser, max_browser;
       fk::WifiState wifi;
@@ -178,6 +179,8 @@ static void records() {
          fk::WifiState::CONNECTING, fk::HaState::OFF, 59, {255, 0, 7}, 0xFFFFFFFEu},
         {"info, capabilities 0x70, no pairing or byte 15 bits", 0x70, false, false, false, false, 0, 5, 7, 2, 8, 3,
          fk::WifiState::OFF, fk::HaState::WAITING, 0, {0, 0, 0}, 0},
+        {"info, capabilities 0x811, the heater's fault log", 0x811, false, false, false, false, 1, 8, 2, 8, 0, 8,
+         fk::WifiState::CONNECTED, fk::HaState::CONNECTED, 0, {0, 2, 0}, 1795000000u},
     };
     for (const V &v : vs) {
       fk::BoardInfo p;
@@ -199,14 +202,15 @@ static void records() {
       p.can_update = (v.mask & 0x100) != 0;
       p.version[0] = v.ver[0], p.version[1] = v.ver[1], p.version[2] = v.ver[2];
       p.build_utc = v.build;
-      size_t n = ble::encode_info(ble::BOARD_FLAMEKEEPER_REV_A2, v.mask & 0xBF, p, out);
+      size_t n = ble::encode_info(ble::BOARD_FLAMEKEEPER_REV_A2,
+                                  (v.mask & 0xBF) | ((v.mask & 0x800) ? fk::cap::FAULT_LOG : 0), p, out);
       CHECK_EQ(n, 24);
       uint32_t caps = v.mask;
       auto bit = [&](int i) { return std::string((caps >> i) & 1 ? "true" : "false"); };
       Obj cp;
       cp.add("fanOnly", bit(0)).add("temperature", bit(1)).add("prime", bit(2)).add("primeStop", bit(3))
           .add("parameters", bit(4)).add("roomSource", bit(5)).add("haSwitch", bit(6))
-          .add("bluetoothRoom", bit(7)).add("boardUpdate", bit(8));
+          .add("bluetoothRoom", bit(7)).add("boardUpdate", bit(8)).add("heaterLog", bit(11));
       Obj e;
       e.add("major", num(ble::PROTOCOL_MAJOR)).add("minor", num(ble::PROTOCOL_MINOR))
           .add("board", num(ble::BOARD_FLAMEKEEPER_REV_A2)).add("pairingOpen", v.window ? "true" : "false")
@@ -233,13 +237,15 @@ static void records() {
     CHECK(r.run({5, ble::op::SET_MODE, 1})[2] == 0);
     r.h.st.state = fk::HeaterState::HEATING;
     r.h.st.answering = true;
+    r.h.st.fault_log_seq = 7;
     r.c.room().set_source(fk::RoomSource::PROBE);
     r.c.room().probe(19.3f, 1000);
     r.c.tick(1000, false);
     const fk::Status &s = r.c.status();
     uint8_t out[ble::STATE_SIZE];
     size_t n = ble::encode_state(s, out);
-    CHECK_EQ(n, 32);
+    CHECK_EQ(n, 33);
+    CHECK_EQ(s.fault_log_seq, 7);
     CHECK(s.run_source == fk::Source::PHONE);
     Obj e;
     e.add("heaterAnswering", "true").add("failsafeStopped", "false").add("roomFallback", "false")
@@ -251,7 +257,7 @@ static void records() {
         .add("failsafeSecondsLeft", "null").add("runSource", num(int(fk::Source::PHONE)))
         .add("stagedChanges", "0").add("alerts", "0").add("automatic", "0").add("fuelLeft", "null")
         .add("burnoffMinutesLeft", "0").add("timerSlot", "null").add("timerEndUtc", "null")
-        .add("runId", num(s.run_id));
+        .add("runId", num(s.run_id)).add("heaterLogSeq", "7");
     CHECK(s.run_id == 1);
     record("state, heating from a phone", "state", out, n, e);
   }
@@ -288,6 +294,7 @@ static void records() {
     s.timer_end_utc = odd ? 1768199400u : 0;
     s.run_id = odd ? 0xA5C30007u : 0x00010001u;
     s.thermo_paused = odd;  // bit 6
+    s.fault_log_seq = odd ? 201 : 0;
     uint8_t out[ble::STATE_SIZE];
     size_t n = ble::encode_state(s, out);
     CHECK_EQ(out[0], m | (odd ? 0x40 : 0));
@@ -304,7 +311,7 @@ static void records() {
         .add("automatic", num(s.automatic)).add("fuelLeft", odd ? "37" : "null")
         .add("burnoffMinutesLeft", odd ? "17" : "0").add("timerSlot", odd ? "3" : "null")
         .add("timerEndUtc", odd ? "1768199400" : "null")
-        .add("runId", num(s.run_id));
+        .add("runId", num(s.run_id)).add("heaterLogSeq", odd ? "201" : "0");
     char name[48];
     std::snprintf(name, sizeof(name), "state, flags 0x%02x", m);
     record(name, "state", out, n, e);
@@ -659,6 +666,55 @@ static void records() {
     record("result, GLOW_HEALTH", "result", gh.data(), gh.size(), e2);
   }
 
+  // --- the heater's fault log: HEATER_LOG pages, HEATER_LOG_CLEAR ---
+  {
+    Rig r;
+    r.h.caps |= fk::cap::FAULT_LOG;
+    auto entry = [](uint8_t kind, uint8_t code, uint8_t why, uint8_t step, uint8_t seq, int8_t board, int16_t hx,
+                    uint16_t supply, uint32_t up) {
+      fk::HeaterLogEntry e;
+      e.kind = kind, e.code = code, e.why = why, e.step = step, e.seq = seq;
+      e.board_c = board, e.hx_c10 = hx, e.supply_cv = supply, e.uptime_s = up;
+      return e;
+    };
+    // Newest first: an overheat while running, a dead-man stop while warming up (heat exchanger and
+    // board unknown), a watchdog reset that started a cooldown.
+    r.h.log.push_back(entry(fk::HEATER_LOG_FAULT, 6, 5, 6, 12, 46, 2513, 2380, 12307));
+    r.h.log.push_back(entry(fk::HEATER_LOG_FAULT, 0, 2, 5, 11, -128, INT16_MIN, 1190, 59));
+    r.h.log.push_back(entry(fk::HEATER_LOG_RESET, 2, 0, 8, 10, -5, -45, 2410, 0));
+    r.h.st.fault_log_count = 3;
+    r.h.st.fault_log_seq = 12;
+    auto expect_entry = [](const fk::HeaterLogEntry &e) {
+      Obj o;
+      o.add("kind", num(e.kind)).add("code", num(e.code)).add("why", num(e.why)).add("step", num(e.step))
+          .add("seq", num(e.seq)).add("boardC", e.board_c == -128 ? "null" : num(e.board_c))
+          .add("heatExchangerC", e.hx_c10 == INT16_MIN ? "null" : (e.hx_c10 < 0 ? "-" : "") +
+                                     num(std::abs(e.hx_c10) / 10) + "." + num(std::abs(e.hx_c10) % 10))
+          .add("supplyV", e.supply_cv == 0xFFFF ? "null" : num(e.supply_cv / 100) + "." +
+                                                             (e.supply_cv % 100 < 10 ? "0" : "") + num(e.supply_cv % 100))
+          .add("uptimeSeconds", num(e.uptime_s));
+      return o.str();
+    };
+    Bytes hl = r.run({60, ble::op::HEATER_LOG, 0});
+    CHECK(hl[2] == 0 && hl.size() == 3 + 1 + 3 * 14 && hl[3] == 3);
+    Obj lo;
+    lo.add("count", "3").add("entries", "[" + expect_entry(r.h.log[0]) + ", " + expect_entry(r.h.log[1]) + ", " +
+                                            expect_entry(r.h.log[2]) + "]");
+    Obj e = result_expect(hl);
+    e.add("heaterLog", lo.str());
+    record("result, HEATER_LOG from 0", "result", hl.data(), hl.size(), e);
+    Bytes h2 = r.run({61, ble::op::HEATER_LOG, 2});
+    CHECK(h2[2] == 0 && h2.size() == 3 + 1 + 14);
+    Obj l2;
+    l2.add("count", "3").add("entries", "[" + expect_entry(r.h.log[2]) + "]");
+    Obj e2 = result_expect(h2);
+    e2.add("heaterLog", l2.str());
+    record("result, HEATER_LOG from 2", "result", h2.data(), h2.size(), e2);
+    Bytes hc = r.run({62, ble::op::HEATER_LOG_CLEAR});
+    CHECK(hc[2] == 0 && hc.size() == 3 && r.h.log.empty());
+    record("result, HEATER_LOG_CLEAR", "result", hc.data(), hc.size(), result_expect(hc));
+  }
+
   // --- Event 06: the heater's answer to FAULT_RESET (the texts LinkClient sends) ---
   {
     struct V {
@@ -988,11 +1044,11 @@ static std::string sign_in() {
   rig.h.st.answering = true;
   rig.c.tick(1000, false);
   uint8_t state_rec[ble::STATE_SIZE];
-  CHECK_EQ(ble::encode_state(rig.c.status(), state_rec), 32);
+  CHECK_EQ(ble::encode_state(rig.c.status(), state_rec), 33);
 
   uint8_t sealed[64];
   size_t n = board.seal(w::STATE, state_rec, sizeof(state_rec), sealed, sizeof(sealed));
-  CHECK_EQ(n, 32 + w::SEAL_OVERHEAD);
+  CHECK_EQ(n, ble::STATE_SIZE + w::SEAL_OVERHEAD);
   Bytes board_state(sealed, sealed + n);
   n = board.seal(w::RESULT, result_rec.data(), result_rec.size(), sealed, sizeof(sealed));
   CHECK_EQ(n, 3 + w::SEAL_OVERHEAD);
