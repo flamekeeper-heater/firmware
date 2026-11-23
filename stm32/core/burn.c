@@ -317,28 +317,34 @@ void burn_stop(burn *b, uint8_t why, uint32_t now) {
 }
 
 /* A fault that ends the run: fuel off at once, the fan cools the heater if it still can. Off, it is
- * only recorded. */
+ * only recorded. A latched fault stays the one shown until a fault reset: a later stop only acts. */
 static void fault_stop(burn *b, uint8_t fault, uint8_t why, uint32_t now) {
-  b->fault = fault;
-  b->why = why;
+  if (!b->fault_latched)
+    b->fault = fault, b->why = why;
   stop_now(b, now);
 }
 
-/* A fault that needs a fault reset, when cond holds and it is not latched already: 1 when it
- * latched now. */
+/* A fault that needs a fault reset, when cond holds: 1 when it latched now. With a fault latched
+ * already (this one or another), the first stays the one shown until a fault reset: a further cause
+ * keeps the heater stopping and blocks the reset (burn_fault_reset), but does not take its place
+ * (two causes used to swap places every pass). */
 static int latch(burn *b, int cond, uint8_t fault, uint8_t why, uint32_t now) {
-  if (!cond || (b->fault == fault && b->fault_latched))
+  if (!cond)
     return 0;
-  b->fault_latched = 1;
+  if (b->fault_latched) {
+    stop_now(b, now);
+    return 0;
+  }
   fault_stop(b, fault, why, now);
+  b->fault_latched = 1;
   return 1;
 }
 
 /* The fan stalled or never turned (FAN-3, FAN-5): fuel, glow and fan off at once; the fan tries
  * again after a wait, up to fan_retries times; one stall more locks it out until a fault reset. */
 static void fan_stalled(burn *b, uint8_t why, uint32_t now, const burn_inputs *in) {
-  b->fault = BURN_FAULT_FAN;
-  b->why = why;
+  if (!b->fault_latched) /* a latched fault stays the one shown (latch) */
+    b->fault = BURN_FAULT_FAN, b->why = why;
   b->fan_ok_ms = 0;
   b->fan_low.on = 0;
   if (++b->fan_stalls > b->p.fan_retries) {
@@ -358,6 +364,27 @@ static void fan_stalled(burn *b, uint8_t why, uint32_t now, const burn_inputs *i
 }
 
 void burn_set_power(burn *b, uint8_t power) { b->power = power > 100 ? 100 : power; }
+
+int burn_latch_causes(const burn_inputs *in, burn_cause out[BURN_CAUSES_MAX]) {
+  /* As checks() latches them (a CO alarm hides the sensor fault); a fan stall (fan_fault 1) is retried. */
+  const struct {
+    int on;
+    uint8_t fault, why;
+  } c[] = {
+      {in->mcu_fault != 0, BURN_FAULT_MCU, in->mcu_fault},
+      {in->overheat_latch, BURN_FAULT_OVERHEAT, BURN_WHY_OVERHEAT_LATCH},
+      {in->glow_fault, BURN_FAULT_GLOW, BURN_WHY_GLOW_STAGE},
+      {in->fan_fault > 1, BURN_FAULT_FAN, BURN_WHY_FAN_STAGE},
+      {in->pump_fault, BURN_FAULT_PUMP, BURN_WHY_PUMP_STAGE},
+      {in->co_alarm, BURN_FAULT_CO, BURN_WHY_CO},
+      {in->co_fault && !in->co_alarm, BURN_FAULT_CO_SENSOR, BURN_WHY_CO_SENSOR},
+  };
+  int n = 0;
+  for (unsigned i = 0; i < sizeof(c) / sizeof(c[0]) && n < BURN_CAUSES_MAX; i++)
+    if (c[i].on)
+      out[n].fault = c[i].fault, out[n].why = c[i].why, n++;
+  return n;
+}
 
 int burn_fault_reset(burn *b, const burn_inputs *in) {
   if (!b->fault_latched)

@@ -204,7 +204,9 @@ newest first (FAULT_LOG) and Status numbers (the newest entry's number, 1-255, 0
 
 - An entry when the sequencer's fault or stop reason changes to one not noted since it last had
   none: a run or a start that ended with a fault, a fault latched while off, a retried fan stall, a
-  dead-man stop. Two latched causes the sequencer shows by turns make two entries, not one a pass.
+  dead-man stop; and each further cause while a fault is latched (the fault shown stays the first
+  until a fault reset, so the log is where a second cause shows). Each is noted once until the burn
+  has no fault again.
 - An entry at boot for every reset but a power-up with the heater cold: the watchdog, a software or
   pin reset, a power loss mid-run (the heat exchanger still hot). The same reason twice in a row
   makes one.

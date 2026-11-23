@@ -278,6 +278,96 @@ static void test_overheat_latch(void) {
   CHECK_EQ(start(&r, HEAT, 50), 0);
 }
 
+/* Two latched causes at once: the fault that stopped the run stays the one shown, pass after pass,
+ * until a fault reset; the other still blocks the reset. A later stop of another kind (the sensor
+ * open during the cooldown) does not replace it either. */
+static void test_latched_fault_stays(void) {
+  rig r;
+  rig_init(&r, 0, 10);
+  CHECK_EQ(start(&r, HEAT, 50), 0);
+  CHECK(run_until_step(&r, BURN_STEP_RUNNING, 5 * MIN));
+  r.latch = 1;
+  run(&r, TICK);
+  CHECK(r.b.fault_latched && r.b.fault == BURN_FAULT_OVERHEAT && r.b.why == BURN_WHY_OVERHEAT_LATCH);
+  CHECK_EQ(r.b.step, BURN_STEP_BURN_OFF);
+  r.glow_fault = 1;
+  r.pump_fault = 1;
+  r.co = 1;
+  r.mcu_fault = BURN_WHY_TICK;
+  int changed = 0;
+  for (int i = 0; i < 50; i++) {
+    tick(&r);
+    changed += r.b.fault != BURN_FAULT_OVERHEAT || r.b.why != BURN_WHY_OVERHEAT_LATCH;
+  }
+  CHECK_EQ(changed, 0);
+  CHECK(r.b.fault_latched && r.b.out.pump_cHz == 0 && r.b.out.glow_w == 0);
+  /* Still burning off and cooling down as the first fault asked: the fan runs. */
+  CHECK(r.b.step == BURN_STEP_BURN_OFF || r.b.step == BURN_STEP_COOLDOWN);
+  CHECK(r.b.out.fan_rpm > 0);
+  /* Every cause blocks the reset, the first gone or not. */
+  burn_inputs in;
+  const uint8_t *causes[] = {&r.latch, &r.glow_fault, &r.pump_fault, &r.co, &r.mcu_fault};
+  for (unsigned k = 0; k < 5; k++) {
+    in = inputs(&r);
+    CHECK_EQ(burn_fault_reset(&r.b, &in), 0x2F);
+    *(uint8_t *) causes[k] = 0;
+  }
+  CHECK_EQ(r.b.fault, BURN_FAULT_OVERHEAT);
+  /* The fan stalling in the cooldown: retried, then locked out as ever, but the fault shown stays. */
+  CHECK(run_until_step(&r, BURN_STEP_COOLDOWN, 5 * MIN));
+  r.m.fan_stalled = 1;
+  CHECK(run_until_step(&r, BURN_STEP_FAN_RETRY, 10 * SEC));
+  CHECK(r.b.fault == BURN_FAULT_OVERHEAT && r.b.why == BURN_WHY_OVERHEAT_LATCH);
+  CHECK(run_until_step(&r, BURN_STEP_OFF, 2 * MIN));
+  CHECK_EQ(r.b.fan_stalls, 3);
+  CHECK(r.b.fault == BURN_FAULT_OVERHEAT && r.b.why == BURN_WHY_OVERHEAT_LATCH);
+  r.m.fan_stalled = 0;
+  CHECK(r.b.fault == BURN_FAULT_OVERHEAT && r.b.why == BURN_WHY_OVERHEAT_LATCH);
+  in = inputs(&r);
+  CHECK_EQ(burn_fault_reset(&r.b, &in), 0);
+  CHECK(r.b.fault == BURN_FAULT_NONE && !r.b.fault_latched);
+  /* Latched while off by one cause, a second arriving later: the first stays. */
+  r.co_fault = 1;
+  tick(&r);
+  CHECK(r.b.fault_latched && r.b.fault == BURN_FAULT_CO_SENSOR);
+  r.latch = 1;
+  run(&r, 10 * TICK);
+  CHECK(r.b.fault == BURN_FAULT_CO_SENSOR && r.b.why == BURN_WHY_CO_SENSOR);
+}
+
+/* burn_latch_causes names each latched cause present as the fault and reason latch() gives it alone. */
+static void test_latch_causes(void) {
+  struct {
+    uint8_t *flag;
+    uint8_t value;
+  } one[7];
+  rig r;
+  uint8_t *flags[] = {&r.latch, &r.glow_fault, &r.fan_fault, &r.pump_fault, &r.co, &r.co_fault, &r.mcu_fault};
+  const uint8_t values[] = {1, 1, 2, 1, 1, 1, BURN_WHY_VDDA_LOW};
+  for (unsigned k = 0; k < 7; k++)
+    one[k].flag = flags[k], one[k].value = values[k];
+  burn_cause c[BURN_CAUSES_MAX];
+  for (unsigned k = 0; k < 7; k++) {
+    rig_init(&r, 0, 10);
+    *one[k].flag = one[k].value;
+    burn_inputs in = inputs(&r);
+    CHECK_EQ(burn_latch_causes(&in, c), 1);
+    tick(&r);
+    CHECK(r.b.fault_latched && c[0].fault == r.b.fault && c[0].why == r.b.why);
+  }
+  /* None, and all at once (a CO alarm hides the sensor fault, as in checks()). */
+  rig_init(&r, 0, 10);
+  burn_inputs in = inputs(&r);
+  CHECK_EQ(burn_latch_causes(&in, c), 0);
+  in.fan_fault = 1; /* a stall: retried, not latched */
+  CHECK_EQ(burn_latch_causes(&in, c), 0);
+  for (unsigned k = 0; k < 7; k++)
+    *one[k].flag = one[k].value;
+  in = inputs(&r);
+  CHECK_EQ(burn_latch_causes(&in, c), 6);
+  CHECK(c[0].fault == BURN_FAULT_MCU && c[0].why == BURN_WHY_VDDA_LOW);
+}
+
 static void test_co_alarm(void) {
   rig r;
   rig_init(&r, 0, 10);
@@ -796,6 +886,8 @@ int main(void) {
   test_overheat_derate_holds();
   test_overheat_limit();
   test_overheat_latch();
+  test_latched_fault_stays();
+  test_latch_causes();
   test_co_alarm();
   test_co_sensor_fault();
   test_mcu_fault();

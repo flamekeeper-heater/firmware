@@ -55,32 +55,35 @@ static void test_notes(void) {
   /* Another why for the same fault is news. */
   faultlog_note(&l, 60010, BURN_FAULT_OVERHEAT, BURN_WHY_BOARD_HOT, BURN_STEP_COOLDOWN, &in);
   CHECK_EQ(l.count, 2);
-  /* Two latched causes the sequencer shows by turns, a pass each: no entry for each turn. */
+  /* Two pairs noted by turns, a pass each (a latched fault and a later cause, safety_step): no entry
+   * for each turn. */
   for (int i = 0; i < 10; i++) {
     faultlog_note(&l, 60020, BURN_FAULT_OVERHEAT, BURN_WHY_OVERHEAT_LIMIT, BURN_STEP_OFF, &in);
     faultlog_note(&l, 60030, BURN_FAULT_OVERHEAT, BURN_WHY_BOARD_HOT, BURN_STEP_OFF, &in);
   }
   CHECK_EQ(l.count, 2);
-  /* Remembered up to four: a fifth pushes out the oldest, which is news again. */
-  faultlog_note(&l, 60040, BURN_FAULT_FAN, BURN_WHY_FAN_STAGE, BURN_STEP_OFF, &in);
-  faultlog_note(&l, 60040, BURN_FAULT_PUMP, BURN_WHY_PUMP_STAGE, BURN_STEP_OFF, &in);
-  faultlog_note(&l, 60040, BURN_FAULT_CO, BURN_WHY_CO, BURN_STEP_OFF, &in);
-  CHECK_EQ(l.count, 5);
+  /* Remembered up to FAULTLOG_SEEN: one more pushes out the oldest, which is news again. */
+  for (unsigned k = 0; k < FAULTLOG_SEEN - 2u; k++)
+    faultlog_note(&l, 60040, BURN_FAULT_FAN, (uint8_t) (100u + k), BURN_STEP_OFF, &in);
+  CHECK_EQ(l.count, FAULTLOG_SEEN);
   faultlog_note(&l, 60040, BURN_FAULT_OVERHEAT, BURN_WHY_BOARD_HOT, BURN_STEP_OFF, &in);
-  CHECK_EQ(l.count, 5);
+  CHECK_EQ(l.count, FAULTLOG_SEEN);
+  faultlog_note(&l, 60040, BURN_FAULT_PUMP, BURN_WHY_PUMP_STAGE, BURN_STEP_OFF, &in);
+  CHECK_EQ(l.count, FAULTLOG_SEEN + 1);
   faultlog_note(&l, 60040, BURN_FAULT_OVERHEAT, BURN_WHY_OVERHEAT_LIMIT, BURN_STEP_OFF, &in);
-  CHECK_EQ(l.count, 6);
+  CHECK_EQ(l.count, FAULTLOG_SEEN + 2);
+  CHECK_EQ(FAULTLOG_SEEN + 2, 14);
   /* A new start clears it; the same fault again is a new entry. */
   faultlog_note(&l, 70000, 0, 0, BURN_STEP_OFF, &in);
   faultlog_note(&l, 80000, BURN_FAULT_OVERHEAT, BURN_WHY_BOARD_HOT, BURN_STEP_RUNNING, &in);
-  CHECK_EQ(l.count, 7);
-  CHECK_EQ(newest(&l).seq, 7);
+  CHECK_EQ(l.count, 15);
+  CHECK_EQ(newest(&l).seq, 15);
   /* A stop for a reason, without a fault: the dead-man. Unknown readings stay unknown. */
   faultlog_note(&l, 90000, 0, 0, BURN_STEP_OFF, &in);
   in = readings(BURN_UNKNOWN_TEMP, 1200, BURN_UNKNOWN_TEMP);
   faultlog_note(&l, 91000, BURN_FAULT_NONE, BURN_WHY_DEADMAN, BURN_STEP_WARM_UP, &in);
   e = newest(&l);
-  CHECK_EQ(l.count, 8);
+  CHECK_EQ(l.count, 16);
   CHECK(e.kind == LINK_LOG_FAULT && e.code == 0 && e.why == BURN_WHY_DEADMAN && e.step == BURN_STEP_WARM_UP);
   CHECK_EQ(e.hx, LINK_UNKNOWN_I16);
   CHECK_EQ(e.board_c, LINK_UNKNOWN_I8);
@@ -390,6 +393,35 @@ static void test_safety_fault_reset(void) {
   CHECK_EQ(s.log.count, 2);
 }
 
+static void test_safety_second_cause(void) {
+  /* Latched by the overheat latch, then a CO sensor fault and the MCU's own fault arrive: the fault
+   * shown stays the overheat, and each later cause gets its own entry, once. */
+  burn_inputs in = readings(200, 1250, 250);
+  safety s;
+  safety_init(&s, 0, &in, LINK_RESET_POWER_ON, 0);
+  safety_log_reset(&s);
+  in.overheat_latch = 1;
+  safety_step(&s, 10, &in);
+  CHECK_EQ(s.log.count, 1);
+  in.co_fault = 1;
+  in.mcu_fault = BURN_WHY_TICK;
+  for (uint32_t t = 20; t < 1000; t += 10)
+    safety_step(&s, t, &in);
+  CHECK(s.burn.fault == BURN_FAULT_OVERHEAT && s.burn.why == BURN_WHY_OVERHEAT_LATCH);
+  CHECK_EQ(s.log.count, 3);
+  link_fault_entry e[3];
+  CHECK_EQ(faultlog_read(&s.log, 0, e, 3), 3);
+  CHECK(e[2].code == BURN_FAULT_OVERHEAT && e[2].why == BURN_WHY_OVERHEAT_LATCH);
+  CHECK(e[1].code == BURN_FAULT_MCU && e[1].why == BURN_WHY_TICK);
+  CHECK(e[0].code == BURN_FAULT_CO_SENSOR && e[0].why == BURN_WHY_CO_SENSOR);
+  /* The MCU's reason changing: news too, once. */
+  in.mcu_fault = BURN_WHY_VDDA_LOW;
+  for (uint32_t t = 1000; t < 1500; t += 10)
+    safety_step(&s, t, &in);
+  CHECK_EQ(s.log.count, 4);
+  CHECK(faultlog_read(&s.log, 0, e, 1) == 1 && e[0].code == BURN_FAULT_MCU && e[0].why == BURN_WHY_VDDA_LOW);
+}
+
 int main(void) {
   test_notes();
   test_uptime();
@@ -399,5 +431,6 @@ int main(void) {
   test_slots();
   test_safety_link();
   test_safety_fault_reset();
+  test_safety_second_cause();
   return check_report("faultlog");
 }

@@ -4,9 +4,10 @@
  *
  * Entries are the link's (link_fault_entry). A fault entry is noted when the sequencer's fault and
  * why change to something other than none: a run or a start that ended with a fault, a fault
- * latched while off, a fan stall that is retried, a dead-man stop. A fault and why already noted
- * makes no new entry until the burn has had neither in between (a new start, a fault reset), so
- * two latched causes the sequencer shows by turns make two entries, not one a pass. A
+ * latched while off, a fan stall that is retried, a dead-man stop, and (from safety_step) each
+ * further cause of a latched fault, whose first cause stays the one shown. A fault and why already
+ * noted makes no new entry until the burn has had neither in between (a new start, a fault reset),
+ * so causes that persist, or a reason that goes back and forth, are noted once each. A
  * reset entry is noted at boot for every reset except a plain power-up with the heater cold, and
  * only once for the same reason in a row (a reset loop writes one slot, not one per reset).
  *
@@ -31,7 +32,8 @@ extern "C" {
  * all 0xFF. A slot whose kind is FAULTLOG_CLEARED is the clear marker: what came before it goes. */
 #define FAULTLOG_SLOT 16u
 #define FAULTLOG_CLEARED 0x43u /* 'C' */
-#define FAULTLOG_SEEN 4         /* faults remembered as noted, until the burn has none */
+#define FAULTLOG_SEEN 12        /* faults remembered as noted, until the burn has none: more than
+                                   the causes and reasons one latched fault can gather */
 
 typedef struct {
   link_fault_entry e[FAULTLOG_SIZE]; /* a ring: the newest at head - 1 */

@@ -441,6 +441,13 @@ void safety_step(safety *s, uint32_t now, const burn_inputs *in) {
     burn_stop(&s->burn, BURN_WHY_DEADMAN, now); /* a full burn-off and cooldown, on its own */
   burn_step(&s->burn, now, &s->in);
   faultlog_note(&s->log, now, s->burn.fault, s->burn.why, step, &s->in);
+  /* Latched: the first fault stays the one shown; a later cause gets its own entry in the log. */
+  if (s->burn.fault_latched) {
+    burn_cause c[BURN_CAUSES_MAX];
+    int n = burn_latch_causes(&s->in, c);
+    for (int i = 0; i < n; i++)
+      faultlog_note(&s->log, now, c[i].fault, c[i].why, step, &s->in);
+  }
 }
 
 const burn_outputs *safety_outputs(const safety *s) { return &s->burn.out; }

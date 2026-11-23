@@ -20,7 +20,9 @@
 //               the safety loop, never on the first poll after a reset, never while latched)
 //   stall_retries  at most 2 fan stall retries before the lockout (the count forgets as the burn's
 //               does, or more leniently)
-//   latch       a latched fault clears only with a fault reset the MCU accepted (or an MCU reset)
+//   latch       a latched fault clears only with a fault reset the MCU accepted (or an MCU reset),
+//               and the fault shown stays the one that latched until then (a second latched cause
+//               never takes its place; only the MCU fault's reason follows the monitor)
 //   deadman     2 s without a valid frame: nothing still starting or running
 //   co          a CO alarm or sensor fault ends a run (a burn-off and cooldown once fuel went in) and
 //               latches; nothing starts while either is on; the alarm clears only after a minute
@@ -41,11 +43,13 @@
 //               clears it only with VDDA back
 //   tick        the second clock more than 20 % off the tick for 2 s latches a fault; within 15 %
 //               it never does
-//   mcu         the sequencer latches either in the pass that sees it, and stays latched while it lasts
+//   mcu         the sequencer latches either in the pass that sees it (shown unless another fault latched
+//               first), and stays latched while it lasts
 //   budget      the estimated input current over 10 s at or below 11 A, the core's own estimate
 //               and the bench's (glow pulses x their current, the fan's and the pump's currents,
 //               the logic's 7.5 W) alike; the glow derated, not the run stopped
-//   fault_log   every new fault (and dead-man stop) is the fault log's newest entry at once, and in
+//   fault_log   every new fault (and dead-man stop), and every further cause of a latched fault, is
+//               among the fault log's newest entries at once, and in
 //               "flash" after the next write with the heater off; flash keeps it over MCU resets
 //
 //   test_soak                         the quick, fixed seeds (part of run.sh)
@@ -167,6 +171,15 @@ struct Bench : HeaterBench<Bench> {
   bool heard = false;
   uint32_t last_frame_ms = 0;
   bool latched_shadow = false;
+  uint8_t latched_fault = 0, latched_why = 0;  // the fault shown while latched
+
+  // The fault shown while latched stays put (latch): call after latched_shadow's own checks.
+  void check_latched_shown(bool reset_ok) {
+    if (latched_shadow && s.burn.fault_latched && !reset_ok &&
+        (s.burn.fault != latched_fault || (s.burn.why != latched_why && s.burn.fault != BURN_FAULT_MCU)))
+      fail("latch", "the latched fault shown changed without a fault reset");
+    latched_fault = s.burn.fault, latched_why = s.burn.why;
+  }
   bool fuel_went_in = false;
   uint32_t no_air_fuel_ms = 0;
   uint32_t attempt_glow_ms = 0;
@@ -227,6 +240,7 @@ struct Bench : HeaterBench<Bench> {
     oracle_seen = false;
     heard = false;
     latched_shadow = s.burn.fault_latched;
+    latched_fault = s.burn.fault, latched_why = s.burn.why;
     fan_stuck_seen = fan_stuck_on;
     stall_retries = 0, turning_ms = 0;
     attempt_glow_ms = 0;
@@ -335,28 +349,42 @@ struct Bench : HeaterBench<Bench> {
       return fail("latch", "a latched fault cleared without a fault reset");
     if (latched_shadow && !s.burn.fault_latched && (s.co.alarm || s.co.fault))
       return fail("co", "a fault reset cleared the latch while the CO module still holds one");
+    check_latched_shown(reset_ok);
     latched_shadow = s.burn.fault_latched;
-    check_log();
+    check_log(false);
   }
 
   // The fault log: a fault or stop reason not seen since the burn last had none is its newest entry
   // at once (the log may repeat one, never miss one).
-  void check_log() {
+  void check_log(bool pass) {
     uint8_t f = s.burn.fault, w = s.burn.why;
     if (f == 0 && w == 0) {
       log_seen.clear();
       return;
     }
-    uint16_t key = uint16_t(f << 8 | w);
-    if (std::find(log_seen.begin(), log_seen.end(), key) != log_seen.end())
-      return;
-    log_seen.push_back(key);
+    // The fault shown, and after a pass with a fault latched each cause present (test_burn checks
+    // burn_latch_causes against the sequencer).
+    burn_cause keys[1 + BURN_CAUSES_MAX];
+    int n = 0;
+    keys[n].fault = f, keys[n].why = w, n++;
+    if (pass && s.burn.fault_latched)
+      n += burn_latch_causes(&s.in, keys + 1);
+    for (int k = 0; k < n; k++) {
+      uint16_t key = uint16_t(keys[k].fault << 8 | keys[k].why);
+      if (std::find(log_seen.begin(), log_seen.end(), key) != log_seen.end())
+        continue;
+      log_seen.push_back(key);
+      link_fault_entry e[1 + BURN_CAUSES_MAX];
+      uint8_t got = faultlog_read(&s.log, 0, e, uint8_t(1 + BURN_CAUSES_MAX)), i = 0;
+      while (i < got && !(e[i].kind == LINK_LOG_FAULT && e[i].code == keys[k].fault && e[i].why == keys[k].why))
+        i++;
+      if (i == got)
+        return fail("fault_log", "a new fault or latched cause that is not among the log's newest entries");
+      log_expect.push_back({keys[k].fault, keys[k].why, e[i].seq});
+    }
     link_fault_entry e;
-    if (faultlog_read(&s.log, 0, &e, 1) != 1 || e.kind != LINK_LOG_FAULT || e.code != f || e.why != w)
-      return fail("fault_log", "a new fault that is not the fault log's newest entry");
-    if (faultlog_newest_seq(&s.log) != e.seq)
+    if (faultlog_read(&s.log, 0, &e, 1) == 1 && faultlog_newest_seq(&s.log) != e.seq)
       return fail("fault_log", "Status's log number is not the newest entry's");
-    log_expect.push_back({f, w, e.seq});
   }
 
   // The board's write with the heater off: the unsaved slots go to "flash" (a full page keeps the
@@ -449,11 +477,13 @@ struct Bench : HeaterBench<Bench> {
 
   void step_out(const burn_inputs &in, uint8_t step_before) {
     (void) in;
-    // The sequencer latches the monitor's fault in its pass (a later latched fault may take its
-    // code; the latch stays until both have gone).
+    // The sequencer latches the monitor's fault in its pass, shown unless another fault latched
+    // first (that one stays shown, and the log names the MCU's: fault_log); the latch stays until
+    // both have gone.
     if (s.mon.fault != MONITOR_OK && !s.burn.fault_latched)
       fail("mcu", "the sequencer not latched while the MCU's own fault is");
-    if (mon_fault_shadow == MONITOR_OK && s.mon.fault != MONITOR_OK && s.burn.fault != BURN_FAULT_MCU)
+    if (mon_fault_shadow == MONITOR_OK && s.mon.fault != MONITOR_OK && !latched_shadow &&
+        s.burn.fault != BURN_FAULT_MCU)
       fail("mcu", "the sequencer did not latch the MCU's own fault in its pass");
     if (s.mon.fault == MONITOR_OK && tick_far_ms >= 2100)
       fail("tick", "the second clock 20 % off for 2 s without a fault");
@@ -470,8 +500,9 @@ struct Bench : HeaterBench<Bench> {
       fail("latch", "a latched fault cleared in a pass of the safety loop");
     if (!latched_shadow && s.burn.fault_latched)
       st.latched++;
+    check_latched_shown(false);
     latched_shadow = s.burn.fault_latched;
-    check_log();
+    check_log(true);
   }
 
   fan_meas fan_meas_now(const burn_inputs &in) {

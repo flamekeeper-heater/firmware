@@ -246,6 +246,14 @@ int burn_start(burn *b, uint8_t mode, uint8_t power, uint32_t now, const burn_in
 void burn_stop(burn *b, uint8_t why, uint32_t now);
 void burn_set_power(burn *b, uint8_t power);
 int burn_fault_reset(burn *b, const burn_inputs *in);
+/* The causes in `in` that latch a fault, each as the fault and reason it latches alone, in the order
+ * the sequencer checks them; returns how many. While latched, the first stays the fault shown (a
+ * later cause does not take its place), so the fault log names the others from this. */
+typedef struct {
+  uint8_t fault, why;
+} burn_cause;
+#define BURN_CAUSES_MAX 6
+int burn_latch_causes(const burn_inputs *in, burn_cause out[BURN_CAUSES_MAX]);
 
 /* One pass of the safety loop. Updates b->out. */
 void burn_step(burn *b, uint32_t now, const burn_inputs *in);
