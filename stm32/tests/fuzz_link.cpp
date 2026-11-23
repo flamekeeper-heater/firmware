@@ -61,7 +61,7 @@ const uint8_t KNOWN_OPS[] = {LINK_OP_HELLO,         LINK_OP_POLL,           LINK
                              LINK_OP_PARAM_DESCRIBE, LINK_OP_PARAM_GET,     LINK_OP_PARAM_SET,
                              LINK_OP_PARAM_APPLY,    LINK_OP_PARAM_DISCARD, LINK_OP_PARAM_DEFAULTS,
                              LINK_OP_PARAM_HELP,     LINK_OP_FAULT_RESET,   LINK_OP_GLOW_NEW_PLUG,
-                             LINK_OP_UPDATE_PREPARE};
+                             LINK_OP_UPDATE_PREPARE, LINK_OP_FAULT_LOG,     LINK_OP_FAULT_LOG_CLEAR};
 
 uint8_t pick_op(In &in) {
   uint8_t b = in.u8();
@@ -140,6 +140,11 @@ void check_reply(const uint8_t *req, const uint8_t *reply, size_t n) {
     case LINK_OP_UPDATE_PREPARE:
       REQUIRE(len == 1);
       break;
+    case LINK_OP_FAULT_LOG:
+      // The entry count, then whole entries, a page at most.
+      REQUIRE(len >= 1 && (len - 1) % LINK_FAULT_ENTRY_SIZE == 0);
+      REQUIRE((len - 1) / LINK_FAULT_ENTRY_SIZE <= LINK_FAULT_LOG_PAGE);
+      break;
     default:
       REQUIRE(len == 0);
       break;
@@ -162,6 +167,9 @@ bool refused_by_shape(const uint8_t *req) {
     case LINK_OP_PARAM_DEFAULTS:
       return n != 2 || link_request_payload(req)[0] != 'D' || link_request_payload(req)[1] != 'F';
     case LINK_OP_PARAM_HELP: return n != 3;
+    case LINK_OP_FAULT_LOG: return n != 1;
+    case LINK_OP_FAULT_LOG_CLEAR:
+      return n != 2 || link_request_payload(req)[0] != 'C' || link_request_payload(req)[1] != 'L';
     case LINK_OP_FAULT_RESET:
     case LINK_OP_GLOW_NEW_PLUG:
     case LINK_OP_UPDATE_PREPARE: return n != 0;
@@ -178,9 +186,11 @@ size_t make_request(In &in, uint8_t *frame) {
     case LINK_OP_HELLO: len = 2; break;
     case LINK_OP_POLL: len = LINK_DESIRED_SIZE; break;
     case LINK_OP_PARAM_DESCRIBE:
-    case LINK_OP_PARAM_APPLY: len = 1; break;
+    case LINK_OP_PARAM_APPLY:
+    case LINK_OP_FAULT_LOG: len = 1; break;
     case LINK_OP_PARAM_GET:
-    case LINK_OP_PARAM_DEFAULTS: len = 2; break;
+    case LINK_OP_PARAM_DEFAULTS:
+    case LINK_OP_FAULT_LOG_CLEAR: len = 2; break;
     case LINK_OP_PARAM_SET: len = 6; break;
     case LINK_OP_PARAM_HELP: len = 3; break;
     default: len = 0; break;
@@ -192,6 +202,8 @@ size_t make_request(In &in, uint8_t *frame) {
   in.bytes(payload, len);
   if (op == LINK_OP_PARAM_DEFAULTS && len == 2 && (lb & 1))
     payload[0] = 'D', payload[1] = 'F';
+  if (op == LINK_OP_FAULT_LOG_CLEAR && len == 2 && (lb & 1))
+    payload[0] = 'C', payload[1] = 'L';
   if (op == LINK_OP_HELLO && len == 2 && (lb & 1))
     payload[0] = LINK_MAJOR;
   return link_build_request(seq, op, payload, len, frame);
@@ -339,13 +351,23 @@ int sc_update(void *c, uint8_t *method) {
   return script_result(s);
 }
 
+uint8_t sc_fault_log(void *c, uint8_t, link_fault_entry *out, uint8_t *total) {
+  Script *s = static_cast<Script *>(c);
+  s->calls++;
+  *total = s->in->u8();
+  uint8_t got = uint8_t(s->in->u8() % (LINK_FAULT_LOG_PAGE + 1));
+  for (uint8_t i = 0; i < got; i++)
+    s->in->bytes(reinterpret_cast<uint8_t *>(&out[i]), sizeof(out[i]));
+  return got;
+}
+
 void target_server(In &in) {
   Script sc;
   sc.in = &in;
   link_mcu m;
   std::memset(&m, 0, sizeof(m));
   m.ctx = &sc;
-  uint16_t present = in.u16();  // which callbacks this MCU has
+  uint16_t present = in.u16();  // which callbacks this MCU has (bit 14: the fault log's two)
   if (present & (1u << 0)) m.info = sc_info;
   if (present & (1u << 1)) m.poll = sc_poll;
   if (present & (1u << 2)) m.detail = sc_detail;
@@ -360,6 +382,7 @@ void target_server(In &in) {
   if (present & (1u << 11)) m.glow_new_plug = sc_plain;
   if (present & (1u << 12)) m.update_prepare = sc_update;
   if (present & (1u << 13)) m.client_major = &sc.client_major;
+  if (present & (1u << 14)) m.fault_log = sc_fault_log, m.fault_log_clear = sc_plain;
 
   link_parser p;
   link_parser_init(&p, LINK_REQUEST);
@@ -617,6 +640,8 @@ void decoders(In &in) {
     REQUIRE(std::strlen(pd.name) <= LINK_PARAM_NAME_MAX);
   link_param_value pv;
   link_decode_param_value(h, n, &pv);
+  link_fault_entry fe;
+  link_decode_fault_entry(h, n, &fe);
   std::free(h);
 }
 
@@ -668,6 +693,17 @@ void target_client(In &in) {
           for (size_t i = 0; i < nn; i++)
             pd.name[i] = char(in.u8() | 1);
           len = link_encode_param_desc(&pd, payload);
+        } else if (op == LINK_OP_FAULT_LOG && kind < 3) {
+          payload[0] = uint8_t(in.u8() % 48);  // any count, more than the log holds included
+          size_t k = in.u8() % (LINK_FAULT_LOG_PAGE + 2);
+          len = 1;
+          for (size_t i = 0; i < k && len + LINK_FAULT_ENTRY_SIZE <= LINK_REPLY_PAYLOAD_MAX; i++) {
+            in.bytes(payload + len, LINK_FAULT_ENTRY_SIZE);
+            len += LINK_FAULT_ENTRY_SIZE;
+          }
+          len += in.u8() < 0x20 ? in.u8() % 4 : 0;  // a cut entry at the end
+          if (len > LINK_REPLY_PAYLOAD_MAX)
+            len = LINK_REPLY_PAYLOAD_MAX;
         } else if (op == LINK_OP_PARAM_GET && kind < 3) {
           link_param_value pv;
           pv.id = uint16_t(in.u8() % 8);
@@ -708,6 +744,7 @@ void target_client(In &in) {
       case 6: client.param_discard(); break;
       case 7: client.reset_parameters(); break;
       case 8: decoders(in); break;
+      case 9: client.clear_fault_log(); break;
       default: break;
     }
     now += 10 + in.u8() % 120;
@@ -723,6 +760,9 @@ void target_client(In &in) {
     }
     (void) client.param_status_text();
     (void) client.capabilities();
+    esphome::flamekeeper::HeaterLogEntry log[40];
+    REQUIRE(client.fault_log(0, log, 40) <= esphome::flamekeeper::HEATER_LOG_MAX);
+    REQUIRE(hs.fault_log_count <= esphome::flamekeeper::HEATER_LOG_MAX);
   }
 }
 

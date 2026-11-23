@@ -33,7 +33,7 @@ $cxx "$here/test_web_files.cpp" -o "$out/test_web_files"
 "$out/test_web_files"
 # The link client against a simulated safety MCU (the shared C codec in ../../../../common/link/).
 cc -std=c99 -Wall -Wextra -Werror -fsanitize=address,undefined -g -c "$src/link.c" -o "$out/link.o"
-$cxx "$here/test_link_client.cpp" "$src/link_client.cpp" "$src/controller.cpp" "$src/tuning.cpp" "$src/thermostat.cpp" "$out/link.o" -o "$out/test_link_client"
+$cxx "$here/test_link_client.cpp" "$src/link_client.cpp" "$src/heater_log.cpp" "$src/controller.cpp" "$src/tuning.cpp" "$src/thermostat.cpp" "$out/link.o" -o "$out/test_link_client"
 $cxx "$here/test_link_client_replies.cpp" "$src/link_client.cpp" "$out/link.o" -o "$out/test_link_client_replies"
 "$out/test_link_client_replies"
 # The safety-MCU updater against a simulated STM32 ROM bootloader.

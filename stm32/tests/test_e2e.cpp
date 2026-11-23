@@ -115,6 +115,11 @@ static void test_dead_man() {
   b.run(1 * MIN);
   CHECK(b.client.raw_status().state == BURN_STATE_OFF);
   CHECK(!b.m.lit);
+  // The stop is in the MCU's fault log, and the ESP32 has read it.
+  esphome::flamekeeper::HeaterLogEntry e[4];
+  CHECK_EQ(b.client.fault_log(0, e, 4), 1);
+  CHECK(e[0].kind == LINK_LOG_FAULT && e[0].code == 0 && e[0].why == BURN_WHY_DEADMAN);
+  CHECK(e[0].step == BURN_STEP_RUNNING && e[0].hx_c10 > 300 && e[0].uptime_s > 125);
 }
 
 static void test_mcu_reset_mid_run() {
@@ -126,11 +131,17 @@ static void test_mcu_reset_mid_run() {
   b.run(5 * MIN);
   // The safety MCU resets (watchdog): hot heat exchanger, the ESP32 still asking for heat.
   b.mcu_reset(LINK_RESET_WATCHDOG);
+  safety_log_reset(&b.s);  // as board_init does once the saved log is loaded (none here)
   CHECK(b.s.burn.step == BURN_STEP_COOLDOWN);
   CHECK(b.run_until_state(BURN_STATE_COOLING, 5 * SEC));
   CHECK(b.run_until_state(BURN_STATE_OFF, 25 * MIN));
   b.run(1 * MIN);
   CHECK(b.client.raw_status().state == BURN_STATE_OFF);  // an MCU reset never starts the heater
+  // The reset is in the MCU's fault log, with the cooldown it started; the ESP32 has read it.
+  esphome::flamekeeper::HeaterLogEntry e[4];
+  CHECK_EQ(b.client.fault_log(0, e, 4), 1);
+  CHECK(e[0].kind == LINK_LOG_RESET && e[0].code == LINK_RESET_WATCHDOG && e[0].step == BURN_STEP_COOLDOWN);
+  CHECK(e[0].hx_c10 > 1000);
 }
 
 static void test_parameters() {

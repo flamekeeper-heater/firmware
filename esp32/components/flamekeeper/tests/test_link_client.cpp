@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "../heater_log.h"
 #include "../link_client.h"
 #include "fake_heater.h"
 
@@ -39,6 +40,26 @@ struct SimMcu {
   // Id 7: a description in three pieces (120 bytes); id 0x80: none.
   std::string help7 = std::string(100, 'a') + std::string(20, 'b');
   int help_asks = 0;
+  // The fault log (capability 15): newest first, at most 32.
+  bool has_log = true;
+  std::vector<link_fault_entry> log;
+  uint8_t log_seq = 0;
+  int log_reads = 0, log_clears = 0;
+  void log_add(uint8_t fault, uint8_t why) {
+    link_fault_entry e{};
+    e.kind = LINK_LOG_FAULT;
+    e.code = fault;
+    e.why = why;
+    e.step = 6;
+    e.seq = log_seq = uint8_t(log_seq == 255 ? 1 : log_seq + 1);
+    e.board_c = 41;
+    e.hx = 2513;
+    e.supply = 2380;
+    e.uptime_s = 3725;
+    log.insert(log.begin(), e);
+    if (log.size() > 32)
+      log.pop_back();
+  }
 
   SimMcu() {
     link_start_gate_init(&gate);
@@ -97,6 +118,7 @@ struct SimMcu {
     o->fan_rpm = state == 1 ? 0 : 2800;
     o->power = w->power;
     o->flags = uint8_t((no_starts ? LINK_STATUS_NO_STARTS : 0) | (fault != 0 ? LINK_STATUS_FAULT_LATCHED : 0));
+    o->log_seq = log.empty() ? 0 : log.front().seq;
     for (const P &p : params)
       if (p.is_staged)
         o->flags |= LINK_STATUS_PARAMS_STAGED;
@@ -130,7 +152,7 @@ static void s_info(void *c, link_info *o) {
   SimMcu *m = static_cast<SimMcu *>(c);
   o->kind = LINK_KIND_STM32;
   o->capabilities = LINK_CAP_FAN_ONLY | LINK_CAP_PRIME | LINK_CAP_PRIME_STOP | LINK_CAP_PARAMETERS | LINK_CAP_GLOW_VI |
-                    LINK_CAP_FAN_V | (m->run_switch ? LINK_CAP_RUN_SWITCH : 0);
+                    LINK_CAP_FAN_V | (m->run_switch ? LINK_CAP_RUN_SWITCH : 0) | (m->has_log ? LINK_CAP_FAULT_LOG : 0);
   o->param_count = uint8_t(m->params.size());
   strcpy(o->text, "sim 1.0");
 }
@@ -200,6 +222,21 @@ static int s_defaults(void *c) {
   static_cast<SimMcu *>(c)->params[0].value = 60;
   return LINK_OK;
 }
+static uint8_t s_fault_log(void *c, uint8_t from, link_fault_entry *out, uint8_t *total) {
+  SimMcu *m = static_cast<SimMcu *>(c);
+  m->log_reads++;
+  *total = uint8_t(m->log.size());
+  uint8_t got = 0;
+  for (size_t i = from; i < m->log.size() && got < LINK_FAULT_LOG_PAGE; i++)
+    out[got++] = m->log[i];
+  return got;
+}
+static int s_fault_log_clear(void *c) {
+  SimMcu *m = static_cast<SimMcu *>(c);
+  m->log.clear();
+  m->log_clears++;
+  return LINK_OK;
+}
 static int s_fault_reset(void *c) {
   static_cast<SimMcu *>(c)->fault = 0;
   return LINK_OK;
@@ -225,6 +262,8 @@ struct Wire : fk::LinkTransport {
     ops.param_apply = s_apply;
     ops.param_defaults = s_defaults;
     ops.fault_reset = s_fault_reset;
+    ops.fault_log = s_fault_log;
+    ops.fault_log_clear = s_fault_log_clear;
     ops.client_major = &m->client_major;
   }
   void send(const uint8_t *data, size_t len) override {
@@ -556,6 +595,134 @@ static void test_params() {
   CHECK_EQ(r.mcu.last.fan_trim, 300);
 }
 
+static std::vector<fk::HeaterLogEntry> client_log(const fk::LinkClient &c) {
+  std::vector<fk::HeaterLogEntry> v(fk::HEATER_LOG_MAX + 4);
+  v.resize(c.fault_log(0, v.data(), v.size()));
+  return v;
+}
+
+static void test_fault_log() {
+  // Read whole on connect, newest first, a page of four at a time.
+  Rig r;
+  for (int i = 0; i < 6; i++)
+    r.mcu.log_add(uint8_t(4 + i), uint8_t(10 + i));
+  r.run(500);
+  CHECK(r.client.capabilities() & fk::cap::FAULT_LOG);
+  std::vector<fk::HeaterLogEntry> v = client_log(r.client);
+  CHECK_EQ(v.size(), 6);
+  CHECK_EQ(r.mcu.log_reads, 2);
+  CHECK(v[0].seq == 6 && v[0].code == 9 && v[0].why == 15 && v[5].seq == 1 && v[5].code == 4);
+  CHECK(v[0].kind == fk::HEATER_LOG_FAULT && v[0].step == 6 && v[0].board_c == 41 && v[0].hx_c10 == 2513);
+  CHECK(v[0].supply_cv == 2380 && v[0].uptime_s == 3725);
+  fk::HeaterStatus s = r.st();
+  CHECK(s.fault_log_seq == 6 && s.fault_log_count == 6);
+  // Part of it on request.
+  fk::HeaterLogEntry two[2];
+  CHECK_EQ(r.client.fault_log(4, two, 2), 2);
+  CHECK(two[0].seq == 2 && two[1].seq == 1);
+  CHECK_EQ(r.client.fault_log(6, two, 2), 0);
+  // Nothing new: no more reads.
+  r.run(3000);
+  CHECK_EQ(r.mcu.log_reads, 2);
+  // A new entry: Status's number changes, the log is read again.
+  r.mcu.log_add(8, 4);
+  r.run(300);
+  v = client_log(r.client);
+  CHECK(v.size() == 7 && v[0].seq == 7 && v[0].code == 8);
+  CHECK_EQ(r.st().fault_log_seq, 7);
+  CHECK_EQ(r.mcu.log_reads, 4);
+  // A full log: 32 entries in eight reads; a reply lost on the way is asked again.
+  for (int i = 0; i < 40; i++)
+    r.mcu.log_add(5, 17);
+  int reads = r.mcu.log_reads;
+  r.wire.corrupt_next = 0;
+  r.run(150);
+  r.wire.corrupt_next = 1;
+  r.run(2000);
+  v = client_log(r.client);
+  CHECK_EQ(v.size(), 32);
+  CHECK(v[0].seq == 47 && v[31].seq == 16);
+  CHECK(r.mcu.log_reads >= reads + 8);
+  CHECK_EQ(r.st().fault_log_count, 32);
+  // Cleared through the client: the MCU empties it, Status says so, the client follows.
+  CHECK(r.client.clear_fault_log().accepted());
+  r.run(500);
+  CHECK_EQ(r.mcu.log_clears, 1);
+  CHECK(client_log(r.client).empty());
+  CHECK(r.st().fault_log_seq == 0 && r.st().fault_log_count == 0);
+  // The link goes down: the log stays as last read; back up, it is read again.
+  r.mcu.log_add(11, 13);
+  r.mcu.silent = true;
+  r.run(1000);
+  CHECK(!r.client.up());
+  CHECK(client_log(r.client).empty());
+  CHECK(!r.client.clear_fault_log().accepted());
+  r.mcu.silent = false;
+  r.run(1000);
+  v = client_log(r.client);
+  CHECK(v.size() == 1 && v[0].code == 11);
+
+  // An MCU without a log: never asked, and clearing is not supported.
+  Rig n;
+  n.mcu.has_log = false;
+  n.mcu.log_add(4, 14);
+  n.run(2000);
+  CHECK(!(n.client.capabilities() & fk::cap::FAULT_LOG));
+  CHECK_EQ(n.mcu.log_reads, 0);
+  CHECK(client_log(n.client).empty());
+  CHECK(n.client.clear_fault_log().result == Result::NOT_SUPPORTED);
+}
+
+static void test_fault_log_text() {
+  // What Home Assistant shows for the newest entry.
+  char t[200];
+  fk::HeaterLogEntry e;
+  fk::heater_log_text(nullptr, t, sizeof(t));
+  CHECK(std::strcmp(t, "None") == 0);
+  e.kind = fk::HEATER_LOG_FAULT;
+  e.code = 6;
+  e.why = 5;
+  e.step = 6;
+  e.seq = 12;
+  e.board_c = 46;
+  e.hx_c10 = 2513;
+  e.supply_cv = 2380;
+  e.uptime_s = 3 * 3600 + 25 * 60 + 7;
+  fk::heater_log_text(&e, t, sizeof(t));
+  CHECK(std::strcmp(t, "#12 Overheat: the heat exchanger over its limit, while running, 3 h 25 min after a reset "
+                       "(heat exchanger 251.3 C, supply 23.80 V, board 46 C)") == 0);
+  e.code = 0;
+  e.why = 2;
+  e.step = 5;
+  e.uptime_s = 59;
+  e.hx_c10 = INT16_MIN;
+  e.board_c = -128;
+  fk::heater_log_text(&e, t, sizeof(t));
+  CHECK(std::strcmp(t, "#12 Stopped: the ESP32 went silent (dead-man), while warming up, 59 s after a "
+                       "reset (supply 23.80 V)") == 0);
+  e.kind = fk::HEATER_LOG_RESET;
+  e.code = 2;
+  e.step = 8;
+  e.uptime_s = 0;
+  e.hx_c10 = 1500;
+  fk::heater_log_text(&e, t, sizeof(t));
+  CHECK(std::strcmp(t, "#12 Safety MCU reset: watchdog, cooling down after it (heat exchanger 150.0 C, supply "
+                       "23.80 V)") == 0);
+  // Codes it does not know, and a short buffer.
+  e.kind = fk::HEATER_LOG_FAULT;
+  e.code = 99;
+  e.why = 99;
+  e.step = 99;
+  e.uptime_s = 2 * 86400 + 5 * 3600;
+  e.supply_cv = 0xFFFF;
+  e.hx_c10 = INT16_MIN;
+  fk::heater_log_text(&e, t, sizeof(t));
+  CHECK(std::strcmp(t, "#12 Other: code 99, in step 99, 2 d 5 h after a reset") == 0);
+  char small[10];
+  fk::heater_log_text(&e, small, sizeof(small));
+  CHECK(std::strcmp(small, "#12 Other") == 0);
+}
+
 static void test_controller_on_top() {
   // The shared controller drives the link like any backend.
   Rig r;
@@ -583,5 +750,7 @@ int main() {
   test_switch_by_stop();
   test_params();
   test_controller_on_top();
+  test_fault_log();
+  test_fault_log_text();
   return report("link_client");
 }

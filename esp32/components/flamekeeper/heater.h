@@ -123,6 +123,7 @@ static const uint32_t ROOM_SOURCE = 1u << 5;
 static const uint32_t FIRMWARE_UPDATE = 1u << 6;  // not in the BLE capability word (no BLE command)
 static const uint32_t BLUETOOTH_ROOM = 1u << 7;   // Bluetooth thermometers as a room source
 static const uint32_t HA_ROOM = 1u << 8;          // a Home Assistant room sensor is set up in this build
+static const uint32_t FAULT_LOG = 1u << 9;        // the heater keeps a fault log (fault_log, clear_fault_log)
 }  // namespace cap
 
 // Everything the heater reports. NAN / 0xFF... = not reported by this heater.
@@ -160,7 +161,28 @@ struct HeaterStatus {
   float pressure_hpa{NAN};  // barometric pressure (a board sensor)
   uint8_t co_state{0};      // CoState: the CO sensor as the safety MCU judges it
   float run_time_s{NAN};  // lifetime running time
+  // The heater's own fault log (cap::FAULT_LOG), as last read: its newest entry's number (1-255,
+  // 0 when empty) and its entries. Kept while the heater does not answer.
+  uint8_t fault_log_seq{0};
+  uint8_t fault_log_count{0};
 };
+
+// One entry of the heater's own fault log (PROTOCOL.md, HEATER_LOG): the Flamekeeper safety MCU's,
+// field for field (DESIGN.md).
+struct HeaterLogEntry {
+  uint8_t kind{0};   // HEATER_LOG_FAULT, HEATER_LOG_RESET
+  uint8_t code{0};   // a fault: the Fault (0: a stop for a reason, the why); a reset: its reason
+  uint8_t why{0};    // a fault: why the run or start ended (the heater's own code, as panel_fault)
+  uint8_t step{0};   // the heater's own step it happened in (a reset: the step after it)
+  uint8_t seq{0};    // 1-255, one more for each entry, wrapping past 0
+  int8_t board_c{-128};       // the board's temperature then, C (-128 unknown)
+  int16_t hx_c10{INT16_MIN};  // the heat exchanger then, 0.1 C
+  uint16_t supply_cv{0xFFFF}; // the supply then, 0.01 V
+  uint32_t uptime_s{0};       // seconds since the heater's controller last reset
+};
+static const uint8_t HEATER_LOG_FAULT = 1;
+static const uint8_t HEATER_LOG_RESET = 2;
+static const size_t HEATER_LOG_MAX = 32;  // entries a heater's log holds at most
 
 // One parameter in the heater's table (PROTOCOL.md).
 namespace pflag {
@@ -301,6 +323,16 @@ class Heater {
   // A new glow plug is fitted: a heater that checks the plug's type forgets the old one.
   virtual Outcome glow_plug_fitted() { return Outcome::ok(); }
   virtual Outcome reset_fault() { return Outcome::refuse(Result::NOT_SUPPORTED, "this heater has no fault reset"); }
+  // The heater's fault log (cap::FAULT_LOG), newest first: up to max entries from the from-th newest
+  // (0: the newest). Returns how many.
+  virtual size_t fault_log(size_t from, HeaterLogEntry *out, size_t max) const {
+    (void) from;
+    (void) out;
+    (void) max;
+    return 0;
+  }
+  // Empties it, in the heater too.
+  virtual Outcome clear_fault_log() { return Outcome::refuse(Result::NOT_SUPPORTED, "this heater has no fault log"); }
 
   // Parameters: an empty table by default.
   virtual size_t param_count() const { return 0; }

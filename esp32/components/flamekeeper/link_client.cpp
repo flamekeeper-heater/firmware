@@ -116,6 +116,17 @@ void LinkClient::send_next_(uint32_t now) {
     this->send_(r.op, r.payload, r.len, r.id, now);
     return;
   }
+  // The fault log, whole, when it is not known or Status numbers a newer one: a page at a time.
+  if (this->has_log_() && this->have_status_ &&
+      (this->log_busy_ || !this->log_known_ || this->status_.log_seq != this->log_newest_())) {
+    if (!this->log_busy_) {
+      this->log_busy_ = true;
+      this->log_reading_.clear();
+    }
+    uint8_t from = uint8_t(this->log_reading_.size());
+    this->send_(LINK_OP_FAULT_LOG, &from, 1, 0, now);
+    return;
+  }
   // Describe the parameter table once.
   if (this->param_count_ != 0 && !this->params_ready_()) {
     for (size_t i = 0; i < this->param_count_; i++) {
@@ -169,6 +180,8 @@ void LinkClient::down_(const char *why) {
   this->need_baseline_ = true;
   this->misses_ = 0;
   this->queue_cmds_.clear();
+  this->log_known_ = false;  // read again once back: the MCU may have reset or changed
+  this->log_busy_ = false;
 }
 
 void LinkClient::on_reply_(const uint8_t *f) {
@@ -291,6 +304,31 @@ void LinkClient::on_reply_(const uint8_t *f) {
         this->emit_(Event::PARAM_CHANGED, Result(result), this->out_id_, "the heater refused the value");
       }
       break;
+    case LINK_OP_FAULT_LOG: {
+      if (!this->log_busy_)
+        return;
+      if (result != LINK_OK || n < 1) {
+        // Not answered as asked: what was read stands, and nothing more is asked until it changes.
+        this->log_busy_ = false;
+        this->log_known_ = true;
+        return;
+      }
+      const size_t total = p[0] > HEATER_LOG_MAX ? HEATER_LOG_MAX : p[0];
+      size_t got = 0;
+      for (size_t k = 1; k + LINK_FAULT_ENTRY_SIZE <= n && this->log_reading_.size() < total; k += LINK_FAULT_ENTRY_SIZE) {
+        link_fault_entry e;
+        link_decode_fault_entry(p + k, LINK_FAULT_ENTRY_SIZE, &e);
+        this->log_reading_.push_back(e);
+        got++;
+      }
+      if (got == 0 || this->log_reading_.size() >= total) {
+        // Done. Should an entry have come in meanwhile, Status's number differs and it is read again.
+        this->log_ = this->log_reading_;
+        this->log_busy_ = false;
+        this->log_known_ = true;
+      }
+      break;
+    }
     case LINK_OP_FAULT_RESET:
       this->emit_(Event::FAULT_RESET, Result(result), 0,
                   result == LINK_OK ? "fault cleared" : "the heater kept the fault (its cause may still be there)");
@@ -319,6 +357,35 @@ void LinkClient::on_reply_(const uint8_t *f) {
 
 // ---------------------------------------------------------------- Heater
 
+// ---------------------------------------------------------------- the fault log
+
+size_t LinkClient::fault_log(size_t from, HeaterLogEntry *out, size_t max) const {
+  size_t n = 0;
+  for (size_t i = from; i < this->log_.size() && n < max; i++, n++) {
+    const link_fault_entry &e = this->log_[i];
+    HeaterLogEntry &o = out[n];
+    o.kind = e.kind;
+    o.code = e.code;
+    o.why = e.why;
+    o.step = e.step;
+    o.seq = e.seq;
+    o.board_c = e.board_c;
+    o.hx_c10 = e.hx;
+    o.supply_cv = e.supply;
+    o.uptime_s = e.uptime_s;
+  }
+  return n;
+}
+
+Outcome LinkClient::clear_fault_log() {
+  if (!this->up_)
+    return Outcome::refuse(Result::NO_REPLY, "the heater does not answer");
+  if (!this->has_log_())
+    return Outcome::refuse(Result::NOT_SUPPORTED, "this heater has no fault log");
+  const uint8_t cl[2] = {'C', 'L'};
+  return this->queue_(LINK_OP_FAULT_LOG_CLEAR, cl, 2);
+}
+
 uint32_t LinkClient::capabilities() const {
   // The heater firmware update also works on an MCU that does not answer (an unfinished update).
   uint32_t c = this->mcu_available_() ? cap::FIRMWARE_UPDATE : 0;
@@ -333,6 +400,8 @@ uint32_t LinkClient::capabilities() const {
     c |= cap::PRIME_STOP;
   if ((l & LINK_CAP_PARAMETERS) && this->params_ready_() && !this->params_.empty())
     c |= cap::PARAMETERS;
+  if (l & LINK_CAP_FAULT_LOG)
+    c |= cap::FAULT_LOG;
   return c;
 }
 
@@ -363,6 +432,8 @@ void LinkClient::read_status(HeaterStatus &out) const {
         break;
     }
   }
+  out.fault_log_seq = this->log_newest_();  // as last read, answering or not
+  out.fault_log_count = uint8_t(this->log_.size());
   if (this->mcu_running_()) {
     out.update_running = true;
     out.update_progress = this->mcu_->progress();

@@ -89,6 +89,10 @@ class LinkClient : public Heater {
   // Clears a latched fault on the MCU (a user reset).
   Outcome reset_fault() override;
   Outcome glow_plug_fitted() override;
+  // The MCU's fault log (LINK_CAP_FAULT_LOG): read whole after connecting and whenever Status's log
+  // number changes, then served from here.
+  size_t fault_log(size_t from, HeaterLogEntry *out, size_t max) const override;
+  Outcome clear_fault_log() override;
   // The safety-MCU updater, if this board has one (the board's reset and boot lines, and an image).
   void set_mcu_updater(McuUpdater *updater) { this->mcu_ = updater; }
   // Starts a job of the updater: with the heater off, after UPDATE_PREPARE (see mcu_update.h).
@@ -182,6 +186,14 @@ class LinkClient : public Heater {
   std::vector<Param> params_;
   uint8_t param_count_{0};
   size_t refresh_index_{0};
+
+  // the MCU's fault log, newest first
+  std::vector<link_fault_entry> log_;
+  std::vector<link_fault_entry> log_reading_;  // the read under way
+  bool log_known_{false};  // log_ is the MCU's log since this link came up
+  bool log_busy_{false};   // a read is under way
+  bool has_log_() const { return this->up_ && (this->info_.capabilities & LINK_CAP_FAULT_LOG) != 0; }
+  uint8_t log_newest_() const { return this->log_.empty() ? 0 : this->log_.front().seq; }
 
   // what we want
   uint8_t start_{0};
