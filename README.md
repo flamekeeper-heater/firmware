@@ -36,7 +36,7 @@ safety MCU (the link protocol between the two, and the CO alarm).
 | `esp32/tools/` | Signing, release, network flashing and a QEMU boot test. |
 | `esp32/keys/` | The project's public release key. |
 | `stm32/` | The safety MCU firmware: its core (`core/`: the burn sequencer, the glow pulse planner, the fan controller, the pump stroke driver, the interlock self-tests, the glow plug type check, the parameter table and the link glue), host-tested against a heater model; the board layer (`board/`) and the STM32G030 driver (`hal/`), not yet run on a chip. |
-| `common/` | C99 shared with the safety MCU: the link codec (`link/`) and the CO alarm (`co/`). |
+| `common/` | C99 shared with the safety MCU: the link codec (`link/`), the CO alarm (`co/`), the STM32G030's flash map and option bits (`g030/`), and the host tests' checks (`test/`). |
 | [PROTOCOL.md](PROTOCOL.md) | The app protocol, over Bluetooth LE and Wi-Fi. |
 | [DESIGN.md](DESIGN.md) | How the firmware is put together, and the link to the safety MCU. |
 

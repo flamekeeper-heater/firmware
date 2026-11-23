@@ -348,9 +348,7 @@ static void info_line(console *c, uint16_t i) {
   safety *s = &c->b->s;
   switch (i) {
     case 0:
-      put(c, "fw flamekeeper-bringup " CONSOLE_VERSION " safety ");
-      put_u(c, SAFETY_VERSION_MAJOR), put_ch(c, '.'), put_u(c, SAFETY_VERSION_MINOR), put_ch(c, '.');
-      put_u(c, SAFETY_VERSION_PATCH);
+      put(c, "fw flamekeeper-bringup " CONSOLE_VERSION " safety " SAFETY_VERSION_TEXT);
       kv(c, "uptime_ms", (int32_t) c->now);
       break;
     case 1:

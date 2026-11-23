@@ -61,7 +61,7 @@
 extern "C" {
 #endif
 
-#define CONSOLE_VERSION "0.1.0"
+#define CONSOLE_VERSION SAFETY_VERSION_TEXT /* the bring-up image is the safety firmware's */
 #define CONSOLE_LINE_MAX 64
 #define CONSOLE_OUT_SIZE 768
 #define CONSOLE_TX_PER_MS 8

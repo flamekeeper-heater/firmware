@@ -17,9 +17,9 @@ static void on_info(void *ctx, link_info *out) {
   out->reset_reason = s->reset_reason;
   out->checks = s->checks;
 #ifdef SAFETY_BENCH
-  strncpy(out->text, "Flamekeeper bring-up 0.1.0", LINK_TEXT_MAX); /* not for a heater in use */
+  strncpy(out->text, "Flamekeeper bring-up " SAFETY_VERSION_TEXT, LINK_TEXT_MAX); /* not for a heater in use */
 #else
-  strncpy(out->text, "Flamekeeper safety 0.1.0", LINK_TEXT_MAX);
+  strncpy(out->text, "Flamekeeper safety " SAFETY_VERSION_TEXT, LINK_TEXT_MAX);
 #endif
   out->text[LINK_TEXT_MAX] = 0;
 }

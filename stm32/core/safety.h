@@ -21,9 +21,14 @@
 extern "C" {
 #endif
 
+/* Plain decimal numbers: SAFETY_VERSION_TEXT spells them out. */
 #define SAFETY_VERSION_MAJOR 0
 #define SAFETY_VERSION_MINOR 1
 #define SAFETY_VERSION_PATCH 0
+#define SAFETY_STR_(x) #x
+#define SAFETY_STR(x) SAFETY_STR_(x)
+#define SAFETY_VERSION_TEXT \
+  SAFETY_STR(SAFETY_VERSION_MAJOR) "." SAFETY_STR(SAFETY_VERSION_MINOR) "." SAFETY_STR(SAFETY_VERSION_PATCH)
 
 /* What this firmware can do today (link Info capabilities). */
 #define SAFETY_CAPABILITIES                                                                     \
