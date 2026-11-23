@@ -58,6 +58,8 @@ static const uint16_t CO_ALARM = 1u << 10;
 static const uint16_t CO_SENSOR = 1u << 11;
 static const uint16_t GLOW_PLUG_TYPE = 1u << 12;  // a run started with a plug-type warning
 }  // namespace alert
+// An alert bit's name, as Home Assistant's "Alerts" lists it; nullptr past the last bit.
+const char *alert_name(uint8_t bit);
 
 namespace automatic {
 static const uint8_t FROST_ON = 1u << 0;
@@ -180,6 +182,7 @@ class Automation {
   void step_glow_(uint32_t now, const Status &s);
   void step_maintenance_(uint32_t now, const Status &s, float dt);
   void step_co_(const Status &s);
+  void step_fault_(const Status &s);
   void glow_reading_(uint16_t mohm);
   void save_maintenance_now_();
   void log_(LogKind kind, Source source, uint16_t a, uint32_t b);
@@ -230,6 +233,9 @@ class Automation {
   bool disarmed_{false};
   uint16_t alerts_{0};
   Fault prev_fault_{Fault::NONE};
+  uint8_t prev_reason_{0};
+  bool fault_alerted_{false};  // the current fault has raised its alert (or step_co_ raises it)
+  bool fault_retried_{false};  // ...it is a retry the heater has not given up yet
 
   // burn check
   bool priming_run_{false};  // the current run is a fuel prime

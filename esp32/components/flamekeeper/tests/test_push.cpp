@@ -301,6 +301,37 @@ static void test_payload_layout() {
         fk::push::alert_class(8) == 0 && fk::push::alert_class(4) == 0);
 }
 
+// A fan stall the safety MCU retries is not pushed; the lockout after the retries is, once, as an
+// urgent burn problem carrying the fault (7) and the reason (7).
+static void test_fan_retry_not_pushed() {
+  Rig r;
+  r.relay_up(0x01);
+  r.step(SEC);
+  CHECK(r.c.set_mode(Mode::FAN, Source::PHONE).accepted());
+  r.h.st.state = HeaterState::FAN_ONLY;
+  r.step(SEC);
+  size_t mark = r.sent.size();
+  r.h.st.fault = fk::Fault::FAN;
+  r.h.st.panel_fault = uint8_t(fk::Reason::FAN_STALL);
+  r.step(5 * SEC);
+  r.h.st.fault = fk::Fault::NONE;
+  r.h.st.panel_fault = 0;
+  r.step(5 * SEC);
+  CHECK(r.pushes(mark).empty());
+  r.h.st.fault = fk::Fault::FAN;
+  r.h.st.panel_fault = uint8_t(fk::Reason::FAN_STALL);
+  r.h.st.state = HeaterState::OFF;
+  r.h.st.mode = Mode::OFF;
+  r.step(10 * SEC);
+  auto ps = r.pushes(mark);
+  CHECK_EQ(ps.size(), 1);
+  if (ps.size() == 1) {
+    CHECK_EQ(ps[0][2], 2);  // urgent
+    auto p = r.open(ps[0], 0, r.k0);
+    CHECK(!p.empty() && p[10] == 0 && p[11] == 2 && p[23] == 7 && p[24] == 7);
+  }
+}
+
 int main() {
   test_payload_layout();
   test_alert_reaches_each_phone();
@@ -309,5 +340,6 @@ int main() {
   test_co_repeats();
   test_held_while_relay_down();
   test_events();
+  test_fan_retry_not_pushed();
   return report("push");
 }

@@ -84,6 +84,8 @@ enum class TextKey : uint8_t {
   RUN_STARTED_BY,
   ALERTS,
   RELAY,
+  FAULT_REASON,  // why, beyond the error: the safety MCU's reason (heater.h, Reason)
+  CO_SENSOR,     // the CO sensor's state (not fitted, warming up, OK, alarm, sensor fault, too cold)
 };
 
 class FlamekeeperHub : public Component {
@@ -148,6 +150,7 @@ class FlamekeeperHub : public Component {
   uint32_t last_rtc_ms_{0};
   uint32_t app_clock_ms_{0};
   std::string alerts_text_;
+  char reason_text_[128]{};
 #ifdef USE_TIME
   time::RealTimeClock *rtc_{nullptr};
 #endif
