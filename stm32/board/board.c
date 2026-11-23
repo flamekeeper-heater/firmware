@@ -5,6 +5,9 @@
 
 #include "analog.h"
 
+/* The second clock the driver gives is the one the core checks the tick against (GLW-1). */
+typedef char second_clock_agrees[HAL_SECOND_CLOCK_HZ == SAFETY_CLOCK_HZ && HAL_SECOND_CLOCK_WRAP == SAFETY_CLOCK_WRAP ? 1 : -1];
+
 /* The sequencer's measurements, from the last scan (vin_cv: VIN_SENSE from it). */
 static burn_inputs read_inputs(board *b, uint16_t vin_cv) {
   burn_inputs in;
@@ -172,6 +175,7 @@ void board_init(board *b, uint32_t now, uint8_t reset_reason, uint8_t option_fau
   b->vdda_mv = analog_vdda_mv(b->raw[HAL_ADC_VREF], b->vrefint_cal);
   burn_inputs in = read_inputs(b, analog_vin_cv(b->raw[HAL_ADC_VIN], b->vdda_mv));
   safety_init(&b->s, now, &in, reset_reason, option_faults);
+  safety_vdda(&b->s, now, analog_vdda_check_mv(b->raw[HAL_ADC_VREF], b->vrefint_cal));
   load(b);
   safety_log_reset(&b->s); /* after the log's slots: the reset's entry is the newest */
   b->last_glow_ms = b->last_loop_ms = b->last_co_ms = now;
@@ -223,6 +227,8 @@ void board_ms(board *b, uint32_t now) {
   b->vdda_mv = analog_vdda_mv(b->raw[HAL_ADC_VREF], b->vrefint_cal);
   uint16_t v = b->vdda_mv;
   uint16_t vin = analog_vin_cv(b->raw[HAL_ADC_VIN], v);
+  /* PWR-5: this millisecond's VDDA, before anything is driven from it. */
+  safety_vdda(&b->s, now, analog_vdda_check_mv(b->raw[HAL_ADC_VREF], b->vrefint_cal));
 
   /* The link: every byte received, every reply sent at once. */
   int c;
@@ -297,6 +303,10 @@ void board_ms(board *b, uint32_t now) {
     b->glow_en_planner = gc.enable;
     hal_glow_next_pulse_us(gc.width_us);
   }
+  if (safety_held(&b->s) && b->glow_en_planner) { /* PWR-5: at once, not at the next glow period */
+    b->glow_en_planner = 0;
+    hal_glow_next_pulse_us(0);
+  }
   hal_glow_en((uint8_t) (b->glow_en_test || b->glow_en_planner));
 
   /* Every 10 ms: the safety loop pass. */
@@ -310,6 +320,7 @@ void board_ms(board *b, uint32_t now) {
       safety_co_step(&b->s, now, b->raw[HAL_ADC_CO], in.board_c10);
     }
     hal_co_heater(safety_co_heater(&b->s));
+    safety_clock_check(&b->s, now, hal_second_clock()); /* GLW-1: a fault reaches this pass */
     safety_step(&b->s, now, &in);
     fan_meas fm;
     fm.rpm = in.fan_rpm;

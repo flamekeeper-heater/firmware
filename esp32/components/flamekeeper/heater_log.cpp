@@ -8,28 +8,8 @@ namespace flamekeeper {
 
 namespace {
 
-// The safety MCU's codes (stm32/core/burn.h, common/link/link.h).
-const char *const WHY[] = {nullptr,
-                           "asked to stop",
-                           "the ESP32 went silent (dead-man)",
-                           "no flame after every ignition attempt",
-                           "the flame went out",
-                           "the heat exchanger over its limit",
-                           "the hardware overheat cut-out tripped",
-                           "the fan stalled",
-                           "the fan did not spin up in time",
-                           "the heat exchanger sensor is open",
-                           "no temperature rise with fuel and glow",
-                           "the supply out of range",
-                           "the heat exchanger did not cool down in time",
-                           "carbon monoxide alarm",
-                           "the glow plug's switch failed",
-                           "the fan's switch failed, or the fan turned by itself",
-                           "the pre-start self-test failed",
-                           "the fuel pump's drive failed",
-                           "the board too hot even at the lowest power",
-                           "the glow plug is not the type set",
-                           "the CO sensor failed"};
+// The safety MCU's steps and reset reasons (stm32/core/burn.h, common/link/link.h); its fault and
+// reason codes are the controller's table (controller.cpp: fault_name, reason_text).
 const char *const STEP[] = {"off",          "checking the fan", "preheating",           "igniting",    "purging",
                             "warming up",   "running",          "burning off",          "cooling down",
                             "running the fan only", "priming",  "self-testing",         "waiting to retry the fan"};
@@ -75,7 +55,7 @@ void heater_log_text(const HeaterLogEntry *e, char *out, size_t cap) {
       st != nullptr ? o.add(", %s after it", st) : o.add(", step %u after it", unsigned(e->step));
   } else {
     o.add("%s: ", e->code == 0 ? "Stopped" : fault_name(Fault(e->code)));
-    const char *w = name(WHY, e->why);
+    const char *w = e->why != 0 ? reason_text(e->why) : nullptr;
     w != nullptr ? o.add("%s", w) : o.add("code %u", unsigned(e->why));
     const char *st = name(STEP, e->step);
     st != nullptr ? o.add(", while %s", st) : o.add(", in step %u", unsigned(e->step));

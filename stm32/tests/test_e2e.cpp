@@ -1,7 +1,7 @@
 // End to end: the ESP32's real link client (esp32/components/flamekeeper/link_client.*) talks over
 // a byte wire to this safety core, which runs the heater model on a healthy board (core_rig.h). A
 // whole heat cycle, the dead-man when the ESP32 stops talking, an MCU reset in the middle of a run,
-// and the CO alarm.
+// the CO alarm, and the input-current budget's glow derate.
 #include <cstdio>
 #include <cstring>
 
@@ -15,6 +15,7 @@ struct Bench : HeaterBench<Bench> {
   uint32_t stroke_ms_total = 0;
   uint32_t stroke_ms_unguarded = 0;  // PUMP_CMD driven without the overcurrent watchdog armed
   int max_heartbeat_gap_in_burn = 0;
+  uint16_t fan_extra_ma = 0;  // more fan current than the model's (a stiffer fan)
 
   Bench() { mcu_reset(LINK_RESET_POWER_ON); }
   void ms_out(safety_io io, uint8_t step_before) {
@@ -26,6 +27,12 @@ struct Bench : HeaterBench<Bench> {
     // While fuel may flow the heartbeat must run (the pump's high side needs it).
     if (s.burn.out.pump_cHz > 0 && io.heartbeat != CHECKS_HB_RUNNING)
       max_heartbeat_gap_in_burn++;
+  }
+  fan_meas fan_meas_now(const burn_inputs &in) {
+    fan_meas fm = HeaterBench::fan_meas_now(in);
+    if (m.fan_rpm >= 1000)
+      fm.isense_ma = uint16_t(fm.isense_ma + fan_extra_ma);
+    return fm;
   }
   bool run_until_state(uint8_t state, uint32_t ms) {
     for (uint32_t t = 0; t < ms; t += TICK) {
@@ -56,6 +63,31 @@ static void test_glow_waits_after_reset() {
   CHECK(air_from > 0 && first_glow > 0);
   CHECK(first_glow - air_from >= 30 * SEC);
   CHECK(first_glow - air_from < 31 * SEC);
+}
+
+// PWR-1, PWR-2: on a low supply with a fan drawing 4 A the glow is held to what the 11 A budget
+// leaves (11 A less 0.2 A headroom, the fan, the pump and 7.5 W of logic), and the app sees the
+// derated power; the run still lights.
+static void test_glow_derated_by_budget() {
+  Bench b;
+  b.m.supply_cv = 1150;
+  b.fan_extra_ma = 4000;
+  b.run(2 * SEC);
+  b.s.burn.reset_fan_due = 0;
+  b.client.set_power_demand(60);
+  CHECK(b.client.set_mode(Mode::HEAT).accepted());
+  uint32_t asked = b.now;
+  while (b.now - asked < 60 * SEC && b.s.burn.step != BURN_STEP_PREHEAT)
+    b.pass();
+  b.run(10 * SEC);
+  CHECK(b.s.burn.step == BURN_STEP_PREHEAT && b.s.burn.out.glow_w == 90);
+  // 11 - 0.2 - 4.0 (and the model's few mA) - 0.65 = 6.1 A at 11.5 V: about 70 W.
+  CHECK(b.s.glow_limit_w >= 66 && b.s.glow_limit_w <= 71);
+  CHECK(b.client.raw_status().glow_w == b.s.glow_limit_w);
+  b.run(8 * SEC); /* a whole 10 s of preheat in the estimate's window: held at the budget */
+  CHECK(budget_avg_ma(&b.s.budget) <= 11000 && budget_avg_ma(&b.s.budget) >= 10600);
+  CHECK(b.run_until_state(BURN_STATE_HEATING, 5 * MIN));
+  CHECK(b.client.raw_status().fault == 0);
 }
 
 static void test_heat_cycle() {
@@ -394,6 +426,7 @@ static void test_co_r0_kept() {
 }
 
 int main() {
+  test_glow_derated_by_budget();
   test_plug_cold_check();
   test_parameters();
   test_glow_waits_after_reset();

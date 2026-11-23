@@ -74,14 +74,18 @@ struct Loopback : esphome::flamekeeper::LinkTransport {
 //   fan_meas_now(in)         the fan stage's readings
 //   fan_out(duty)            its duty                                           (default: nothing)
 //   pass_out(in)             the pass is over                                   (default: nothing)
+//   vdda_mv(t)               VDDA at millisecond t, for safety_vdda      (default: 3300, in its window)
+//   second_clock(t)          the second clock's count at pass t, for safety_clock_check
+//                                                             (default: agreeing with the tick)
 template <class Board> struct CoreRig : Loopback {
-  // One 10 ms pass, in board_ms's order: ten milliseconds of the self-tests and pump strokes
-  // (safety_ms), the pass's two glow periods (safety_glow_period), the plant's 10 ms, then the
-  // safety loop's pass: the CO sensor's reading once a second (safety_co_step), the sequencer
-  // (safety_step) and the fan stage (safety_fan_step).
+  // One 10 ms pass, in board_ms's order: ten milliseconds of VDDA (safety_vdda), the self-tests and
+  // pump strokes (safety_ms), the pass's two glow periods (safety_glow_period), the plant's 10 ms,
+  // then the safety loop's pass: the CO sensor's reading once a second (safety_co_step), the tick
+  // check (safety_clock_check), the sequencer (safety_step) and the fan stage (safety_fan_step).
   void pass() {
     Board &b = static_cast<Board &>(*this);
     for (uint32_t i = 0; i < TICK; i++) {
+      safety_vdda(&s, now + i, b.vdda_mv(now + i));
       checks_obs o;
       pump_meas pm;
       b.ms_meas(&o, &pm);
@@ -102,6 +106,7 @@ template <class Board> struct CoreRig : Loopback {
       safety_co_step(&s, now, co_adc, in.board_c10);
       b.co_stepped();
     }
+    safety_clock_check(&s, now, b.second_clock(now));
     uint8_t step = s.burn.step;
     safety_step(&s, now, &in);
     b.step_out(in, step);
@@ -115,6 +120,8 @@ template <class Board> struct CoreRig : Loopback {
   }
 
   void plant() {}
+  uint16_t vdda_mv(uint32_t t) { return (void) t, uint16_t(3300); }
+  uint32_t second_clock(uint32_t t) { return uint32_t(uint64_t(t) * SAFETY_CLOCK_HZ / 1000u % SAFETY_CLOCK_WRAP); }
   bool co_reading(uint16_t *adc) { return (void) adc, false; }
   void co_stepped() {}
   void step_out(const burn_inputs &in, uint8_t step_before) { (void) in, (void) step_before; }

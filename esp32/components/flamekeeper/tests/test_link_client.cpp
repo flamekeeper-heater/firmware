@@ -689,8 +689,8 @@ static void test_fault_log_text() {
   e.supply_cv = 2380;
   e.uptime_s = 3 * 3600 + 25 * 60 + 7;
   fk::heater_log_text(&e, t, sizeof(t));
-  CHECK(std::strcmp(t, "#12 Overheat: the heat exchanger over its limit, while running, 3 h 25 min after a reset "
-                       "(heat exchanger 251.3 C, supply 23.80 V, board 46 C)") == 0);
+  CHECK(std::strcmp(t, "#12 Overheat: the heat exchanger passed its temperature limit, while running, 3 h 25 min after "
+                       "a reset (heat exchanger 251.3 C, supply 23.80 V, board 46 C)") == 0);
   e.code = 0;
   e.why = 2;
   e.step = 5;
@@ -698,8 +698,8 @@ static void test_fault_log_text() {
   e.hx_c10 = INT16_MIN;
   e.board_c = -128;
   fk::heater_log_text(&e, t, sizeof(t));
-  CHECK(std::strcmp(t, "#12 Stopped: the ESP32 went silent (dead-man), while warming up, 59 s after a "
-                       "reset (supply 23.80 V)") == 0);
+  CHECK(std::strcmp(t, "#12 Stopped: the link from the board went silent during a burn, while warming up, 59 s after "
+                       "a reset (supply 23.80 V)") == 0);
   e.kind = fk::HEATER_LOG_RESET;
   e.code = 2;
   e.step = 8;
@@ -708,6 +708,15 @@ static void test_fault_log_text() {
   fk::heater_log_text(&e, t, sizeof(t));
   CHECK(std::strcmp(t, "#12 Safety MCU reset: watchdog, cooling down after it (heat exchanger 150.0 C, supply "
                        "23.80 V)") == 0);
+  // The safety MCU's own fault: its 3.3 V supply too low, while off.
+  e.kind = fk::HEATER_LOG_FAULT;
+  e.code = 15;
+  e.why = 22;
+  e.step = 0;
+  e.uptime_s = 4;
+  fk::heater_log_text(&e, t, sizeof(t));
+  CHECK(std::strcmp(t, "#12 Heater controller: the controller's 3.3 V supply is too low, while off, 4 s after a "
+                       "reset (heat exchanger 150.0 C, supply 23.80 V)") == 0);
   // Codes it does not know, and a short buffer.
   e.kind = fk::HEATER_LOG_FAULT;
   e.code = 99;

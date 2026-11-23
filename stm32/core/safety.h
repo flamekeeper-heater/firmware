@@ -9,11 +9,13 @@
 
 #include "../../common/co/co_alarm.h"
 #include "../../common/link/link.h"
+#include "budget.h"
 #include "burn.h"
 #include "checks.h"
 #include "fan.h"
 #include "faultlog.h"
 #include "glow.h"
+#include "monitor.h"
 #include "params.h"
 #include "plug.h"
 #include "pump.h"
@@ -47,6 +49,9 @@ typedef struct {
   pump pump;
   params params;
   plug plug;
+  monitor mon;            /* the MCU's own supply and tick (PWR-5, GLW-1) */
+  budget budget;          /* the input-current budget (PWR-1, PWR-2) */
+  uint16_t glow_limit_w;  /* ... the glow's power limit at the last glow period */
   co_alarm co;            /* the CO alarm, present as the CO-fitted parameter says (CO-1) */
   uint32_t co_r0_saved;   /* the R0 flash holds (0: none) */
   uint32_t co_r0_saved_ms; /* when it was written (or the reset) */
@@ -143,6 +148,17 @@ uint32_t safety_co_r0_to_save(const safety *s);
 void safety_co_r0_saved(safety *s, uint32_t r0_ohm);
 #define SAFETY_CO_R0_SAVE_MIN_MS (60u * 60u * 1000u)
 
+/* The MCU's checks of itself (monitor.h). PWR-5: VDDA every millisecond, mV, not clamped
+ * (analog_vdda_check_mv), before that millisecond's safety_ms; out of 3.0-3.6 V it holds every
+ * output off at once and latches a fault the sequencer acts on in its next pass. */
+void safety_vdda(safety *s, uint32_t now, uint16_t vdda_mv);
+/* GLW-1: the second clock's count, every pass before safety_step: it runs at SAFETY_CLOCK_HZ
+ * (nominal) and wraps at SAFETY_CLOCK_WRAP, on an oscillator of its own. */
+void safety_clock_check(safety *s, uint32_t now, uint32_t count);
+/* 1 while PWR-5 holds every output off: the board drops GLOW_EN that same millisecond too. */
+static inline int safety_held(const safety *s) { return monitor_holding(&s->mon); }
+#define SAFETY_CLOCK_HZ 250u
+#define SAFETY_CLOCK_WRAP 32768u
 /* The fault log (faultlog.h). Once at boot, after the board has loaded its slots into s->log: the
  * reset's own entry. */
 void safety_log_reset(safety *s);

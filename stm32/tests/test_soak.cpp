@@ -35,6 +35,16 @@
 //               parameter table as applied
 //   wire        the MCU answers exactly the frames a parser on the wire sees, and every reply
 //               parses on the ESP32's side
+//   vdda        VDDA out of 3.0-3.6 V for 10 ms (once up after the reset) latches a fault in that
+//               millisecond, and nothing shorter or inside the window does, a rising rail included;
+//               while it holds (or the rail is still rising) every output is off; a fault reset
+//               clears it only with VDDA back
+//   tick        the second clock more than 20 % off the tick for 2 s latches a fault; within 15 %
+//               it never does
+//   mcu         the sequencer latches either in the pass that sees it, and stays latched while it lasts
+//   budget      the estimated input current over 10 s at or below 11 A, the core's own estimate
+//               and the bench's (glow pulses x their current, the fan's and the pump's currents,
+//               the logic's 7.5 W) alike; the glow derated, not the run stopped
 //   fault_log   every new fault (and dead-man stop) is the fault log's newest entry at once, and in
 //               "flash" after the next write with the heater off; flash keeps it over MCU resets
 //
@@ -82,6 +92,10 @@ enum Kind : uint8_t {
   F_CO_OPEN,  // the CO sensor reads open
   F_CO_HEATER, // the CO sensor's heater is dead: its check fails
   U_CO_FITTED, // a: the CO-fitted parameter, applied and saved
+  F_VDDA,     // a: VDDA, mV, for b ms
+  F_TICK,     // a: the second clock against the tick, permille (1000: agreeing)
+  F_FAN_LOAD, // a: the fan's current once up to speed, percent of the model's (a stiffer fan), at
+              //    most its 5 A rating
   KINDS
 };
 const char *const KIND_NAMES[KINDS] = {
@@ -89,7 +103,7 @@ const char *const KIND_NAMES[KINDS] = {
     "U_FAULT_RESET", "U_NEW_PLUG", "L_SILENT", "L_GARBAGE", "L_GARBAGE_ESP", "L_DROP", "M_RESET",
     "F_FAN_STALL", "F_FAN_STUCK_ON", "F_SENSOR_OPEN", "F_SUPPLY", "F_OVERHEAT_LATCH", "F_GLOW_TRIPS",
     "F_GLOW_LS", "F_PUMP_OPEN", "F_PUMP_LS", "F_PUMP_HS", "F_PUMP_OC", "F_BOARD_HOT", "F_NO_IGNITION",
-    "F_FLAME_OUT", "F_CO", "E_RESET", "F_CO_OPEN", "F_CO_HEATER", "U_CO_FITTED"};
+    "F_FLAME_OUT", "F_CO", "E_RESET", "F_CO_OPEN", "F_CO_HEATER", "U_CO_FITTED", "F_VDDA", "F_TICK", "F_FAN_LOAD"};
 
 // One scheduled event. Faults: a = 1 on, 0 off (F_SUPPLY: the supply, 0.01 V; F_BOARD_HOT: 0.1 C;
 // F_CO: the sensor's Rs / R0 in 1/1000, 1000 clean air).
@@ -103,12 +117,15 @@ struct Stats {
   uint64_t sim_ms = 0;
   uint32_t starts = 0, running = 0, stalls = 0, lockouts = 0, deadman = 0, resets = 0, latched = 0,
            fault_resets = 0, glow_s = 0, frames = 0, bad_frames = 0, events = 0, co_alarms = 0, co_faults = 0,
-           pump_cuts = 0, logged = 0;
+           pump_cuts = 0, vdda_faults = 0, tick_faults = 0, derated_s = 0, logged = 0;
+  uint16_t max_input_ma = 0;
   void add(const Stats &o) {
     sim_ms += o.sim_ms, starts += o.starts, running += o.running, stalls += o.stalls;
     lockouts += o.lockouts, deadman += o.deadman, resets += o.resets, latched += o.latched;
     fault_resets += o.fault_resets, glow_s += o.glow_s, frames += o.frames, bad_frames += o.bad_frames;
     events += o.events, co_alarms += o.co_alarms, co_faults += o.co_faults, pump_cuts += o.pump_cuts;
+    vdda_faults += o.vdda_faults, tick_faults += o.tick_faults, derated_s += o.derated_s;
+    max_input_ma = std::max(max_input_ma, o.max_input_ma);
     logged += o.logged;
   }
 };
@@ -160,7 +177,23 @@ struct Bench : HeaterBench<Bench> {
   uint32_t stall_retries = 0, turning_ms = 0;
   uint64_t budget_cap_a2us = 0;
 
-  Bench() : glow_ring(10 * MIN / TICK, 0) {
+  // VDDA (PWR-5): an excursion to vdda_level until vdda_until, and a rail rising after a power-on
+  // reset; the bench's own view of what the monitor must do.
+  uint16_t vdda_level = 3300, vdda_now = 3300;
+  uint32_t vdda_until = 0, ramp_from = 0, ramp_ms = 0, reset_ms = 0;
+  bool rail_up = false, vdda_due = false;
+  uint32_t vdda_bad_run = 0;
+  // The second clock (GLW-1): its rate against the tick, and how long it has been far off or close.
+  uint32_t clock_ratio = 1000, clock_last = 0, tick_far_ms = 0, tick_near_ms = 0;
+  double clock_count = 0;
+  uint8_t mon_fault_shadow = MONITOR_OK;
+  // The input current (PWR-1): this pass's charge, mA x ms, and the last 10 s of passes.
+  uint64_t pass_charge = 0, window_charge = 0;
+  uint32_t fan_load = 100;  // F_FAN_LOAD
+  std::vector<uint64_t> charge_ring;
+  size_t charge_i = 0;
+
+  Bench() : glow_ring(10 * MIN / TICK, 0), charge_ring(10 * SEC / TICK, 0) {
     link_parser_init(&mirror, LINK_REQUEST);
     init_mcu(LINK_RESET_POWER_ON);
   }
@@ -201,6 +234,44 @@ struct Bench : HeaterBench<Bench> {
     glow_window_ticks = 0;
     prev_step = s.burn.step;
     budget_cap_a2us = uint64_t(s.glow.p.bucket_cap_a2s) * 1000000u;
+    // A power-on reset: the 3.3 V rail rises from the MCU's power-on reset level over 0-300 ms.
+    reset_ms = now;
+    ramp_from = now, ramp_ms = reason == LINK_RESET_POWER_ON ? Rng(now + 7).below(301) : 0;
+    rail_up = false, vdda_due = false, vdda_bad_run = 0;
+    tick_far_ms = tick_near_ms = 0;
+    mon_fault_shadow = MONITOR_OK;
+  }
+
+  // ---------------------------------------------------------------- VDDA and the second clock
+
+  uint16_t vdda_mv(uint32_t t) {
+    uint16_t v = 3300;
+    if (t < ramp_from + ramp_ms)
+      v = uint16_t(1800 + 1500 * (t - ramp_from) / ramp_ms);
+    if (t < vdda_until)
+      v = vdda_level;
+    bool high = v > 3600, low = v < 3000;
+    if (!high && v >= 3050)
+      rail_up = true;
+    vdda_bad_run = high || (low && rail_up) ? vdda_bad_run + 1 : 0;
+    if (vdda_bad_run >= 11 || (!rail_up && t - reset_ms >= 500))
+      vdda_due = true;  // the monitor must latch with this reading
+    vdda_now = v;
+    return v;
+  }
+  uint32_t second_clock(uint32_t t) {
+    clock_count += (t - clock_last) * double(SAFETY_CLOCK_HZ) / 1000.0 * clock_ratio / 1000.0;
+    clock_last = t;
+    bool far = clock_ratio < 800 || clock_ratio > 1200, near = clock_ratio >= 850 && clock_ratio <= 1150;
+    tick_far_ms = far ? tick_far_ms + TICK : 0;
+    tick_near_ms = near ? tick_near_ms + TICK : 0;
+    return uint32_t(uint64_t(clock_count) % SAFETY_CLOCK_WRAP);
+  }
+  bool vdda_fault() const { return s.mon.fault == MONITOR_VDDA_HIGH || s.mon.fault == MONITOR_VDDA_LOW; }
+  // Every output the millisecond step drives is off (PWR-5).
+  static bool all_off(const safety_io &io) {
+    return io.heartbeat == CHECKS_HB_STOPPED && !io.glow_en && !io.latch_reset && !io.pump_pulse_us &&
+           !io.pump_duty && !io.pump_oc_armed;
   }
 
   // ---------------------------------------------------------------- the wire
@@ -243,6 +314,11 @@ struct Bench : HeaterBench<Bench> {
         reset_ok = true, st.fault_resets++, stall_retries = 0, fan_stop_excused = false;  // the lockout goes too
       if (reset_ok)
         fan_stuck_seen = fan_stuck_on;
+      if (op == LINK_OP_FAULT_RESET && vdda_due && !vdda_fault()) {
+        if (vdda_now < 3000 || vdda_now > 3600)
+          return fail("vdda", "a fault reset cleared the VDDA fault with VDDA still out of its window");
+        vdda_due = false;
+      }
     }
     if (before_step == BURN_STEP_OFF && s.burn.step == BURN_STEP_COOLDOWN && reset_ok) {
       // A fault reset on a hot heater cools it down, as after an MCU reset: no fuel, no glow.
@@ -316,6 +392,12 @@ struct Bench : HeaterBench<Bench> {
   void ms_out(safety_io out, uint8_t step_before) {
     if (step_before == BURN_STEP_OFF && s.burn.step != BURN_STEP_OFF)
       fail("no_self_start", "the millisecond step left off");
+    if (vdda_due && !vdda_fault())
+      fail("vdda", "VDDA out of its window for 10 ms without a fault");
+    if (!vdda_due && vdda_fault())
+      fail("vdda", "a VDDA fault without VDDA out of its window for 10 ms");
+    if ((vdda_fault() || !rail_up) && !all_off(out))
+      fail("vdda", "an output on while VDDA is out of its window or still rising");
     if (out.pump_duty && pump_cut)
       fail("pump_cut", "a stroke while the overcurrent cut is reported");
     if (out.pump_duty && s.pump.fault != PUMP_FAULT_NONE)
@@ -333,11 +415,15 @@ struct Bench : HeaterBench<Bench> {
         fuel_went_in = true;
     }
     HeaterBench::ms_out(out, step_before);
+    pass_charge += uint64_t(pump_i * 1000);  // PWR-1: this millisecond's pump current
   }
 
   void glow_out(glow_cmd c, uint8_t step_before) {
     if (step_before == BURN_STEP_OFF && s.burn.step != BURN_STEP_OFF)
       fail("no_self_start", "the glow period left off");
+    if ((vdda_fault() || !rail_up) && (c.width_us || c.enable))
+      fail("vdda", "the glow on while VDDA is out of its window or still rising");
+    pass_charge += uint64_t(plug_amps() * c.width_us);  // PWR-1: A x us = mA x ms
     if (c.width_us > 0) {
       pulsed = true;
       if (s.in.fan_rpm < s.burn.p.glow_min_fan_rpm || m.fan_rpm < s.burn.p.glow_min_fan_rpm - 100)
@@ -363,6 +449,19 @@ struct Bench : HeaterBench<Bench> {
 
   void step_out(const burn_inputs &in, uint8_t step_before) {
     (void) in;
+    // The sequencer latches the monitor's fault in its pass (a later latched fault may take its
+    // code; the latch stays until both have gone).
+    if (s.mon.fault != MONITOR_OK && !s.burn.fault_latched)
+      fail("mcu", "the sequencer not latched while the MCU's own fault is");
+    if (mon_fault_shadow == MONITOR_OK && s.mon.fault != MONITOR_OK && s.burn.fault != BURN_FAULT_MCU)
+      fail("mcu", "the sequencer did not latch the MCU's own fault in its pass");
+    if (s.mon.fault == MONITOR_OK && tick_far_ms >= 2100)
+      fail("tick", "the second clock 20 % off for 2 s without a fault");
+    if (s.mon.fault == MONITOR_TICK && mon_fault_shadow != MONITOR_TICK && tick_near_ms >= 1100)
+      fail("tick", "a tick fault with the second clock within 15 %");
+    st.vdda_faults += vdda_fault() && mon_fault_shadow != s.mon.fault;
+    st.tick_faults += s.mon.fault == MONITOR_TICK && mon_fault_shadow != MONITOR_TICK;
+    mon_fault_shadow = s.mon.fault;
     check_co(step_before == BURN_STEP_IGNITION || step_before == BURN_STEP_PURGE ||
              step_before == BURN_STEP_WARM_UP || step_before == BURN_STEP_RUNNING);
     if (step_before == BURN_STEP_OFF && s.burn.step != BURN_STEP_OFF)
@@ -375,8 +474,38 @@ struct Bench : HeaterBench<Bench> {
     check_log();
   }
 
+  fan_meas fan_meas_now(const burn_inputs &in) {
+    fan_meas fm = HeaterBench::fan_meas_now(in);
+    // A stiffer fan than the model's, once up to speed (its start and stall untouched), at most the
+    // fan's 5 A rating: with the pump's 3 A and the logic, the glow's derating alone then keeps the
+    // budget (PWR-2's fan step is a backstop on the recorded fan currents).
+    if (m.fan_rpm >= 1000 && m.fan_rpm * 2 >= s.fan.target)
+      fm.isense_ma = uint16_t(std::min<uint32_t>(fm.isense_ma * fan_load / 100, 5000));
+    pass_charge += uint64_t(fm.isense_ma) * TICK;
+    return fm;
+  }
+
+  // PWR-1: the input current over the last 10 s, the bench's and the core's.
+  void check_budget() {
+    if (m.supply_cv >= 600)
+      pass_charge += uint64_t(7500u * 100u / m.supply_cv) * TICK;  // the logic
+    window_charge = window_charge - charge_ring[charge_i] + pass_charge;
+    charge_ring[charge_i] = pass_charge;
+    charge_i = (charge_i + 1) % charge_ring.size();
+    pass_charge = 0;
+    uint64_t avg_ma = window_charge / (10 * SEC);
+    st.max_input_ma = std::max(st.max_input_ma, uint16_t(avg_ma));
+    if (avg_ma > 11000)
+      fail("budget", "the input current over 10 s above 11 A");
+    if (budget_avg_ma(&s.budget) > 11000)
+      fail("budget", "the core's estimate of the input current over 10 s above 11 A");
+    if (s.burn.out.glow_w > s.glow_limit_w && now % SEC == 0)
+      st.derated_s++;
+  }
+
   void pass_out(const burn_inputs &in) {
     check_pass(in);
+    check_budget();
     if (safety_params_save_pending(&s)) {
       params_flash.assign(PARAMS_IMAGE_MAX, 0);
       size_t n = params_pack(&s.params, params_flash.data(), params_flash.size());
@@ -517,7 +646,7 @@ struct Bench : HeaterBench<Bench> {
       fail("live", "the fan stage does not turn a free fan");
     bool glow_can = o.glow_w > 0 && m.fan_rpm >= p.glow_min_fan_rpm && board_c10 <= s.glow.p.board_max_c10 &&
                     !glow_trips && !glow_ls && s.glow.fault == GLOW_FAULT_NONE &&
-                    s.glow.bucket_a2us < budget_cap_a2us / 2;
+                    s.glow.bucket_a2us < budget_cap_a2us / 2 && s.glow_limit_w >= s.budget.p.glow_min_w;
     glow_wait_ms = glow_can && !pulsed ? glow_wait_ms + TICK : 0;
     if (glow_wait_ms > 2 * SEC)
       fail("live", "the glow stage does not pulse");
@@ -635,6 +764,9 @@ struct Bench : HeaterBench<Bench> {
         client.param_set(0x52, int32_t(e.a));
         client.param_apply(true);
         break;
+      case F_VDDA: vdda_level = uint16_t(e.a), vdda_until = now + e.b; break;
+      case F_TICK: clock_ratio = e.a; break;
+      case F_FAN_LOAD: fan_load = e.a; break;
       default: break;
     }
   }
@@ -720,6 +852,35 @@ std::vector<Ev> schedule(uint32_t seed, uint32_t hours) {
       ev.push_back(Ev{t + r.range(10 * SEC, 30 * MIN), M_RESET, LINK_RESET_POWER_ON, 0});
     // Mostly minutes apart, sometimes in a burst.
     t += r.below(4) == 0 ? r.range(50, 5 * SEC) : r.range(5 * SEC, 5 * MIN);
+  }
+  // The MCU's own supply and clock, from a stream of their own (the events above stay as they were
+  // for every seed): about one VDDA excursion every 20 minutes (glitches, long ones, the window's
+  // edges inside it, and 10 or 11 ms just out of it), a second clock off every hour, and a stiffer
+// fan (more current: the input budget binds) much of the time.
+  Rng x(seed * 7919u + 13u);
+  for (uint32_t u = x.range(1 * MIN, 40 * MIN); u < end; u += x.range(1 * MIN, 40 * MIN)) {
+    uint32_t c = x.below(5);
+    uint32_t out = x.below(2) ? x.range(2600, 2990) : x.range(3610, 3900);
+    Ev e{u, F_VDDA, out, 0};
+    e.b = c == 0 ? x.range(1, 9) : c == 1 ? x.range(11, 3 * SEC) : c == 2 ? 10 + x.below(2) : 0;
+    if (c >= 3)
+      e.a = c == 3 ? 3000 : 3600, e.b = x.range(1 * SEC, 60 * SEC);
+    ev.push_back(e);
+    if (e.b > 10 && e.a != 3000 && e.a != 3600 && x.below(2))
+      ev.push_back(Ev{u + e.b + x.range(1 * SEC, 3 * MIN), U_FAULT_RESET, 0, 0});
+    if (x.below(3) == 0) {
+      uint32_t t0 = u + x.range(1 * SEC, 10 * MIN), k = x.below(4);
+      uint32_t ratio = k == 0 ? x.range(850, 1150) : k == 1 ? x.range(300, 790) : k == 2 ? x.range(1210, 3000) : 0;
+      ev.push_back(Ev{t0, F_TICK, ratio, 0});
+      ev.push_back(Ev{t0 + x.range(1 * SEC, 5 * MIN), F_TICK, 1000, 0});
+      if (x.below(2))
+        ev.push_back(Ev{t0 + x.range(5 * MIN, 8 * MIN), U_FAULT_RESET, 0, 0});
+    }
+    if (x.below(4) != 0) {
+      uint32_t t0 = u + x.range(1 * SEC, 10 * MIN);
+      ev.push_back(Ev{t0, F_FAN_LOAD, x.range(200, 15000), 0});
+      ev.push_back(Ev{t0 + x.range(2 * MIN, 40 * MIN), F_FAN_LOAD, 100, 0});
+    }
   }
   std::stable_sort(ev.begin(), ev.end(), [](const Ev &x, const Ev &y) { return x.t < y.t; });
   return ev;
@@ -908,18 +1069,20 @@ int main(int argc, char **argv) {
       std::printf("FAIL seed %u: %s\n", seed, o.violation.c_str());
     } else if (!quiet && last - first < 50) {
       std::printf("seed %u: ok (%u starts, %u running, %u stalls, %u lockouts, %u dead-man, %u resets, %u CO alarms, "
-                  "%u CO faults, %u pump cuts)\n",
+                  "%u CO faults, %u pump cuts, %u VDDA faults, %u tick faults, %u s derated)\n",
                   seed, o.st.starts, o.st.running, o.st.stalls, o.st.lockouts, o.st.deadman, o.st.resets,
-                  o.st.co_alarms, o.st.co_faults, o.st.pump_cuts);
+                  o.st.co_alarms, o.st.co_faults, o.st.pump_cuts, o.st.vdda_faults, o.st.tick_faults, o.st.derated_s);
     }
   }
   std::printf("soak: %u seeds x %u h = %.1f h simulated, %u events, %u starts, %u reached running, %u stall "
               "retries, %u lockouts, %u dead-man stops, %u MCU resets, %u faults latched, %u fault resets, "
-              "%u glow s, %u frames (%u bad), %u CO alarms, %u CO sensor faults, %u pump cuts, %u fault log "
-              "entries in flash; %d regressions; %d failures\n",
+              "%u glow s, %u frames (%u bad), %u CO alarms, %u CO sensor faults, %u pump cuts, %u VDDA faults, "
+              "%u tick faults, %u s glow derated, %.2f A most over 10 s, %u fault log entries in flash; "
+              "%d regressions; %d failures\n",
               last - first + 1, hours, total.sim_ms / 3600000.0, total.events, total.starts, total.running,
               total.stalls, total.lockouts, total.deadman, total.resets, total.latched, total.fault_resets,
               total.glow_s, total.frames, total.bad_frames, total.co_alarms, total.co_faults, total.pump_cuts,
-              total.logged, regressions_run, failed + regressions_failed);
+              total.vdda_faults, total.tick_faults, total.derated_s, total.max_input_ma / 1000.0, total.logged,
+              regressions_run, failed + regressions_failed);
   return failed + regressions_failed ? 1 : 0;
 }

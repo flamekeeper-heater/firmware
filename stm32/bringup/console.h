@@ -24,6 +24,8 @@
  *   io                           the interlock lines, the heartbeat and the stage outputs
  *   watch <ms>                   a status line every <ms> (100-60000); watch 0 stops
  *   opt                          FLASH_OPTR decoded, against WDG-1
+ *   uid                          the chip's 96-bit unique id (three words from CONSOLE_UID_ADDR),
+ *                                which names the factory test's report
  *   flash <page> [<off> <len>]   hex dump of a flash page (0-31), read only
  *   par                          the parameter table
  *   par <id> <value> | par apply | par save | par discard
@@ -68,6 +70,7 @@ extern "C" {
 #define CONSOLE_RUN_MAX_S 3600u
 #define CONSOLE_POLL_MS 100u
 #define CONSOLE_CO_OFF_MAX_S 60u
+#define CONSOLE_UID_ADDR 0x1FFF7590u /* the G0's UID (ST's UID_BASE), 12 bytes */
 
 /* What the start-up code read before anything changed it. */
 typedef struct {
@@ -134,7 +137,7 @@ uint8_t bringup_chip_glow_period(hal_glow_sample *g);
 void bringup_chip_pump_oc_arm(uint8_t on, uint16_t threshold_raw, uint16_t hold_us);
 void bringup_chip_co_heater(uint8_t on);
 void bringup_sys_reset(void);
-void bringup_sys_read(uint32_t addr, uint8_t *out, size_t n); /* main flash, read only */
+void bringup_sys_read(uint32_t addr, uint8_t *out, size_t n); /* flash or the UID, read only */
 
 #ifdef __cplusplus
 }

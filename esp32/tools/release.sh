@@ -5,8 +5,10 @@
 #   release.sh VERSION [--notes FILE] [--out DIR] [BOARD...]
 #
 # VERSION is "major.minor.patch"; BOARD is a board profile (common.sh; default rev-a2). For each
-# board it compiles the profile with that version, signs the app image with the release key
-# (signing_key.sh), checks the signature, and writes to DIR (default dist/, not in git):
+# board it builds the safety MCU's firmware from the same checkout when the board carries it
+# (stm32/build.sh; the ESP32 image embeds it), compiles the profile with that version, signs the
+# app image with the release key (signing_key.sh), checks the signature, and writes to DIR (default
+# dist/, not in git):
 #
 #   DIR/<board>/<version>.bin    the signed image, as the app sends it
 #   DIR/<board>/manifest.json    version, build time, size, SHA-256, URL, notes, minimum protocol
@@ -88,6 +90,10 @@ for board in "${boards[@]}"; do
   profile "$board" || die "unknown board $board"
   yaml=$profile_yaml
   build="$(dirname "$yaml")/.esphome/build/$name"
+  if $safety_mcu; then
+    echo "== $board $version: building the safety MCU firmware"
+    build_safety_mcu || die "$board: the safety MCU firmware did not build"
+  fi
   echo "== $board $version: compiling $(basename "$yaml")"
   (cd "$(dirname "$yaml")" &&
     uv run --quiet --with "esphome==$ESPHOME_VERSION" esphome -q \
@@ -98,6 +104,7 @@ for board in "${boards[@]}"; do
   mkdir -p "$out/$board"
   signed="$out/$board/$version.bin"
   "$HERE/signing_key.sh" sign "$scheme" "$image" "$signed"
+  fits_app_slot "$signed" "$build" || { rm -f "$signed"; die "$board: the signed image does not fit the board"; }
   size=$(stat -f %z "$signed")
   sha=$(shasum -a 256 "$signed" | cut -d' ' -f1)
   built=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["build_time"])' "$build/build_info.json")

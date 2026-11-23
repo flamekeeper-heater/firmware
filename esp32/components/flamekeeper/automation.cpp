@@ -49,6 +49,23 @@ bool burning(HeaterState s) { return s == HeaterState::STARTING || s == HeaterSt
 
 }  // namespace
 
+const char *alert_name(uint8_t bit) {
+  static const char *const NAMES[] = {"Fuel low",
+                                      "Fuel too low to run",
+                                      "Burn problem",
+                                      "Frost protection and timers disarmed",
+                                      "Bluetooth thermometer lost",
+                                      "Clock not set",
+                                      "Frost protection has no room temperature",
+                                      "Battery low",
+                                      "Glow plug wearing",
+                                      "Carbon burn-off due",
+                                      "CO alarm",
+                                      "CO sensor fault",
+                                      "Glow plug may not be the type set"};
+  return bit < sizeof(NAMES) / sizeof(NAMES[0]) ? NAMES[bit] : nullptr;
+}
+
 Automation::Automation(Controller &controller) : c_(controller) {
   this->c_.set_automation(this);
   // Low fuel refuses every start, from every source.
@@ -94,7 +111,7 @@ Outcome Automation::start_check_() const {
   if (s.fault == Fault::CO || s.co_state == uint8_t(CoState::ALARM))
     return Outcome::refuse(Result::REFUSED, "CO alarm: air the space, then reset the heater fault");
   if (s.fault == Fault::CO_SENSOR || s.co_state == uint8_t(CoState::SENSOR_FAULT))
-    return Outcome::refuse(Result::REFUSED, "CO sensor fault: the heater cannot run until it reads again");
+    return Outcome::refuse(Result::REFUSED, "CO sensor fault: the heater cannot run until the sensor reads again");
   const float cutoff = this->c_.tuning().extra(B_CUTOFF) / 10.0f;
   if (cutoff > 0.0f && s.answering && std::isfinite(s.supply_v) && s.supply_v < cutoff + 0.2f) {
     static char why[64];
@@ -372,13 +389,18 @@ void Automation::step_runs_(uint32_t now, const Status &s) {
     this->save_meter_();
     // Priming ends on its own when its time is up: only a fault makes that a problem.
     if (!this->stop_asked_ && !(this->priming_run_ && s.fault == Fault::NONE)) {
-      char text[96];
+      char text[ALERT_TEXT_MAX + 1];
+      const char *why = reason_text(s.panel_fault);
       if (s.fault != Fault::NONE)
         std::snprintf(text, sizeof(text), "the heater stopped by itself: %s", fault_name(s.fault));
+      else if (why != nullptr && why[0] != '\0')
+        std::snprintf(text, sizeof(text), "the heater stopped by itself: %s", why);
       else
         std::snprintf(text, sizeof(text), "the heater stopped by itself");
       this->log_(LogKind::STOPPED_BY_ITSELF, Source::NONE, uint16_t(s.fault), 0);
-      this->raise_(alert::BURN, text);
+      // A fault that has raised its own alert already (step_fault_) is not alerted twice.
+      if (s.fault == Fault::NONE || !this->fault_alerted_)
+        this->raise_(alert::BURN, text);
       if (this->auto_run_ != Source::NONE)
         this->disarm_("the heater stopped by itself during an automatic run");
     } else if (this->auto_run_ == Source::FROST && this->person_off_ &&
@@ -410,15 +432,52 @@ void Automation::step_runs_(uint32_t now, const Status &s) {
   this->prev_run_ = run;
 }
 
-void Automation::step_burn_(uint32_t now, const Status &s) {
-  if (s.fault != Fault::NONE && this->prev_fault_ == Fault::NONE) {
-    char text[64];
-    std::snprintf(text, sizeof(text), "heater fault: %s", fault_name(s.fault));
-    this->log_(LogKind::FAULT, Source::NONE, uint16_t(s.fault), s.panel_fault);
-    this->raise_(alert::BURN, text);
+// A heater fault: logged whenever its code or reason changes, alerted once (fault_alert decides
+// which alert). A fault the heater still retries (a fan stall while it starts or runs fan only) is
+// not alerted: it clears if the retry works; if not, the run ends and the alert comes then (a
+// lockout, or a cooldown). A person's stop during the retry ends it quietly.
+void Automation::step_fault_(const Status &s) {
+  if (!s.answering)
+    return;  // a link that drops and comes back is not a new fault
+  if (s.fault == Fault::NONE) {
+    this->prev_fault_ = Fault::NONE;
+    this->prev_reason_ = 0;
+    this->fault_alerted_ = false;
+    this->fault_retried_ = false;
+    return;
   }
+  const bool changed = s.fault != this->prev_fault_;
+  if (changed || s.panel_fault != this->prev_reason_)
+    this->log_(LogKind::FAULT, Source::NONE, uint16_t(s.fault), s.panel_fault);
+  const bool retrying = fault_retrying(s);
+  const bool gave_up = this->fault_retried_ && !retrying && !this->stop_asked_ && s.state != HeaterState::OFF;
+  if (changed)
+    this->fault_alerted_ = false;
+  if (!this->fault_alerted_ && !retrying && (changed || gave_up)) {
+    const FaultAlert route = fault_alert(s.fault, s.panel_fault);
+    if (route == FaultAlert::BURN) {
+      char text[ALERT_TEXT_MAX + 1];
+      const char *why = reason_text(s.panel_fault);
+      // A retried fault that appears with the heater off is the one past the retries: the lockout.
+      const bool locked_out = changed && s.state == HeaterState::OFF && reason_retried(s.panel_fault);
+      if (why == nullptr || why[0] == '\0')
+        std::snprintf(text, sizeof(text), "heater fault: %s", fault_name(s.fault));
+      else if (locked_out)
+        std::snprintf(text, sizeof(text), "heater fault: %s (%s again: locked out until the heater fault is reset)",
+                      fault_name(s.fault), why);
+      else
+        std::snprintf(text, sizeof(text), "heater fault: %s (%s)", fault_name(s.fault), why);
+      this->raise_(alert::BURN, text);
+    }
+    // CO_ALARM and CO_SENSOR: step_co_ raises them. NONE: shown only.
+    this->fault_alerted_ = route != FaultAlert::NONE;
+  }
+  this->fault_retried_ = retrying || (this->fault_retried_ && !changed);
   this->prev_fault_ = s.fault;
+  this->prev_reason_ = s.panel_fault;
+}
 
+void Automation::step_burn_(uint32_t now, const Status &s) {
   if (s.state != HeaterState::HEATING || !std::isfinite(s.heat_exchanger_c)) {
     this->heating_since_ms_ = 0;
     this->hx_count_ = 0;
@@ -649,6 +708,7 @@ void Automation::step_(uint32_t now) {
   const Status s = this->c_.status();
   const float dt = float(uint32_t(now - this->last_ms_)) / 1000.0f;
   this->step_fuel_(now, s, utc);
+  this->step_fault_(s);
   this->step_runs_(now, s);
   this->step_burn_(now, s);
   this->step_co_(s);
@@ -854,7 +914,9 @@ void Automation::step_co_(const Status &s) {
   const bool sensor = s.fault == Fault::CO_SENSOR || s.co_state == uint8_t(CoState::SENSOR_FAULT);
   this->set_alert_(alert::CO_ALARM, alarm,
                    "CO alarm: the heater was stopped. Air the space; reset the heater fault once the air is clean");
-  this->set_alert_(alert::CO_SENSOR, sensor, "CO sensor fault: the heater will not start until it reads again");
+  this->set_alert_(alert::CO_SENSOR, sensor,
+                   "CO sensor fault: the heater was stopped or cannot start. Once the sensor reads again, reset the "
+                   "heater fault");
   // The safety MCU stops the heater itself; this is the second layer.
   if ((alarm || sensor) && s.mode != Mode::OFF && !this->stop_asked_)
     this->stop_(Source::BOARD, alarm ? "CO alarm" : "CO sensor fault");

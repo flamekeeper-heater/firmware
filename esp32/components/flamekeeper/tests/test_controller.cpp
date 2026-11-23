@@ -1,5 +1,7 @@
 // Controller: common checks, run source, the Home Assistant failsafe (only for runs started from
 // Home Assistant), room temperature with fallback.
+#include <cstring>
+
 #include "fake_heater.h"
 
 using fk::Mode;
@@ -503,6 +505,108 @@ static void test_tuning_params() {
   CHECK_EQ(h.fault_resets, 1);
 }
 
+// The fault and reason table (controller.cpp): every reason the safety MCU sends has a text and an
+// alert; the fan stall is the one it retries; Home Assistant's texts.
+static void test_fault_table() {
+  using fk::Fault;
+  using fk::FaultAlert;
+  using fk::Reason;
+  for (unsigned r = 0; r <= uint8_t(Reason::TICK); r++) {
+    const char *t = fk::reason_text(uint8_t(r));
+    CHECK(t != nullptr);
+    if (t != nullptr) {
+      CHECK((r == 0) == (t[0] == '\0'));
+      CHECK(std::strlen(t) <= 70);  // fits "heater fault: <fault> (<reason> again: ...)"
+    }
+  }
+  CHECK(fk::reason_text(uint8_t(Reason::TICK) + 1) == nullptr);  // a code not in the table yet
+  CHECK(fk::reason_text(0xFF) == nullptr);
+  for (unsigned r = 0; r < 256; r++)
+    CHECK(fk::reason_retried(uint8_t(r)) == (r == uint8_t(Reason::FAN_STALL) || r == uint8_t(Reason::FAN_SPIN_UP)));
+  // Alerts: by the reason when known, else by the fault.
+  CHECK(fk::fault_alert(Fault::NONE, uint8_t(Reason::CO)) == FaultAlert::NONE);
+  CHECK(fk::fault_alert(Fault::FAN, uint8_t(Reason::FAN_STALL)) == FaultAlert::BURN);
+  CHECK(fk::fault_alert(Fault::CO, uint8_t(Reason::CO)) == FaultAlert::CO_ALARM);
+  CHECK(fk::fault_alert(Fault::CO, 0) == FaultAlert::CO_ALARM);
+  CHECK(fk::fault_alert(Fault::CONTROLLER, uint8_t(Reason::TICK)) == FaultAlert::BURN);
+  CHECK(fk::fault_alert(Fault::CONTROLLER, 0) == FaultAlert::BURN);
+  CHECK(fk::fault_alert(Fault::CO_SENSOR, uint8_t(Reason::CO_SENSOR)) == FaultAlert::CO_SENSOR);
+  CHECK(fk::fault_alert(Fault::CO_SENSOR, 0) == FaultAlert::CO_SENSOR);
+  CHECK(fk::fault_alert(Fault::CO_SENSOR, 0xEE) == FaultAlert::CO_SENSOR);  // an unknown reason: by fault
+  CHECK(fk::fault_alert(Fault::GLOW_PLUG, uint8_t(Reason::PLUG_TYPE)) == FaultAlert::BURN);
+  CHECK(fk::fault_alert(Fault(99), 0) == FaultAlert::BURN);  // a fault code not in the table
+  CHECK(std::strcmp(fk::fault_name(Fault::CO_SENSOR), "CO sensor") == 0);
+  CHECK(std::strcmp(fk::fault_name(Fault(99)), "Other") == 0);
+
+  // The fan stall retry: only while it starts or runs fan only.
+  fk::HeaterStatus s;
+  s.answering = true;
+  s.fault = Fault::FAN;
+  s.panel_fault = uint8_t(Reason::FAN_STALL);
+  const HeaterState states[] = {HeaterState::OFF,      HeaterState::STARTING, HeaterState::HEATING,
+                                HeaterState::FAN_ONLY, HeaterState::STOPPING, HeaterState::COOLING};
+  for (HeaterState st : states) {
+    s.state = st;
+    CHECK(fk::fault_retrying(s) == (st == HeaterState::STARTING || st == HeaterState::FAN_ONLY));
+  }
+  char text[128];
+  s.state = HeaterState::STARTING;
+  fk::fault_reason_text(s, text, sizeof(text));
+  CHECK(std::strcmp(text, "The fan stalled: trying again") == 0);
+  s.panel_fault = uint8_t(Reason::FAN_SPIN_UP);
+  s.state = HeaterState::FAN_ONLY;
+  CHECK(fk::fault_retrying(s));
+  s.state = HeaterState::OFF;  // the lockout, or a stop during the wait
+  fk::fault_reason_text(s, text, sizeof(text));
+  CHECK(std::strcmp(text, "The fan did not reach its speed") == 0);
+  s.fault = Fault::GLOW_PLUG;
+  s.panel_fault = uint8_t(Reason::GLOW_STAGE);
+  s.state = HeaterState::STARTING;
+  CHECK(!fk::fault_retrying(s));
+  s.fault = Fault::CO_SENSOR;
+  s.panel_fault = uint8_t(Reason::CO_SENSOR);
+  fk::fault_reason_text(s, text, sizeof(text));
+  CHECK(std::strcmp(text, "The CO sensor reads open or failed its check") == 0);
+  s.panel_fault = 0;
+  fk::fault_reason_text(s, text, sizeof(text));
+  CHECK(std::strcmp(text, "None") == 0);
+  s.panel_fault = 42;
+  fk::fault_reason_text(s, text, sizeof(text));
+  CHECK(std::strcmp(text, "Reason 42") == 0);
+  s.answering = false;
+  fk::fault_reason_text(s, text, sizeof(text));
+  CHECK(std::strcmp(text, "None") == 0);
+  s.fault = Fault::FAN;
+  s.panel_fault = uint8_t(Reason::FAN_STALL);
+  s.state = HeaterState::STARTING;
+  CHECK(!fk::fault_retrying(s));  // not answering: nothing is known
+  // A normal stop's reason is shown, never alerted (there is no fault).
+  s.answering = true;
+  s.fault = Fault::NONE;
+  s.panel_fault = uint8_t(Reason::DEADMAN);
+  s.state = HeaterState::OFF;
+  fk::fault_reason_text(s, text, sizeof(text));
+  CHECK(std::strcmp(text, "The link from the board went silent during a burn") == 0);
+  CHECK(!fk::fault_retrying(s));
+
+  // The CO sensor's state.
+  const char *const co[] = {"Not fitted", "Warming up", "Learning clean air", "OK", "Alarm", "Sensor fault", "Too cold",
+                            "Unknown"};
+  for (unsigned i = 0; i < 8; i++) {
+    s.co_state = uint8_t(i);
+    CHECK(std::strcmp(fk::co_state_name(s), co[i]) == 0);
+  }
+  s.co_state = 0;
+  s.answering = false;
+  CHECK(std::strcmp(fk::co_state_name(s), "Unknown") == 0);  // not "not fitted"
+
+  // The heater firmware texts.
+  FakeHeater h;
+  fk::Controller c(&h);
+  CHECK(std::strcmp(fk::heater_firmware_text(h), "Unknown") == 0);
+  CHECK(std::strcmp(fk::firmware_update_status(c.status(), h), "Not available") == 0);
+}
+
 int main() {
   test_checks();
   test_same_checks_every_source();
@@ -516,5 +620,6 @@ int main() {
   test_thermostat_in_controller();
   test_thermostat_safety();
   test_tuning_params();
+  test_fault_table();
   return report("controller");
 }

@@ -14,6 +14,9 @@ TEXTS = {
     "run_state": (TextKey.RUN_STATE, "mdi:fire-circle", None),
     "controller_status": (TextKey.CONTROLLER_STATUS, "mdi:remote", None),
     "error": (TextKey.ERROR, "mdi:alert-circle-outline", None),
+    # Why, beyond the error ("The fan stalled: trying again"), and the CO sensor's state.
+    "fault_reason": (TextKey.FAULT_REASON, "mdi:alert-circle-check-outline", None),
+    "co_sensor": (TextKey.CO_SENSOR, "mdi:molecule-co", None),
     "run_started_by": (TextKey.RUN_STARTED_BY, "mdi:account-arrow-right", None),
     "alerts": (TextKey.ALERTS, "mdi:bell-alert", None),
     "heater_firmware": (TextKey.HEATER_FIRMWARE, "mdi:chip", DIAG),

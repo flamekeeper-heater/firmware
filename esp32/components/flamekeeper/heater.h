@@ -75,7 +75,46 @@ enum class Fault : uint8_t {
   INTAKE_SENSOR = 12,
   COMMS = 13,
   CO_SENSOR = 14,  // the CO sensor's reading is not plausible (open, unheated)
+  CONTROLLER = 15, // the safety MCU's own supply or clock failed (PWR-5, GLW-1)
   OTHER = 255,
+};
+
+// Why the heater stopped or refused a start, beyond its fault code (HeaterStatus::panel_fault,
+// Telemetry byte 19): the Flamekeeper safety MCU's codes (stm32/core/burn.h, BURN_WHY_*). Their text
+// and the alert each raises are in one table (controller.cpp, REASONS).
+enum class Reason : uint8_t {
+  NONE = 0,
+  ASKED = 1,            // a normal stop
+  DEADMAN = 2,          // the board went silent during a burn
+  NO_FLAME = 3,         // every ignition attempt failed
+  FLAME_LOST = 4,
+  OVERHEAT_LIMIT = 5,   // the firmware's limit
+  OVERHEAT_LATCH = 6,   // the hardware latch tripped
+  FAN_STALL = 7,        // asked to turn, and it did not: retried (see fault_retrying)
+  FAN_SPIN_UP = 8,      // too slow to reach the glow's minimum speed in time: retried
+  SENSOR_OPEN = 9,      // the heat-exchanger sensor reads open
+  NO_TEMP_RISE = 10,    // fuel and glow, but the heat exchanger never warmed
+  SUPPLY = 11,          // the supply voltage out of range
+  COOLDOWN_LIMIT = 12,  // the heat exchanger never cooled within the cooldown limit
+  CO = 13,              // the CO alarm
+  GLOW_STAGE = 14,      // the glow plug's switching stopped it (stuck low side, repeated trips)
+  FAN_STAGE = 15,       // the fan's switch stuck on, or the fan turning against its command
+  SELF_TEST = 16,       // the pre-start self-test of the interlocks failed
+  PUMP_STAGE = 17,      // the pump's circuit (overcurrent, open coil, high side)
+  BOARD_HOT = 18,       // the board stayed too hot even at the lowest power
+  PLUG_TYPE = 19,       // the glow plug is not the type set, or its check is missing
+  CO_SENSOR = 20,       // the CO sensor reads open, or failed its heater check
+  VDDA_HIGH = 21,       // the safety MCU's 3.3 V supply above 3.6 V
+  VDDA_LOW = 22,        // the safety MCU's 3.3 V supply below 3.0 V, or never up after a reset
+  TICK = 23,            // the safety loop's clock and the second clock disagree
+};
+
+// The alert a fault raises (automation.h maps it to the alert bit, push.h to the urgency).
+enum class FaultAlert : uint8_t {
+  NONE = 0,       // shown, never alerted
+  BURN = 1,       // "burn problem" (alert bit 2)
+  CO_ALARM = 2,   // the CO alarm (alert bit 10)
+  CO_SENSOR = 3,  // the CO sensor fault (alert bit 11)
 };
 
 // The outcome of a request. Codes are the BLE result codes (PROTOCOL.md).
@@ -140,7 +179,7 @@ struct HeaterStatus {
   HeaterState state{HeaterState::UNKNOWN};
   ControlStatus control{ControlStatus::NO_REPLY};
   Fault fault{Fault::NONE};
-  uint8_t panel_fault{0};  // the E-number the heater's own panel would show
+  uint8_t panel_fault{0};  // why, beyond the fault: the safety MCU's reason code (Reason; Telemetry byte 19)
   uint16_t prime_left_s{0};
   uint8_t params_pending{0};
   bool plug_warning{false};  // the run started although the glow plug may not be the type set
@@ -319,9 +358,9 @@ class Heater {
     (void) fuel_pct;
     (void) fan_rpm;
   }
-  // Clears a latched fault that needs a user reset, if its cause is gone.
   // A new glow plug is fitted: a heater that checks the plug's type forgets the old one.
   virtual Outcome glow_plug_fitted() { return Outcome::ok(); }
+  // Clears a latched fault that needs a user reset, if its cause is gone.
   virtual Outcome reset_fault() { return Outcome::refuse(Result::NOT_SUPPORTED, "this heater has no fault reset"); }
   // The heater's fault log (cap::FAULT_LOG), newest first: up to max entries from the from-th newest
   // (0: the newest). Returns how many.
@@ -377,6 +416,22 @@ class Heater {
 const char *heater_state_name(HeaterState s);
 const char *control_status_name(ControlStatus s);
 const char *fault_name(Fault f);
+
+// The fault and reason table (controller.cpp): every fault and reason code with its text and alert.
+// The reason's text, lower case ("the fan stalled"), "" for none; nullptr for a code not in the table.
+const char *reason_text(uint8_t reason);
+// Whether the heater retries a fault with this reason (while it starts or runs fan only).
+bool reason_retried(uint8_t reason);
+// The alert a fault raises: by its reason when the table knows it, else by its fault code.
+FaultAlert fault_alert(Fault fault, uint8_t reason);
+// A fault the heater is still retrying (a fan stall while it starts or runs fan only, FAN-5): the
+// fault clears if the retry works, and the run ends with it (alerted then) if not.
+bool fault_retrying(const HeaterStatus &s);
+// Home Assistant's "Fault reason": the reason in a sentence, "None", or "Reason <n>" for a code not
+// in the table. While retrying: "...: trying again".
+void fault_reason_text(const HeaterStatus &s, char *out, size_t size);
+// The CO sensor's state as Home Assistant shows it ("Unknown" while the heater does not answer).
+const char *co_state_name(const HeaterStatus &s);
 const char *param_group_name(ParamGroup g);
 
 }  // namespace flamekeeper

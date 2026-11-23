@@ -42,17 +42,23 @@ safety MCU (the link protocol between the two, and the CO alarm).
 
 ## Build
 
-You need [uv](https://docs.astral.sh/uv/) (or Python with `pip install esphome==2026.10.2`). ESPHome
-is pinned to 2026.10.2.
+You need [uv](https://docs.astral.sh/uv/) (or Python with `pip install esphome==2026.10.2`) and
+`arm-none-eabi-gcc`. ESPHome is pinned to 2026.10.2.
+
+The ESP32 image carries the safety MCU's firmware and installs it on the STM32, so build that first,
+from the same checkout:
 
 ```bash
+stm32/build.sh
 cd esp32
 uv run --with esphome==2026.10.2 esphome compile flamekeeper-rev-a2.yaml
 ```
 
-The image ends up in `esp32/.esphome/build/flamekeeper/build/`. To serve the app's web page from the
-board, pass its build folder at compile time with `-s web_app <folder>`. Without it the board serves
-a placeholder page.
+The ESPHome build stops if `stm32/build/safety.bin` is missing, older than any of its sources, or
+not the version in `stm32/core/safety.h`: run `stm32/build.sh` again. The image ends up in
+`esp32/.esphome/build/flamekeeper/build/`. To serve the app's web page from the board, pass its
+build folder at compile time with `-s web_app <folder>`. Without it the board serves a placeholder
+page.
 
 ## Install on your board
 
@@ -71,13 +77,16 @@ that key. To go back to official releases, flash an official image over USB.
 2. **Build and sign:**
 
    ```bash
+   stm32/build.sh
    cd esp32
    uv run --with esphome==2026.10.2 esphome compile flamekeeper-rev-a2.yaml
    tools/signing_key.sh sign v2 .esphome/build/flamekeeper/build/firmware.ota.bin signed.bin
    ```
 
 3. **First install, over USB.** Switch the heater off. Hold the board's BOOT button while you plug
-   in the USB-C cable, then write the factory image and your signed app over it:
+   in the USB-C cable, then write the factory image (bootloader, the 8 MB partition table, and the
+   app) and your signed app over it. Updates over the air keep that table; a new one needs this
+   step again.
 
    ```bash
    uv run --with esphome==2026.10.2 esptool --chip esp32c6 write-flash 0x0 .esphome/build/flamekeeper/build/firmware.factory.bin
@@ -93,12 +102,20 @@ that key. To go back to official releases, flash an official image over USB.
    tools/flash_signed.sh flamekeeper-rev-a2.yaml <board address>
    ```
 
+6. **The safety MCU's firmware** comes inside the ESP32's, and is installed only when asked. Home
+   Assistant's "Heater firmware update status" says when the board carries a newer one; with the
+   heater off and cold, press "Update heater firmware" there (the app has no button for it yet).
+   The heater stays off until the safety MCU reports the new version.
+
 Holding BOOT for 10 seconds while the board runs is a factory reset: every paired phone, setting
 and network is forgotten. The firmware and its signing key stay.
 
 ## Safety MCU firmware
 
-Needs `arm-none-eabi-gcc` (no vendor HAL or C library). It has not run on a chip yet.
+Needs `arm-none-eabi-gcc` (no vendor HAL or C library). It has not run on a chip yet. The ESP32
+image embeds `stm32/build/safety.bin` and updates the STM32 through its ROM bootloader over the link
+UART; `esp32/tools/release.sh` and `flash_signed.sh` rebuild it from the same checkout before they
+compile. A blank chip still needs its first image over SWD (a factory programming tool is planned).
 
 ```bash
 stm32/build.sh           # stm32/build/safety.elf and .bin, and the flash and RAM use
@@ -110,6 +127,37 @@ The bring-up image is for a new board's first power-up, not for a heater in use:
 with a text console on the link UART (J_DEBUG pins 6 and 7, 115200 8N1) that shows every reading
 and runs single, time-limited uses of each stage through the same drivers and interlocks.
 `stm32/bringup/console.h` lists its commands; `stm32/bringup/bringup.py` drives it from a USB-UART.
+
+## Production
+
+Two tools in `stm32/tools/`, neither tried on a chip yet. They need an SWD probe (ST-Link, CMSIS-DAP
+or J-Link) on J_DEBUG pins 1-5 (GND, V3V3, SWDIO, SWCLK, NRST), with the ESP32 kept off the
+STM32's boot pin, and [pyocd](https://pyocd.io), which uv fetches:
+
+```bash
+uv run --with pyocd python3 stm32/tools/program.py stm32/build/bringup.bin   # a blank board
+uv run --with pyocd python3 stm32/tools/factory_test.py /dev/cu.usbserial-XXXX
+python3 stm32/tools/program.py --dry-run stm32/build/safety.bin              # every step, no probe
+python3 -I -B -m unittest discover -s stm32/tools/tests                      # their tests
+```
+
+- **`program.py`** mass-erases a blank chip, writes the image, reads it back, sets the option bytes
+  to the watchdog and boot settings the firmware checks (the IWDG started by hardware, boot from
+  the BOOT0 pin) and reloads them. On a board whose parameter pages (30 and 31) hold data it stops
+  unless told `--keep-saved` (only the image's pages are erased) or `--wipe-saved`. Read-out
+  protection stays off; `--rdp-level1` exists, but a protected board can no longer be read over
+  SWD or updated by the ESP32, and unprotecting it erases everything.
+- **`factory_test.py`** runs a board with the bring-up image on a test fixture (the loads and
+  stand-ins are listed in `factory.toml`, with every window) through the checks that need no hand
+  measurement: power-up, reset reason, option bytes, the watchdog reset, the clock, every ADC
+  channel, the interlocks and heartbeat, the fan, one glow probe, a pump stroke, the overcurrent
+  cut, the CO sensor and a link HELLO. It stops at the first failure of a protective check. If
+  every step passes it writes the production image with `program.py` and checks its HELLO.
+  `--no-flash` leaves the bring-up image on.
+- **The report** is named by the chip's 96-bit unique id, in `./factory-reports/` as `.json` (every
+  check's value and window, the configuration and its SHA-256, the production image's SHA-256
+  and the option bytes read back), `.txt` (the same for people) and `.log` (the console
+  transcript).
 
 ## Tests
 

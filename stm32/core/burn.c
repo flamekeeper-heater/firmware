@@ -139,13 +139,19 @@ static uint8_t heat_power(const burn *b, const burn_inputs *in) {
 
 uint8_t burn_power_cap(const burn *b, int16_t board_c10) {
   const burn_params *p = &b->p;
-  if (!temp_known(board_c10) || board_c10 <= p->derate_start_c10)
+  int board_hot = temp_known(board_c10) && board_c10 > p->derate_start_c10;
+  if (!board_hot && b->fan_budget_ma == 0xFFFFu)
     return 100;
-  uint32_t allowed = p->level1_fan_ma;
-  if (board_c10 < p->derate_full_c10)
-    allowed = p->level10_fan_ma - (uint32_t) (p->level10_fan_ma - p->level1_fan_ma) *
-                                      (uint32_t) (board_c10 - p->derate_start_c10) /
-                                      (uint32_t) (p->derate_full_c10 - p->derate_start_c10);
+  uint32_t allowed = 0xFFFFFFFFu;
+  if (board_hot) {
+    allowed = p->level1_fan_ma;
+    if (board_c10 < p->derate_full_c10)
+      allowed = p->level10_fan_ma - (uint32_t) (p->level10_fan_ma - p->level1_fan_ma) *
+                                        (uint32_t) (board_c10 - p->derate_start_c10) /
+                                        (uint32_t) (p->derate_full_c10 - p->derate_start_c10);
+  }
+  if (b->fan_budget_ma < allowed) /* PWR-2: then the fan */
+    allowed = b->fan_budget_ma;
   uint32_t level = 1;
   for (uint32_t n = 10; n >= 1; n--)
     if (b->level_ma[n - 1u] <= allowed) {
@@ -203,6 +209,7 @@ void burn_init(burn *b, const burn_params *p, uint32_t now, const burn_inputs *i
   b->glow_bucket_start = now;
   b->reset_ms = now;
   b->reset_fan_due = 1;
+  b->fan_budget_ma = 0xFFFFu;
   enter(b, BURN_STEP_OFF, now);
   /* A reset in the middle of a burn: the heat exchanger may be hot and the chamber may hold fuel.
    * Cool it down before anything else (the original spec, section 6.2). */
@@ -214,6 +221,10 @@ void burn_init(burn *b, const burn_params *p, uint32_t now, const burn_inputs *i
 static int start_blocked(burn *b, const burn_inputs *in) {
   if (b->fault_latched)
     return 1;
+  if (in->mcu_fault) {
+    b->fault = BURN_FAULT_MCU, b->why = in->mcu_fault, b->fault_latched = 1;
+    return 1;
+  }
   if (in->overheat_latch) {
     b->fault = BURN_FAULT_OVERHEAT, b->why = BURN_WHY_OVERHEAT_LATCH, b->fault_latched = 1;
     return 1;
@@ -351,7 +362,8 @@ void burn_set_power(burn *b, uint8_t power) { b->power = power > 100 ? 100 : pow
 int burn_fault_reset(burn *b, const burn_inputs *in) {
   if (!b->fault_latched)
     return R_REFUSED;
-  if (in->overheat_latch || in->co_alarm || in->co_fault || in->glow_fault || in->fan_fault || in->pump_fault)
+  if (in->overheat_latch || in->co_alarm || in->co_fault || in->glow_fault || in->fan_fault || in->pump_fault ||
+      in->mcu_fault)
     return R_REFUSED; /* the cause is still there */
   b->fault_latched = 0;
   b->fault = BURN_FAULT_NONE;
@@ -389,7 +401,12 @@ static void checks(burn *b, uint32_t now, uint32_t dt, const burn_inputs *in) {
   const burn_params *p = &b->p;
   int burning = fuel_delivered(b);
 
-  /* The latched faults: no restart until a fault reset. */
+  /* The latched faults: no restart until a fault reset. The MCU's own supply or clock first: every
+   * other reading and timing rests on them (PWR-5, GLW-1). */
+  if (latch(b, in->mcu_fault != 0, BURN_FAULT_MCU, in->mcu_fault, now))
+    return;
+  if (in->mcu_fault && b->fault == BURN_FAULT_MCU)
+    b->why = in->mcu_fault; /* a VDDA fault in place of a tick fault: the reason follows */
   if (latch(b, in->overheat_latch, BURN_FAULT_OVERHEAT, BURN_WHY_OVERHEAT_LATCH, now))
     return; /* OVH-4: fuel off, fan on */
   if (latch(b, in->glow_fault, BURN_FAULT_GLOW, BURN_WHY_GLOW_STAGE, now))

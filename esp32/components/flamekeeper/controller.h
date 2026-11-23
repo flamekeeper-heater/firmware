@@ -241,6 +241,10 @@ class Controller : public HeaterListener {
 };
 
 const char *source_name(Source s);
+// Home Assistant's "Heater firmware" (the safety MCU's name and version, "Unknown" before it
+// answered) and "Heater firmware update status" ("Not available" without an image to install).
+const char *heater_firmware_text(const Heater &h);
+const char *firmware_update_status(const Status &s, const Heater &h);
 
 }  // namespace flamekeeper
 }  // namespace esphome

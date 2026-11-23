@@ -150,12 +150,14 @@ static const char *const STEP[] = {"off",     "fan_check", "preheat",  "ignition
                                    "warm_up", "running",   "burn_off", "cooldown", "fan_only",
                                    "priming", "pre_check", "fan_retry"};
 static const char *const FAULT[] = {"none",     "?",      "supply_low", "supply_high", "glow",  "pump",
-                                    "overheat", "fan",    "flame_out",  "sensor",      "start", "co"};
+                                    "overheat", "fan",    "flame_out",  "sensor",      "start", "co",
+                                    "?",        "?",      "co_sensor",  "mcu"};
 static const char *const WHY[] = {"none",          "asked",         "deadman",       "no_flame",
                                   "flame_lost",    "overheat_limit", "overheat_latch", "fan_stall",
                                   "fan_spin_up",   "sensor_open",   "no_temp_rise",  "supply",
                                   "cooldown_limit", "co",           "glow_stage",    "fan_stage",
-                                  "self_test",     "pump_stage",    "board_hot",     "plug_type"};
+                                  "self_test",     "pump_stage",    "board_hot",     "plug_type",
+                                  "co_sensor",     "vdda_high",     "vdda_low",      "tick"};
 static const char *const RESET[] = {"unknown", "power_on", "watchdog", "pin", "brown_out", "bootloader", "software"};
 static const char *const CHECK_FAIL[] = {"latch_hold",       "latch_rearm",       "static_heartbeat",
                                          "pump_hs_fault",    "pump_no_current",   "pump_hs_short",
@@ -311,6 +313,7 @@ static const char *const HELP[] = {
     "io                          interlock lines, heartbeat, stage outputs",
     "watch <ms>                  a status line every <ms> (100-60000), 0 off",
     "opt                         option bytes (FLASH_OPTR) against WDG-1",
+    "uid                         the chip's 96-bit unique id",
     "flash <page> [<off> <len>]  hex dump of flash page 0-31 (read only)",
     "par | par <id> <value> | par apply | par save | par discard",
     "tune [<name> <value>]       figures outside the table, RAM only",
@@ -401,6 +404,9 @@ static void info_line(console *c, uint16_t i) {
       put(c, "vdda_mv ");
       put_u(c, c->b->vdda_mv);
       kv(c, "vrefint_cal", c->b->vrefint_cal);
+      kv(c, "tick_permille", s->mon.tick_permille); /* GLW-1: the LSI's count per the tick's */
+      kv(c, "input_ma", budget_avg_ma(&s->budget)); /* PWR-1: the estimate over 10 s */
+      kv(c, "glow_limit_w", s->glow_limit_w);       /* PWR-2 */
       kv(c, "plug_record", s->plug.rec.verified_v);
       kv(c, "plug_setting", s->burn.p.plug_v);
       kv(c, "link_bad_frames", (int32_t) s->parser.bad);
@@ -744,6 +750,18 @@ static void io_line(console *c) {
   nl(c);
 }
 
+/* "uid w0 w1 w2": the three words in address order, as the factory test names its report. */
+static void uid_line(console *c) {
+  uint8_t id[12];
+  bringup_sys_read(CONSOLE_UID_ADDR, id, sizeof(id));
+  put(c, "uid");
+  for (int w = 0; w < 3; w++) {
+    put_ch(c, ' ');
+    put_hex(c, link_get32(id + 4 * w), 8);
+  }
+  nl(c);
+}
+
 static void glow_sample_line(console *c, const char *what, const hal_glow_sample *g) {
   uint16_t v = c->b->vdda_mv;
   put(c, what);
@@ -871,6 +889,10 @@ static const char *execute(console *c, char *line) {
     return job(c, JOB_ADC);
   if (eq(w0, "opt"))
     return job(c, JOB_OPT);
+  if (eq(w0, "uid") && ws.n == 1) {
+    uid_line(c);
+    return NULL;
+  }
   if (eq(w0, "io")) {
     io_line(c);
     return NULL;

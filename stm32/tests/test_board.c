@@ -73,6 +73,10 @@ static void test_conversions(void) {
   uint16_t cal = hal_vrefint_cal();
   uint16_t v = analog_vdda_mv(counts(VREFINT), cal);
   CHECK(v >= 3290 && v <= 3310);
+  /* PWR-5's reading is not clamped: 3.8 V reads as 3.8 V, and no conversion as the highest. */
+  uint16_t over = analog_vdda_check_mv(counts(VREFINT * 3.3 / 3.8), cal);
+  CHECK(over >= 3790 && over <= 3810 && analog_vdda_mv(counts(VREFINT * 3.3 / 3.8), cal) == 3600);
+  CHECK(analog_vdda_check_mv(0, cal) == 0xFFFFu);
   uint16_t vin = analog_vin_cv(counts(12.6 * 6.8 / 106.8), v);
   CHECK(vin >= 1250 && vin <= 1270);
   CHECK(analog_vin_cv(counts(24.0 * 6.8 / 106.8), v) >= 2385);
@@ -335,6 +339,140 @@ static link_detail read_detail(board *b) {
   run(b, 2);
   CHECK(link_decode_detail(link_reply_payload(sim.tx), link_reply_payload_len(sim.tx), &d));
   return d;
+}
+
+/* The status over the link (a POLL that asks for nothing new: the heater off). */
+static link_status read_status(board *b) {
+  link_status st;
+  memset(&st, 0, sizeof(st));
+  link_desired w = {1, LINK_MODE_OFF, 0, 0, 0, 0};
+  uint8_t p[LINK_DESIRED_SIZE];
+  link_encode_desired(&w, p);
+  chip.rx_len = link_build_request(10, LINK_OP_POLL, p, LINK_DESIRED_SIZE, chip.rx);
+  chip.rx_pos = 0;
+  sim.tx_len = 0;
+  run(b, 2);
+  CHECK(link_decode_status(link_reply_payload(sim.tx), link_reply_payload_len(sim.tx), &st));
+  return st;
+}
+
+/* FAULT_RESET over the link: its result. */
+static uint8_t fault_reset(board *b) {
+  chip.rx_len = link_build_request(11, LINK_OP_FAULT_RESET, NULL, 0, chip.rx);
+  chip.rx_pos = 0;
+  sim.tx_len = 0;
+  run(b, 2);
+  CHECK(sim.tx_len >= 7);
+  return link_reply_result(sim.tx);
+}
+
+/* PWR-5 through the board: VDDA from VREFINT every millisecond. A rail still rising after the
+ * reset holds everything off and does not latch; out of 3.0-3.6 V for 10 ms afterwards drops every
+ * enable and the heartbeat at once, latches a fault the link reports, and needs a fault reset once
+ * VDDA is back. A short dip does nothing. */
+static void test_vdda(void) {
+  chip_reset();
+  chip.vdda = 2.4; /* the 3.3 V converter still starting */
+  board b;
+  board_init(&b, chip.now, LINK_RESET_POWER_ON, 0);
+  run(&b, 200);
+  CHECK(!b.s.power_up_started && chip.hb_mode == HAL_HB_STOPPED && !chip.latch_level);
+  CHECK(b.s.mon.fault == MONITOR_OK && b.s.burn.fault == BURN_FAULT_NONE);
+  chip.vdda = 3.3;
+  run(&b, 1000);
+  CHECK(b.s.chk.power_up_done && b.s.power_up_failed == 0 && b.s.burn.fault == BURN_FAULT_NONE);
+
+  /* Priming: strokes and the heartbeat. A 6 ms excursion either way changes nothing. */
+  esp32_polls(&b, 200);
+  b.s.burn.step = BURN_STEP_PRIMING;
+  b.s.burn.step_ms = chip.now;
+  esp32_polls(&b, 200);
+  CHECK(hb_ok());
+  chip.vdda = 3.7;
+  run(&b, 6);
+  chip.vdda = 3.3;
+  run(&b, 1);
+  chip.vdda = 2.9;
+  run(&b, 6);
+  chip.vdda = 3.3;
+  esp32_polls(&b, 100);
+  CHECK(b.s.mon.fault == MONITOR_OK && b.s.burn.step == BURN_STEP_PRIMING && hb_ok());
+  /* 3.7 V for 11 ms: every enable off at once, then the latched fault. */
+  for (int k = 0; k < 200 && chip.pump_duty == 0; k++)
+    run(&b, 1); /* in a stroke */
+  CHECK(chip.pump_duty > 0);
+  chip.vdda = 3.7;
+  run(&b, 11);
+  CHECK(b.s.mon.fault == MONITOR_VDDA_HIGH);
+  CHECK(chip.hb_mode == HAL_HB_STOPPED && chip.pump_duty == 0 && !chip.glow_en && !chip.latch_level);
+  run(&b, 10);
+  CHECK(b.s.burn.fault == BURN_FAULT_MCU && b.s.burn.why == BURN_WHY_VDDA_HIGH && b.s.burn.fault_latched);
+  CHECK(b.s.burn.step == BURN_STEP_OFF);
+  link_status st = read_status(&b);
+  CHECK(st.fault == BURN_FAULT_MCU && st.fault_detail == BURN_WHY_VDDA_HIGH);
+  CHECK(st.flags & LINK_STATUS_FAULT_LATCHED);
+  link_detail d = read_detail(&b);
+  CHECK(d.vdda_mv >= 3590); /* clamped for the conversions, as before */
+  /* Still over: a fault reset is refused; back in the window, it clears. */
+  CHECK(fault_reset(&b) == LINK_REFUSED);
+  chip.vdda = 3.3;
+  run(&b, 20);
+  CHECK(b.s.mon.fault == MONITOR_VDDA_HIGH && chip.hb_mode == HAL_HB_STOPPED); /* latched */
+  CHECK(fault_reset(&b) == LINK_OK);
+  run(&b, 20);
+  CHECK(b.s.mon.fault == MONITOR_OK && b.s.burn.fault == BURN_FAULT_NONE && !b.s.burn.fault_latched);
+
+  /* GLOW_EN drops in the millisecond VDDA latches, not at the next glow period. */
+  sim.tim3_stopped = 1; /* the planner steps every 10 ms only */
+  chip.vdda = 3.65;
+  for (int k = 0; k < 20 && b.s.mon.fault == MONITOR_OK; k++) {
+    if (b.s.mon.vdda_bad.on && chip.now - b.s.mon.vdda_bad.since_ms == 9) {
+      b.glow_en_planner = 1; /* the planner's last step had the plug on, ... */
+      b.last_glow_ms = chip.now; /* ... and its next is 10 ms away */
+    }
+    run(&b, 1);
+  }
+  CHECK(b.s.mon.fault == MONITOR_VDDA_HIGH && !chip.glow_en && chip.glow_us == 0);
+  sim.tim3_stopped = 0;
+  chip.vdda = 3.3;
+  run(&b, 10);
+  CHECK(fault_reset(&b) == LINK_OK);
+
+  /* Below 3.0 V while off: latched as well. */
+  chip.vdda = 2.95;
+  run(&b, 30);
+  CHECK(b.s.burn.fault == BURN_FAULT_MCU && b.s.burn.why == BURN_WHY_VDDA_LOW && b.s.burn.fault_latched);
+
+  /* A rail that never comes up: a fault half a second after the reset. */
+  chip_reset();
+  chip.vdda = 2.6;
+  board_init(&b, chip.now, LINK_RESET_POWER_ON, 0);
+  run(&b, 600);
+  CHECK(b.s.burn.fault == BURN_FAULT_MCU && b.s.burn.why == BURN_WHY_VDDA_LOW && !b.s.power_up_started);
+  CHECK(chip.hb_mode == HAL_HB_STOPPED);
+}
+
+/* GLW-1 through the board: the tick against the driver's second clock once a second. A clock 30 %
+ * apart latches a fault that ends the run and that the link reports; 10 % is inside the LSI's
+ * spread and does nothing. */
+static void test_tick_check(void) {
+  chip_reset();
+  board b;
+  board_init(&b, chip.now, LINK_RESET_POWER_ON, 0);
+  chip.clock_permille = 900;
+  esp32_polls(&b, 5000);
+  CHECK(b.s.mon.tick_checks >= 4 && b.s.mon.fault == MONITOR_OK && b.s.burn.fault == BURN_FAULT_NONE);
+  CHECK(b.s.mon.tick_permille >= 890 && b.s.mon.tick_permille <= 910);
+  chip.clock_permille = 700;
+  esp32_polls(&b, 2100);
+  CHECK(b.s.burn.fault == BURN_FAULT_MCU && b.s.burn.why == BURN_WHY_TICK && b.s.burn.fault_latched);
+  link_status st = read_status(&b);
+  CHECK(st.fault == BURN_FAULT_MCU && st.fault_detail == BURN_WHY_TICK);
+  CHECK(fault_reset(&b) == LINK_REFUSED);
+  chip.clock_permille = 1000;
+  run(&b, 2100);
+  CHECK(fault_reset(&b) == LINK_OK);
+  CHECK(!b.s.burn.fault_latched && b.s.mon.fault == MONITOR_OK);
 }
 
 static void test_co_heater_and_alarm(void) {
@@ -756,6 +894,8 @@ int main(void) {
   test_pump_overcurrent();
   test_glow_periods();
   test_flash_only_when_off();
+  test_vdda();
+  test_tick_check();
   test_co_heater_and_alarm();
   test_co_sensor_fault();
   test_co_not_fitted();
