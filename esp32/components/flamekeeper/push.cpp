@@ -494,7 +494,7 @@ bool PushEngine::live_send_(uint8_t event, uint8_t flags, uint16_t dismissal_s, 
   }
   this->live_sent_ms_ = now == 0 ? 1 : now;
   this->live_last_ = c;
-  this->live_dirty_ = this->live_important_ = false;
+  this->live_dirty_ = this->live_important_ = this->live_prompt_ = false;
   return true;
 }
 
@@ -543,20 +543,21 @@ void PushEngine::live_loop_(uint32_t now, bool ready) {
     const LiveContent &l = this->live_last_;
     const bool room_moved = (c.room_c10 == INT16_MIN) != (l.room_c10 == INT16_MIN) ||
                             (c.room_c10 != INT16_MIN && std::abs(int(c.room_c10) - int(l.room_c10)) >= LIVE_ROOM_C10);
-    if (c.state != l.state || (c.alerts & ~l.alerts) || (c.fault != l.fault && c.fault != 0))
-      this->live_important_ = true;
-    if (c.state != l.state || c.kind != l.kind || c.source != l.source || c.fault != l.fault ||
-        c.alerts != l.alerts || c.target_c10 != l.target_c10 || c.power != l.power ||
-        c.run_end_utc != l.run_end_utc || room_moved)
+    if (c.state != l.state || (c.alerts & ~l.alerts) || (c.fault != l.fault && c.fault != 0) || reconnected)
+      this->live_important_ = true;  // a reconnect: the relay may have lost the card meanwhile
+    // What the user just asked for shows soon, without taking a push's priority.
+    if (this->live_important_ || c.kind != l.kind || c.target_c10 != l.target_c10 || c.power != l.power ||
+        c.run_end_utc != l.run_end_utc)
+      this->live_prompt_ = true;
+    if (this->live_prompt_ || c.source != l.source || c.fault != l.fault || c.alerts != l.alerts || room_moved)
       this->live_dirty_ = true;
-    if (reconnected)
-      this->live_dirty_ = this->live_important_ = true;  // the relay may have lost the card meanwhile
   }
 
   if (!ready)
     return;
   const uint32_t gap = uint32_t(now - this->live_sent_ms_);
-  const bool may = this->live_sent_ms_ == 0 || gap >= LIVE_GAP_MS;
+  const bool prompt = !this->live_started_ || this->live_prompt_;
+  const bool may = this->live_sent_ms_ == 0 || gap >= (prompt ? LIVE_PROMPT_GAP_MS : LIVE_GAP_MS);
   const LiveContent c = this->live_content_(now, s);
   if (!this->live_started_) {
     if (may && this->live_send_(push::LIVE_START, push::LIVE_IMPORTANT, 0, c, now))

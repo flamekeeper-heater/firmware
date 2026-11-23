@@ -386,8 +386,8 @@ static void test_fan_retry_not_pushed() {
   }
 }
 
-// The live card: a run's start, its updates (changes at most every 20 s, else every 120 s) and its
-// end, to the phones whose preferences take the run, each sealed for that phone.
+// The live card: a run's start, its updates (what the user asked for 5 s after the last frame,
+// other changes 20 s after, else every 120 s) and its end, to the phones whose preferences take the run, each sealed for that phone.
 static void test_live_card() {
   Rig r;
   r.relay_up(0x03, 0x00, 0x03);  // both phones can be sent a card's start
@@ -422,23 +422,34 @@ static void test_live_card() {
   CHECK(r.open_live(ls[0], 1, r.k1).empty());
   const uint32_t seq0 = rec.size() == 33 ? u32(rec.data() + 1) : 0;
 
-  // A change within 20 s waits for the window, then goes as one update.
-  r.step(5 * SEC);
+  // A power change 1 s after the start goes 5 s after it, not important.
   mark = r.sent.size();
   CHECK(r.c.set_power(70, Source::PHONE).accepted());
-  r.step(10 * SEC);
+  r.step(3 * SEC);
   CHECK(r.lives(mark).empty());
-  r.step(6 * SEC);
+  r.step(3 * SEC);
   ls = r.lives(mark);
   CHECK_EQ(ls.size(), 1);
   if (ls.size() == 1) {
-    CHECK(ls[0][2] == fk::push::LIVE_UPDATE && ls[0][3] == 0);  // power: not important
+    CHECK(ls[0][2] == fk::push::LIVE_UPDATE && ls[0][3] == 0);
     rec = r.open_live(ls[0], 0, r.k0);
     CHECK(rec.size() == 33 && rec[19] == 70 && u32(rec.data() + 1) > seq0);
   }
+  // A room change waits for the 20 s window.
+  mark = r.sent.size();
+  r.c.room().probe(18.0f, r.now);
+  r.step(10 * SEC);
+  CHECK(r.lives(mark).empty());
+  r.step(11 * SEC);
+  ls = r.lives(mark);
+  CHECK_EQ(ls.size(), 1);
+  if (ls.size() == 1) {
+    rec = r.open_live(ls[0], 0, r.k0);
+    CHECK(rec.size() == 33 && int16_t(u16(rec.data() + 15)) == 180);
+  }
   // Nothing changes: a heartbeat every 120 s.
   mark = r.sent.size();
-  r.step(110 * SEC);  // the update went out 2 s before the mark
+  r.step(110 * SEC);  // the update went out 3 s before the mark
   CHECK(r.lives(mark).empty());
   r.step(10 * SEC);
   CHECK_EQ(r.lives(mark).size(), 1);
@@ -463,6 +474,19 @@ static void test_live_card() {
   mark = r.sent.size();
   r.step(200 * SEC);
   CHECK(r.lives(mark).empty());  // no card: nothing more
+  // A run that follows its end at once: its start 5 s after the end.
+  r.phone_start(0);
+  r.step(30 * SEC);
+  r.heater_off();
+  mark = r.sent.size();
+  r.step(SEC);
+  r.phone_start(0);
+  r.step(3 * SEC);
+  ls = r.lives(mark);
+  CHECK(ls.size() == 1 && ls[0][2] == fk::push::LIVE_END);
+  r.step(2 * SEC);
+  ls = r.lives(mark);
+  CHECK(ls.size() == 2 && ls.back()[2] == fk::push::LIVE_START);
 }
 
 static void test_live_card_rules() {
@@ -476,13 +500,13 @@ static void test_live_card_rules() {
   r.step(SEC);
   auto ls = r.lives(mark);
   CHECK(ls.size() == 1 && Rig::live_slots(ls[0]) == std::vector<int>({0, 1}) && ls[0][8] == 0xFF);
-  // Starting to heating: a state change is important, but waits for the 20 s window.
+  // Starting to heating: a state change is important, and goes 5 s after the last frame.
   r.step(3 * SEC);
   mark = r.sent.size();
   r.h.st.state = HeaterState::HEATING;
-  r.step(10 * SEC);
+  r.step(SEC);
   CHECK(r.lives(mark).empty());
-  r.step(10 * SEC);
+  r.step(SEC);
   ls = r.lives(mark);
   CHECK(ls.size() == 1 && ls[0][3] == fk::push::LIVE_IMPORTANT);
   // The phone in slot 1 keeps its card but drops the board's runs (flags 0x03): slot 0 only.

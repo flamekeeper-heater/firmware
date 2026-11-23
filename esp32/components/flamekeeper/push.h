@@ -59,7 +59,9 @@ class PushEngine : public PushControl {
   static const uint32_t CO_REPEAT_MS = 5u * 60u * 1000u;
   static const uint8_t CO_REPEATS = 2;  // after the first: 3 in all
   static const uint32_t WANT_WAIT_MS = 5000;
-  static const uint32_t LIVE_GAP_MS = 20000;        // at most one LIVE per 20 s (an end never waits)
+  static const uint32_t LIVE_GAP_MS = 20000;        // at most one LIVE per 20 s (an end never waits)...
+  static const uint32_t LIVE_PROMPT_GAP_MS = 5000;  // ...or 5 s for a start, an important change, or a
+                                                    // target, power, kind or run end change
   static const uint32_t LIVE_HEARTBEAT_MS = 120000;  // an update at least this often while a card runs
   static const int LIVE_ROOM_C10 = 5;                // a room change this big is a change  // after sign-in, wait this long for WANT before sending held pushes
 
@@ -191,6 +193,7 @@ class PushEngine : public PushControl {
   uint32_t live_sent_ms_{0};
   bool live_dirty_{false};       // changed since the last send
   bool live_important_{false};   // ...and the change is worth priority
+  bool live_prompt_{false};      // ...or worth sending soon (LIVE_PROMPT_GAP_MS)
   bool live_was_ready_{false};
   uint32_t live_sent_{0};
   uint32_t live_burnoff_end_{0};
