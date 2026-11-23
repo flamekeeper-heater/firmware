@@ -79,11 +79,11 @@ safety_link:
   # The safety MCU's reset and BOOT0 lines, for updating it through its ROM bootloader (DESIGN.md).
   reset_pin: GPIO23   # STM_NRST, driven open drain
   boot_pin: GPIO14    # STM_BOOT
-  # The safety MCU firmware this build installs ("Update heater firmware"); build it first with
-  # stm32/build.sh. The version its HELLO reports comes from stm32/core/safety.h, or from a
-  # "version: major.minor.patch" here.
-  # mcu_firmware:
-  #   file: ../stm32/build/safety.bin
+  # The safety MCU firmware this build carries and installs ("Update heater firmware"), built from
+  # the same checkout: run stm32/build.sh first (the release tools do). The build stops if the
+  # image is missing, older than its sources, or not the version in stm32/core/safety.h.
+  mcu_firmware:
+    file: ../stm32/build/safety.bin
 
 flamekeeper:
   # The label PIN comes from the board key production burns into eFuse key block 5 (purpose

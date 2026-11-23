@@ -42,17 +42,23 @@ safety MCU (the link protocol between the two, and the CO alarm).
 
 ## Build
 
-You need [uv](https://docs.astral.sh/uv/) (or Python with `pip install esphome==2026.10.2`). ESPHome
-is pinned to 2026.10.2.
+You need [uv](https://docs.astral.sh/uv/) (or Python with `pip install esphome==2026.10.2`) and
+`arm-none-eabi-gcc`. ESPHome is pinned to 2026.10.2.
+
+The ESP32 image carries the safety MCU's firmware and installs it on the STM32, so build that first,
+from the same checkout:
 
 ```bash
+stm32/build.sh
 cd esp32
 uv run --with esphome==2026.10.2 esphome compile flamekeeper-rev-a2.yaml
 ```
 
-The image ends up in `esp32/.esphome/build/flamekeeper/build/`. To serve the app's web page from the
-board, pass its build folder at compile time with `-s web_app <folder>`. Without it the board serves
-a placeholder page.
+The ESPHome build stops if `stm32/build/safety.bin` is missing, older than any of its sources, or
+not the version in `stm32/core/safety.h`: run `stm32/build.sh` again. The image ends up in
+`esp32/.esphome/build/flamekeeper/build/`. To serve the app's web page from the board, pass its
+build folder at compile time with `-s web_app <folder>`. Without it the board serves a placeholder
+page.
 
 ## Install on your board
 
@@ -71,6 +77,7 @@ that key. To go back to official releases, flash an official image over USB.
 2. **Build and sign:**
 
    ```bash
+   stm32/build.sh
    cd esp32
    uv run --with esphome==2026.10.2 esphome compile flamekeeper-rev-a2.yaml
    tools/signing_key.sh sign v2 .esphome/build/flamekeeper/build/firmware.ota.bin signed.bin
@@ -93,12 +100,20 @@ that key. To go back to official releases, flash an official image over USB.
    tools/flash_signed.sh flamekeeper-rev-a2.yaml <board address>
    ```
 
+6. **The safety MCU's firmware** comes inside the ESP32's, and is installed only when asked. Home
+   Assistant's "Heater firmware update status" says when the board carries a newer one; with the
+   heater off and cold, press "Update heater firmware" there (the app has no button for it yet).
+   The heater stays off until the safety MCU reports the new version.
+
 Holding BOOT for 10 seconds while the board runs is a factory reset: every paired phone, setting
 and network is forgotten. The firmware and its signing key stay.
 
 ## Safety MCU firmware
 
-Needs `arm-none-eabi-gcc` (no vendor HAL or C library). It has not run on a chip yet.
+Needs `arm-none-eabi-gcc` (no vendor HAL or C library). It has not run on a chip yet. The ESP32
+image embeds `stm32/build/safety.bin` and updates the STM32 through its ROM bootloader over the link
+UART; `esp32/tools/release.sh` and `flash_signed.sh` rebuild it from the same checkout before they
+compile. A blank chip still needs its first image over SWD (a factory programming tool is planned).
 
 ```bash
 stm32/build.sh           # stm32/build/safety.elf and .bin, and the flash and RAM use

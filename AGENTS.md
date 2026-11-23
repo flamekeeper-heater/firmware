@@ -10,7 +10,7 @@ the app protocol.
 esp32/components/flamekeeper/tests/run.sh       # core host tests (needs one board compile first, for mbedTLS)
 stm32/tests/run.sh                              # safety core, and end to end with the ESP32 side
 common/link/tests/run.sh && common/co/tests/run.sh
-cd esp32 && uv run --with esphome==2026.10.2 esphome compile flamekeeper-rev-a2.yaml
+stm32/build.sh && cd esp32 && uv run --with esphome==2026.10.2 esphome compile flamekeeper-rev-a2.yaml
 esp32/tools/boot_test.sh --app SIGNED.bin esp32/.esphome/build/flamekeeper   # exit 2 is a clean C6 run
 ```
 
