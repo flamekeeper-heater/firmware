@@ -264,6 +264,11 @@ HELLO text is not the version in `stm32/core/safety.h`. An update:
 - Writing the option bytes (the watchdog in hardware, boot from the BOOT0 pin) is a separate step,
   not part of an update, and not yet proven on a chip.
 
+In production a blank STM32 is programmed over SWD instead (`stm32/tools/program.py`: the image,
+then the option bytes, then an option reload, all by register writes as RM0454 describes), and
+`factory_test.py` runs the bring-up console's checks on a fixture before the production image goes
+on; each board's report is named by its unique id.
+
 ## CO alarm
 
 `common/co/` judges the MiCS-5524 metal-oxide sensor on the safety MCU, with integer maths only.

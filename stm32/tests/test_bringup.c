@@ -284,6 +284,17 @@ static void test_readings(void) {
   cmd("opt");
   run(100);
   CHECK(said("iwdg_sw=0") && said("nboot_sel=0") && said(": ok"));
+  cmd("uid"); /* the fake's bytes are (address * 7): words in address order, little-endian */
+  {
+    char want[64] = "uid";
+    for (uint32_t w = 0; w < 3; w++) {
+      uint32_t v = 0;
+      for (uint32_t i = 0; i < 4; i++)
+        v |= (uint32_t) (uint8_t) ((CONSOLE_UID_ADDR + 4 * w + i) * 7u) << (8 * i);
+      snprintf(want + strlen(want), sizeof(want) - strlen(want), " %08x", (unsigned) v);
+    }
+    CHECK(said(want) && said("ok"));
+  }
   cmd("flash 30 0 20");
   run(100);
   CHECK(said("flash 0800f000 00 07 0e") && said("flash 0800f010 70"));
