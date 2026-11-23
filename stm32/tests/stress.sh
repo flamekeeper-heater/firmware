@@ -38,7 +38,7 @@ if [ "$what" = fuzz ] || [ "$what" = all ]; then
     mkdir -p "$out/corpus"
     "$out/fuzz_seeds" --write-corpus "$out/corpus"
     lf=""
-    for f in burn glow fan checks pump params plug safety; do
+    for f in burn glow fan checks pump params plug faultlog safety; do
       $fuzz_cxx -x c $strict -fsanitize=fuzzer-no-link,address,undefined -g -O1 -c "$core/$f.c" -o "$out/lf_$f.o"
       lf="$lf $out/lf_$f.o"
     done
