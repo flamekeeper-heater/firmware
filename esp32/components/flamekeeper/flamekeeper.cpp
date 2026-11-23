@@ -217,36 +217,27 @@ void FlamekeeperHub::publish_(uint32_t now, bool force) {
       case TextKey::RUN_STATE: t = heater_state_name(s.state); break;
       case TextKey::CONTROLLER_STATUS: t = control_status_name(s.control); break;
       case TextKey::ERROR: t = fault_name(s.fault); break;
-      case TextKey::HEATER_FIRMWARE: t = h->firmware_text(); break;
+      case TextKey::FAULT_REASON:
+        fault_reason_text(s, this->reason_text_, sizeof(this->reason_text_));
+        t = this->reason_text_;
+        break;
+      case TextKey::CO_SENSOR: t = co_state_name(s); break;
+      case TextKey::HEATER_FIRMWARE: t = heater_firmware_text(*h); break;
       case TextKey::SETTINGS_STATUS:
         t = (s.capabilities & cap::PARAMETERS) ? h->param_status_text() : "This heater has no parameters";
         break;
-      case TextKey::FIRMWARE_UPDATE_STATUS:
-        t = (s.capabilities & cap::FIRMWARE_UPDATE) ? h->firmware_update_text() : "Not available";
-        break;
+      case TextKey::FIRMWARE_UPDATE_STATUS: t = firmware_update_status(s, *h); break;
       case TextKey::RUN_STARTED_BY: t = s.mode == Mode::OFF ? "Not running" : source_name(s.run_source); break;
       case TextKey::RELAY:
         t = this->board_->relay_client() != nullptr ? relay_state_name(this->board_->relay_client()->state()) : "Not available";
         break;
       case TextKey::ALERTS: {
-        static const char *const NAMES[] = {"Fuel low",
-                                            "Fuel too low to run",
-                                            "Burn problem",
-                                            "Frost protection and timers disarmed",
-                                            "Bluetooth thermometer lost",
-                                            "Clock not set",
-                                            "Frost protection has no room temperature",
-                                            "Battery low",
-                                            "Glow plug wearing",
-                                            "Carbon burn-off due",
-                                            "CO alarm",
-                                            "CO sensor fault"};
         this->alerts_text_.clear();
-        for (size_t i = 0; i < sizeof(NAMES) / sizeof(NAMES[0]); i++) {
+        for (uint8_t i = 0; alert_name(i) != nullptr; i++) {
           if (s.alerts & (1u << i)) {
             if (!this->alerts_text_.empty())
               this->alerts_text_ += ", ";
-            this->alerts_text_ += NAMES[i];
+            this->alerts_text_ += alert_name(i);
           }
         }
         t = this->alerts_text_.empty() ? "None" : this->alerts_text_.c_str();

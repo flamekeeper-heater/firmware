@@ -96,6 +96,14 @@ switch:
     name: Frost protection
     parameter: 0x140
     icon: mdi:snowflake-thermometer
+  # A heater parameter (the safety MCU's, expert level in the app: hidden until enabled). Staged:
+  # sent with "Apply settings"; refused while the CO alarm is on.
+  - platform: flamekeeper
+    type: parameter
+    name: CO sensor fitted
+    parameter: 0x52
+    icon: mdi:molecule-co
+    disabled_by_default: true
 
 select:
   - platform: flamekeeper
@@ -477,6 +485,10 @@ text_sensor:
       name: Controller status
     error:
       name: Error
+    fault_reason:
+      name: Fault reason
+    co_sensor:
+      name: CO sensor
     run_started_by:
       name: Run started by
     alerts:

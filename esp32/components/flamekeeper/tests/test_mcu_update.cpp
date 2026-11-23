@@ -2,6 +2,7 @@
 // update through the link client, the refusals, a wrong chip, blocks that read back wrong, a power
 // loss mid-write and the update after it (also after a restart of the ESP32), lost and garbled
 // bytes, pages 30 and 31 never touched, and the option bytes.
+#include <cmath>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -566,6 +567,68 @@ static void test_controller() {
   CHECK(c.set_mode(fk::Mode::HEAT, fk::Source::PHONE).accepted());
 }
 
+// What Home Assistant shows through an update ("Heater firmware", "Heater firmware update status"
+// and "...progress", the controller status): offered, writing, installed, failed, not available.
+static void test_home_assistant_texts() {
+  const fk::Source ha = fk::Source::HOME_ASSISTANT;
+  {
+    Rig r;
+    fk::Controller c(&r.client);
+    c.tick(r.t, true);
+    CHECK(std::string(fk::heater_firmware_text(r.client)) == "sim safety");
+    CHECK(std::string(fk::firmware_update_status(c.status(), r.client)) == "0.2.0 available (the heater runs 0.1.0)");
+    CHECK(std::isnan(c.status().update_progress));
+    CHECK(c.start_firmware_update(ha).accepted());
+    bool writing = false, rising = true;
+    float last = -1.0f;
+    for (int i = 0; i < 4000 && r.upd.running(); i++) {
+      r.run(50);
+      c.tick(r.t, true);
+      const fk::Status &s = c.status();
+      if (!r.upd.running())
+        break;
+      CHECK(s.update_running && s.state == fk::HeaterState::UPDATING && s.control == fk::ControlStatus::UPDATING);
+      CHECK(std::isfinite(s.update_progress));
+      if (s.update_progress < last)
+        rising = false;
+      last = s.update_progress;
+      writing = writing || contains(fk::firmware_update_status(s, r.client), "Writing ");
+    }
+    CHECK(writing && rising && last > 50.0f);
+    r.run(300);
+    c.tick(r.t, true);
+    CHECK(r.upd.done());
+    CHECK(std::string(fk::firmware_update_status(c.status(), r.client)) == "Installed 0.2.0");
+    CHECK(!c.status().update_running);
+    CHECK(c.status().state == fk::HeaterState::OFF);
+  }
+  {
+    // Refused by the MCU (still hot): the reason, and the old firmware runs on.
+    Rig r;
+    r.mcu.app_hot = true;
+    fk::Controller c(&r.client);
+    c.tick(r.t, true);
+    CHECK(c.start_firmware_update(ha).accepted());
+    CHECK(r.finish(5000));
+    c.tick(r.t, true);
+    const std::string t = fk::firmware_update_status(c.status(), r.client);
+    CHECK(t.rfind("Failed: ", 0) == 0 && contains(t, "off and cold"));
+    CHECK(!c.status().update_running);
+  }
+  {
+    // A build without an image: not available, and the button is refused.
+    SimStm32 m;
+    fk::LinkClient lc(&m);
+    fk::McuUpdate u(&m);
+    lc.set_mcu_updater(&u);
+    fk::Controller c(&lc);
+    c.tick(0, true);
+    CHECK(std::string(fk::firmware_update_status(c.status(), lc)) == "Not available");
+    CHECK(c.start_firmware_update(ha).result == Result::NOT_SUPPORTED);
+    CHECK(std::string(fk::heater_firmware_text(lc)) == "Unknown");  // nothing heard yet
+  }
+}
+
 int main() {
   test_commands();
   test_update();
@@ -578,5 +641,6 @@ int main() {
   test_version_mismatch();
   test_option_bytes();
   test_controller();
+  test_home_assistant_texts();
   return report("mcu_update");
 }

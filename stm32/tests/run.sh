@@ -108,7 +108,8 @@ lane1() {
 }
 
 # Lane 2: the ESP32's link client, end to end, the soak's regressions and seed 48 (fan stalls and
-# a lockout, the dead-man, an MCU reset, a CO sensor fault), and the driver's option-byte check.
+# a lockout, the dead-man, an MCU reset, a CO sensor fault), the ESP32's controller and automation
+# on top (test_ha), and the driver's option-byte check.
 lane2() {
   obj link_client "$fk/link_client.cpp"
   touch "$out/client.ready"
@@ -117,11 +118,16 @@ lane2() {
   run test_hal
   obj test_e2e "$here/test_e2e.cpp"
   obj test_soak "$here/test_soak.cpp"
+  # The ESP32's controller and automation on top: what Home Assistant and the apps see.
+  for f in controller tuning thermostat automation ble_thermo ble_protocol; do obj $f "$fk/$f.cpp"; done
+  obj test_ha "$here/test_ha.cpp"
   need core lane1
   exe test_e2e $core_objs heater_model link_client
   run test_e2e
   exe test_soak $core_objs heater_model link_client
   run test_soak --seeds 48
+  exe test_ha $core_objs heater_model link_client controller tuning thermostat automation ble_thermo ble_protocol
+  run test_ha
 }
 
 # Each lane stops at its first failure (a failed build, or a test's non-zero exit).
@@ -137,7 +143,7 @@ lane2() {
 ) &
 wait
 for t in test_plug test_params test_pump test_checks test_fan test_glow test_burn test_e2e fuzz_link test_soak \
-  test_board test_bringup test_hal; do
+  test_ha test_board test_bringup test_hal; do
   if [ -f "$out/$t.log" ]; then cat "$out/$t.log"; fi
 done
 if [ ! -e "$out/lane1.ok" ] || [ ! -e "$out/lane2.ok" ]; then

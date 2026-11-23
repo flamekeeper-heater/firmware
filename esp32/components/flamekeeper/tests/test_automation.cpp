@@ -54,6 +54,26 @@ struct Rig {
     } while (int32_t(end - now) > 0);
   }
   void set(uint16_t id, int32_t v) { CHECK(c.param_set(id, v, Source::PHONE).accepted()); }
+  // Alerts with this bit raised since the index mark (into alerts).
+  int count(int bit, size_t mark = 0) const {
+    int n = 0;
+    for (size_t i = mark; i < alerts.size(); i++)
+      n += alerts[i].first == bit ? 1 : 0;
+    return n;
+  }
+  // Event log records of this kind since the sequence number mark.
+  int logged(fk::LogKind kind, uint32_t mark) {
+    fk::LogRecord recs[fk::EventLog::SIZE];
+    size_t n = a.log().read(mark + 1, recs, fk::EventLog::SIZE);
+    int c = 0;
+    for (size_t i = 0; i < n; i++)
+      c += recs[i].kind == uint8_t(kind) ? 1 : 0;
+    return c;
+  }
+  void fault(fk::Fault f, fk::Reason why) {
+    h.st.fault = f;
+    h.st.panel_fault = uint8_t(why);
+  }
   bool alerted(int bit) const {
     for (auto &x : alerts)
       if (x.first == bit)
@@ -1074,6 +1094,173 @@ static void test_automation_commands() {
   CHECK_EQ(tel[30], 2);
 }
 
+// The safety MCU's fan stall retry (FAN-5): while it waits 5 s and tries again, the status shows
+// fault FAN with the stall's reason and the heater still starting, in fan only or stopping.
+static void test_fan_stall_retry() {
+  using fk::Fault;
+  using fk::Reason;
+  {
+    // Fan only: a stall that the retry cures raises nothing; it is logged.
+    Rig r;
+    CHECK(r.c.set_mode(Mode::FAN, Source::PHONE).accepted());
+    r.heater_follows();
+    r.step(3 * SEC);
+    const size_t mark = r.alerts.size();
+    const uint32_t log_mark = r.a.log().newest();
+    r.fault(Fault::FAN, Reason::FAN_STALL);
+    r.step(5 * SEC);
+    CHECK(!(r.c.status().alerts & al::BURN));
+    CHECK_EQ(r.alerts.size(), mark);
+    CHECK_EQ(r.logged(fk::LogKind::FAULT, log_mark), 1);
+    r.fault(Fault::NONE, Reason::NONE);  // the run carries on
+    r.step(10 * SEC);
+    CHECK(r.c.status().mode == Mode::FAN);
+    CHECK_EQ(r.alerts.size(), mark);
+    // Once more (the spin-up), cured again; then the stall past the retries: the MCU locks the fan
+    // out and the heater is off. One alert, which says so.
+    r.fault(Fault::FAN, Reason::FAN_SPIN_UP);
+    r.step(5 * SEC);
+    r.fault(Fault::NONE, Reason::NONE);
+    r.step(5 * SEC);
+    CHECK_EQ(r.alerts.size(), mark);
+    CHECK_EQ(r.logged(fk::LogKind::FAULT, log_mark), 2);
+    r.fault(Fault::FAN, Reason::FAN_STALL);
+    r.h.st.state = HeaterState::OFF;
+    r.h.st.mode = Mode::OFF;  // the backend's own: the run is over
+    r.step(3 * SEC);
+    CHECK(r.c.status().alerts & al::BURN);
+    CHECK_EQ(r.count(2, mark), 1);  // not again as "stopped by itself"
+    CHECK(r.alerts.back().second.find("locked out") != std::string::npos);
+    CHECK_EQ(r.logged(fk::LogKind::STOPPED_BY_ITSELF, log_mark), 1);
+    CHECK(r.c.status().run_source == Source::NONE);
+  }
+  {
+    // A stall after fuel went in: the heater cools down whatever the retry does: alerted at once.
+    Rig r;
+    CHECK(r.c.set_mode(Mode::HEAT, Source::PHONE).accepted());
+    r.heater_follows();
+    r.step(3 * SEC);
+    const size_t mark = r.alerts.size();
+    r.fault(Fault::FAN, Reason::FAN_STALL);
+    r.h.st.state = HeaterState::STOPPING;
+    r.step(SEC);
+    CHECK_EQ(r.count(2, mark), 1);
+    CHECK(r.alerts.back().second == "heater fault: Fan (the fan stalled)");
+    r.h.st.state = HeaterState::COOLING;
+    r.step(30 * SEC);
+    r.h.st.state = HeaterState::OFF;
+    r.h.st.mode = Mode::OFF;
+    r.step(3 * SEC);
+    CHECK_EQ(r.count(2, mark), 1);
+  }
+  {
+    // A retry that gives up while the heater still runs (it goes on to cool down): alerted then.
+    Rig r;
+    CHECK(r.c.set_mode(Mode::HEAT, Source::PHONE).accepted());
+    r.h.st.state = HeaterState::STARTING;
+    r.step(3 * SEC);
+    const size_t mark = r.alerts.size();
+    r.fault(Fault::FAN, Reason::FAN_SPIN_UP);
+    r.step(3 * SEC);
+    CHECK_EQ(r.count(2, mark), 0);
+    r.h.st.state = HeaterState::STOPPING;
+    r.step(SEC);
+    CHECK_EQ(r.count(2, mark), 1);
+  }
+  {
+    // Someone stops the heater during the wait: it goes off with the stall still shown, quietly.
+    Rig r;
+    CHECK(r.c.set_mode(Mode::HEAT, Source::PHONE).accepted());
+    r.h.st.state = HeaterState::STARTING;
+    r.step(3 * SEC);
+    const size_t mark = r.alerts.size();
+    r.fault(Fault::FAN, Reason::FAN_STALL);
+    r.step(2 * SEC);
+    CHECK(r.c.set_mode(Mode::OFF, Source::HOME_ASSISTANT).accepted());
+    r.h.st.state = HeaterState::OFF;
+    r.step(10 * SEC);
+    CHECK_EQ(r.alerts.size(), mark);
+    CHECK(!(r.c.status().alerts & al::BURN));
+  }
+  {
+    // A stop with a reason and no fault (the dead-man): "stopped by itself", with the reason.
+    Rig r;
+    CHECK(r.c.set_mode(Mode::HEAT, Source::PHONE).accepted());
+    r.heater_follows();
+    r.step(3 * SEC);
+    const size_t mark = r.alerts.size();
+    r.fault(Fault::NONE, Reason::DEADMAN);
+    r.h.st.state = HeaterState::OFF;
+    r.h.st.mode = Mode::OFF;
+    r.step(3 * SEC);
+    CHECK_EQ(r.count(2, mark), 1);
+    CHECK(r.alerts.back().second == "the heater stopped by itself: the link from the board went silent during a burn");
+  }
+  {
+    // A latched fault is alerted once, even if the link drops and comes back.
+    Rig r;
+    const size_t mark = r.alerts.size();
+    r.fault(Fault::GLOW_PLUG, Reason::GLOW_STAGE);
+    r.step(2 * SEC);
+    CHECK_EQ(r.count(2, mark), 1);
+    CHECK(r.alerts.back().second == "heater fault: Glow plug (the glow plug circuit failed)");
+    r.h.st.answering = false;
+    r.step(5 * SEC);
+    r.h.st.answering = true;
+    r.step(2 * SEC);
+    CHECK_EQ(r.count(2, mark), 1);
+  }
+}
+
+// The CO sensor fault (fault 14, reason 20) and the CO alarm (fault 11, reason 13) each raise
+// their own alert, and only it: no "burn problem" and no "stopped by itself" on top.
+static void test_co_fault_alerts() {
+  using fk::Fault;
+  using fk::Reason;
+  {
+    Rig r;
+    CHECK(r.c.set_mode(Mode::HEAT, Source::PHONE).accepted());
+    r.heater_follows();
+    r.step(3 * SEC);
+    const size_t mark = r.alerts.size();
+    r.fault(Fault::CO_SENSOR, Reason::CO_SENSOR);
+    r.h.st.co_state = uint8_t(fk::CoState::SENSOR_FAULT);
+    r.h.st.state = HeaterState::STOPPING;
+    r.step(2 * SEC);
+    r.h.st.state = HeaterState::OFF;
+    r.h.st.mode = Mode::OFF;
+    r.step(3 * SEC);
+    CHECK_EQ(r.count(11, mark), 1);
+    CHECK_EQ(r.count(10, mark), 0);
+    CHECK_EQ(r.count(2, mark), 0);
+    CHECK(r.c.status().alerts & al::CO_SENSOR);
+    CHECK(!(r.c.status().alerts & (al::CO_ALARM | al::BURN)));
+    CHECK(r.c.set_mode(Mode::HEAT, Source::PHONE).result == Result::REFUSED);
+  }
+  {
+    Rig r;
+    CHECK(r.c.set_mode(Mode::HEAT, Source::PHONE).accepted());
+    r.heater_follows();
+    r.step(3 * SEC);
+    const size_t mark = r.alerts.size();
+    r.fault(Fault::CO, Reason::CO);
+    r.h.st.co_state = uint8_t(fk::CoState::ALARM);
+    r.h.st.state = HeaterState::STOPPING;
+    r.step(2 * SEC);
+    r.h.st.state = HeaterState::OFF;
+    r.h.st.mode = Mode::OFF;
+    r.step(3 * SEC);
+    CHECK_EQ(r.count(10, mark), 1);
+    CHECK_EQ(r.count(11, mark), 0);
+    CHECK_EQ(r.count(2, mark), 0);
+  }
+  // Home Assistant's "Alerts" names every bit, the glow plug type (12) included.
+  CHECK(std::string(fk::alert_name(10)) == "CO alarm");
+  CHECK(std::string(fk::alert_name(11)) == "CO sensor fault");
+  CHECK(fk::alert_name(12) != nullptr);
+  CHECK(fk::alert_name(13) == nullptr);
+}
+
 int main() {
   test_fuel_meter();
   test_tank_and_low_fuel();
@@ -1094,6 +1281,8 @@ int main() {
   test_glow_health();
   test_burnoff();
   test_co();
+  test_fan_stall_retry();
+  test_co_fault_alerts();
   test_event_log();
   test_automation_commands();
   return report("automation");

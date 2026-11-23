@@ -1,5 +1,8 @@
 #include "controller.h"
 
+#include <cctype>
+#include <cstdio>
+
 namespace esphome {
 namespace flamekeeper {
 
@@ -512,24 +515,153 @@ const char *param_group_name(ParamGroup g) {
   }
 }
 
+const char *heater_firmware_text(const Heater &h) {
+  const char *t = h.firmware_text();
+  return t[0] != '\0' ? t : "Unknown";
+}
+
+const char *firmware_update_status(const Status &s, const Heater &h) {
+  return (s.capabilities & cap::FIRMWARE_UPDATE) ? h.firmware_update_text() : "Not available";
+}
+
+// ---------------------------------------------------------------- faults and reasons
+//
+// THE table for fault and reason codes: a new code gets its row here, with its text and the alert
+// it raises. Reasons decide the alert when they are known; a fault with no reason (or one not in
+// the table) alerts by its fault code. Texts reach Home Assistant ("Error", "Fault reason") and the
+// alert texts; apps word the codes themselves (PROTOCOL.md).
+
+namespace {
+
+struct FaultRow {
+  Fault fault;
+  const char *name;
+  FaultAlert alert;
+};
+const FaultRow FAULTS[] = {
+    {Fault::NONE, "None", FaultAlert::NONE},
+    {Fault::VOLTAGE, "Supply voltage", FaultAlert::BURN},
+    {Fault::VOLTAGE_LOW, "Supply voltage low", FaultAlert::BURN},
+    {Fault::VOLTAGE_HIGH, "Supply voltage high", FaultAlert::BURN},
+    {Fault::GLOW_PLUG, "Glow plug", FaultAlert::BURN},
+    {Fault::PUMP, "Fuel pump", FaultAlert::BURN},
+    {Fault::OVERHEAT, "Overheat", FaultAlert::BURN},
+    {Fault::FAN, "Fan", FaultAlert::BURN},
+    {Fault::FLAME_OUT, "Flame-out or fuel shortage", FaultAlert::BURN},
+    {Fault::TEMP_SENSOR, "Temperature sensor", FaultAlert::BURN},
+    {Fault::START_FAILURE, "Start failure", FaultAlert::BURN},
+    {Fault::CO, "CO above limit", FaultAlert::CO_ALARM},
+    {Fault::INTAKE_SENSOR, "Intake air sensor", FaultAlert::BURN},
+    {Fault::COMMS, "Heater communication", FaultAlert::BURN},
+    {Fault::CO_SENSOR, "CO sensor", FaultAlert::CO_SENSOR},
+};
+
+struct ReasonRow {
+  Reason reason;
+  const char *text;  // lower case: it follows "heater fault: Fan (" and starts "Fault reason"
+  FaultAlert alert;
+  bool retried;  // the safety MCU tries again while the heater starts or runs fan only
+};
+const ReasonRow REASONS[] = {
+    {Reason::NONE, "", FaultAlert::NONE, false},
+    {Reason::ASKED, "stopped as asked", FaultAlert::NONE, false},
+    {Reason::DEADMAN, "the link from the board went silent during a burn", FaultAlert::BURN, false},
+    {Reason::NO_FLAME, "no flame after every ignition attempt", FaultAlert::BURN, false},
+    {Reason::FLAME_LOST, "the flame went out", FaultAlert::BURN, false},
+    {Reason::OVERHEAT_LIMIT, "the heat exchanger passed its temperature limit", FaultAlert::BURN, false},
+    {Reason::OVERHEAT_LATCH, "the overheat cut-out tripped", FaultAlert::BURN, false},
+    {Reason::FAN_STALL, "the fan stalled", FaultAlert::BURN, true},
+    {Reason::FAN_SPIN_UP, "the fan did not reach its speed", FaultAlert::BURN, true},
+    {Reason::SENSOR_OPEN, "the heat exchanger sensor reads open", FaultAlert::BURN, false},
+    {Reason::NO_TEMP_RISE, "the heat exchanger did not warm up", FaultAlert::BURN, false},
+    {Reason::SUPPLY, "the supply voltage is out of range", FaultAlert::BURN, false},
+    {Reason::COOLDOWN_LIMIT, "the heater did not cool down in time", FaultAlert::BURN, false},
+    {Reason::CO, "carbon monoxide alarm", FaultAlert::CO_ALARM, false},
+    {Reason::GLOW_STAGE, "the glow plug circuit failed", FaultAlert::BURN, false},
+    {Reason::FAN_STAGE, "the fan's drive failed: stuck on, or the fan turned by itself", FaultAlert::BURN, false},
+    {Reason::SELF_TEST, "the start-up self-test failed: the board needs checking", FaultAlert::BURN, false},
+    {Reason::PUMP_STAGE, "the fuel pump circuit failed", FaultAlert::BURN, false},
+    {Reason::BOARD_HOT, "the board stayed too hot, even at the lowest power", FaultAlert::BURN, false},
+    {Reason::PLUG_TYPE, "the glow plug may not be the type set", FaultAlert::BURN, false},
+    {Reason::CO_SENSOR, "the CO sensor reads open or failed its check", FaultAlert::CO_SENSOR, false},
+    // Codes the safety MCU is about to add; each gets a Reason value (heater.h) and a row here (a new
+    // fault code: a Fault value and a FAULTS row), and test_controller's loop its new last code:
+    //   PWR-5  the board's own supply out of its window    "the board's supply is out of range", BURN
+    //   GLW-1  the glow time check (its tick)               "the glow plug timing check failed", BURN
+    //   PWR-1  the supply's input budget (cap, or fault)    a cap: NONE; a fault: BURN
+};
+
+const FaultRow *fault_row(Fault f) {
+  for (const FaultRow &r : FAULTS)
+    if (r.fault == f)
+      return &r;
+  return nullptr;
+}
+
+const ReasonRow *reason_row(uint8_t reason) {
+  for (const ReasonRow &r : REASONS)
+    if (uint8_t(r.reason) == reason)
+      return &r;
+  return nullptr;
+}
+
+}  // namespace
+
 const char *fault_name(Fault f) {
-  switch (f) {
-    case Fault::NONE: return "None";
-    case Fault::VOLTAGE: return "Supply voltage";
-    case Fault::VOLTAGE_LOW: return "Supply voltage low";
-    case Fault::VOLTAGE_HIGH: return "Supply voltage high";
-    case Fault::GLOW_PLUG: return "Glow plug";
-    case Fault::PUMP: return "Fuel pump";
-    case Fault::OVERHEAT: return "Overheat";
-    case Fault::FAN: return "Fan";
-    case Fault::FLAME_OUT: return "Flame-out or fuel shortage";
-    case Fault::TEMP_SENSOR: return "Temperature sensor";
-    case Fault::START_FAILURE: return "Start failure";
-    case Fault::CO: return "CO above limit";
-    case Fault::INTAKE_SENSOR: return "Intake air sensor";
-    case Fault::COMMS: return "Heater communication";
-    case Fault::CO_SENSOR: return "CO sensor";
-    default: return "Other";
+  const FaultRow *r = fault_row(f);
+  return r != nullptr ? r->name : "Other";
+}
+
+const char *reason_text(uint8_t reason) {
+  const ReasonRow *r = reason_row(reason);
+  return r != nullptr ? r->text : nullptr;
+}
+
+bool reason_retried(uint8_t reason) {
+  const ReasonRow *r = reason_row(reason);
+  return r != nullptr && r->retried;
+}
+
+FaultAlert fault_alert(Fault fault, uint8_t reason) {
+  if (fault == Fault::NONE)
+    return FaultAlert::NONE;
+  const ReasonRow *r = reason_row(reason);
+  if (r != nullptr && r->reason != Reason::NONE)
+    return r->alert;
+  const FaultRow *f = fault_row(fault);
+  return f != nullptr ? f->alert : FaultAlert::BURN;
+}
+
+bool fault_retrying(const HeaterStatus &s) {
+  return s.answering && s.fault != Fault::NONE && reason_retried(s.panel_fault) &&
+         (s.state == HeaterState::STARTING || s.state == HeaterState::FAN_ONLY);
+}
+
+void fault_reason_text(const HeaterStatus &s, char *out, size_t size) {
+  if (size == 0)
+    return;
+  const char *t = s.answering ? reason_text(s.panel_fault) : "";
+  if (t == nullptr)
+    std::snprintf(out, size, "Reason %u", unsigned(s.panel_fault));
+  else if (t[0] == '\0')
+    std::snprintf(out, size, "None");
+  else
+    std::snprintf(out, size, "%c%s%s", std::toupper(static_cast<unsigned char>(t[0])), t + 1,
+                  fault_retrying(s) ? ": trying again" : "");
+}
+
+const char *co_state_name(const HeaterStatus &s) {
+  if (!s.answering)
+    return "Unknown";
+  switch (CoState(s.co_state)) {
+    case CoState::NOT_FITTED: return "Not fitted";
+    case CoState::WARMING_UP: return "Warming up";
+    case CoState::LEARNING: return "Learning clean air";
+    case CoState::OK: return "OK";
+    case CoState::ALARM: return "Alarm";
+    case CoState::SENSOR_FAULT: return "Sensor fault";
+    case CoState::TOO_COLD: return "Too cold";
+    default: return "Unknown";
   }
 }
 
