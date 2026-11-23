@@ -56,7 +56,7 @@ static void fill_status(safety *s, link_status *o) {
   o->supply = s->in.supply_cv;
   o->fan_rpm = s->in.fan_rpm;
   o->pump = b->out.pump_cHz;
-  o->glow_w = b->out.glow_w;
+  o->glow_w = b->out.glow_w < s->glow_limit_w ? b->out.glow_w : s->glow_limit_w; /* PWR-2 */
   o->prime_left_s = burn_prime_left_s(b, s->now);
   o->run_time_s = s->run_time_s;
 }
@@ -339,6 +339,7 @@ void safety_init(safety *s, uint32_t now, const burn_inputs *in, uint8_t reset_r
     pump_params pump;
     co_config co;
     monitor_params mon;
+    budget_params budget;
   } d;
   plug_params_default(&d.plug);
   plug_init(&s->plug, &d.plug, now);
@@ -352,6 +353,9 @@ void safety_init(safety *s, uint32_t now, const burn_inputs *in, uint8_t reset_r
   pump_init(&s->pump, &d.pump);
   monitor_params_default(&d.mon, SAFETY_CLOCK_HZ, SAFETY_CLOCK_WRAP);
   monitor_init(&s->mon, &d.mon, now);
+  budget_params_default(&d.budget);
+  budget_init(&s->budget, &d.budget, now);
+  s->glow_limit_w = 0xFFFFu;
   params_init(&s->params);
   burn_init(&s->burn, &s->params.live, now, in);
   co_default_config(&d.co);
@@ -408,6 +412,7 @@ void safety_step(safety *s, uint32_t now, const burn_inputs *in) {
     s->run_time_s += s->run_ms / 1000u;
     s->run_ms %= 1000u;
   }
+  s->burn.fan_budget_ma = budget_fan_allowed_ma(&s->budget); /* PWR-2: then the fan */
   if (link_deadman_expired(&s->deadman, now, burn_active(&s->burn)))
     burn_stop(&s->burn, BURN_WHY_DEADMAN, now); /* a full burn-off and cooldown, on its own */
   burn_step(&s->burn, now, &s->in);
@@ -418,6 +423,7 @@ const burn_outputs *safety_outputs(const safety *s) { return &s->burn.out; }
 safety_io safety_ms(safety *s, uint32_t now, const checks_obs *o, pump_meas *pm) {
   checks *c = &s->chk;
   s->latch_armed = o->latch_armed;
+  budget_pump_ms(&s->budget, pm->i_ma); /* PWR-1: the pump's share */
   if (pm->overcurrent)
     pump_cut(&s->pump); /* the watchdog has cut already; whatever runs, the fault latches now */
   /* The power-up test waits for VDDA to be up (PWR-5: a rail still rising after the reset). */
@@ -478,6 +484,7 @@ safety_io safety_ms(safety *s, uint32_t now, const checks_obs *o, pump_meas *pm)
 }
 
 uint16_t safety_fan_step(safety *s, uint32_t now, const fan_meas *m) {
+  budget_pass(&s->budget, now, m->isense_ma, s->in.supply_cv); /* PWR-1: the fan and logic shares */
 #ifdef SAFETY_BENCH
   if (s->burn.step == BURN_STEP_OFF && s->bench.fan_duty > 0)
     return fan_step_open(&s->fan, now, s->bench.fan_duty, m);
@@ -500,7 +507,14 @@ glow_cmd safety_glow_period(safety *s, uint32_t now, glow_meas *m) {
 #endif
   if (monitor_holding(&s->mon))
     power_w = 0; /* PWR-5: GLOW_EN low, no pulse */
+  /* PWR-2: the glow first, held to what the input budget leaves after the fan, pump and logic. */
+  s->glow_limit_w = budget_glow_limit_w(&s->budget, m->vin_cv);
+  if (power_w > s->glow_limit_w)
+    power_w = s->glow_limit_w;
+  uint16_t last_width = s->glow.last_width_us; /* the pulse that went out last period */
   glow_cmd c = glow_period(&s->glow, now, power_w, m);
+  if (last_width > 0)
+    budget_glow_pulse(&s->budget, m->pulse_ca, last_width); /* PWR-1: its share, as read in it */
 #ifdef SAFETY_BENCH
   if (bench_probe && c.width_us > 0)
     s->bench.glow_probe = 0; /* one pulse, then the plug is off again */

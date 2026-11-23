@@ -37,10 +37,12 @@ void monitor_vdda(monitor *m, uint32_t now, uint16_t mv) {
    * fault until the rail has been up, or the rise has taken too long. */
   if (!m->vdda_up && !high && mv >= p->vdda_min_mv + p->vdda_up_margin_mv)
     m->vdda_up = 1;
-  if (!m->vdda_up && m->fault == MONITOR_OK && since(now, m->reset_ms) >= p->vdda_rise_ms)
-    m->fault = MONITOR_VDDA_LOW;
+  /* A VDDA fault takes the place of a tick fault: it holds every output off. */
+  int vdda_latched = m->fault == MONITOR_VDDA_HIGH || m->fault == MONITOR_VDDA_LOW;
+  if (!m->vdda_up && !vdda_latched && since(now, m->reset_ms) >= p->vdda_rise_ms)
+    m->fault = MONITOR_VDDA_LOW, vdda_latched = 1;
   int bad = high || (low && m->vdda_up);
-  if (held_for(&m->vdda_bad, bad, now, p->vdda_bad_ms) && m->fault == MONITOR_OK)
+  if (held_for(&m->vdda_bad, bad, now, p->vdda_bad_ms) && !vdda_latched)
     m->fault = high ? MONITOR_VDDA_HIGH : MONITOR_VDDA_LOW;
 }
 
@@ -76,7 +78,8 @@ void monitor_clock(monitor *m, uint32_t now, uint32_t count) {
 int monitor_clear(monitor *m) {
   if (m->fault == MONITOR_VDDA_HIGH || m->fault == MONITOR_VDDA_LOW) {
     if (m->vdda_up && in_window(m, m->vdda_mv)) {
-      m->fault = MONITOR_OK;
+      /* A tick check that failed meanwhile (a VDDA fault holds the place) takes it now. */
+      m->fault = m->tick_bad ? MONITOR_TICK : MONITOR_OK;
       m->vdda_bad.on = 0;
     }
   } else if (m->fault == MONITOR_TICK && !m->tick_bad) {

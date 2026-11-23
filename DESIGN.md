@@ -128,6 +128,11 @@ off -> fan only -> off          off -> pre-check -> priming -> off
 - A hot board (its thermistor above 85 C) holds the fan back: the allowed fan current falls with
   the temperature, and the run is capped at the highest power level whose fan current fits. Still
   too hot at the lowest level, it stops.
+- The input current, glow + fan + pump + logic (each stage's average switch current, the logic's
+  7.5 W over the supply), stays at or below 11 A over 10 s (`stm32/core/budget.*`): the glow's
+  power is held to what the budget leaves after the others (less 0.2 A of headroom), and should
+  the fan, pump and logic alone leave the fan less than its recorded current, the run is capped as
+  for a hot board.
 
 Every timing and limit is a named parameter (`burn_params`). The defaults are provisional until
 they are tuned on a real heater.
@@ -300,7 +305,8 @@ erased. DETAIL carries the state and a rough ppm reading.
   record decoders), and `test_soak.cpp` runs the whole safety MCU for hours of simulated time per
   seed under random user actions, link loss and noise, MCU resets and injected faults, checking the
   safety rules after every call (no glow without airflow, the glow caps, fuel only with the
-  heartbeat and air, no start without a new start number, latched faults, the dead-man, ...).
+  heartbeat and air, no start without a new start number, latched faults, the dead-man, VDDA and
+  the tick check, the input budget, ...).
   `stm32/tests/stress.sh [fuzz|soak]` runs the long versions (`SOAK_SEEDS`, `SOAK_HOURS`,
   `FUZZ_ITERS`; libFuzzer when the compiler has it), and `test_soak --shrink SEED` cuts a failing
   seed down to a regression test.

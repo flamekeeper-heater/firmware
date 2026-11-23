@@ -230,6 +230,8 @@ typedef struct {
   uint32_t fuel_mp, air_mp; /* running: the pump's and the fan's power, milli-percent */
   uint32_t level_ma[10];   /* the fan current recorded at each power level 1..10 (from p) */
   held board_hot;          /* the board too hot even at the lowest power */
+  uint16_t fan_budget_ma;  /* PWR-2: the fan current the input budget leaves, as for a hot board
+                            * (0xFFFF: no limit; the caller sets it every pass) */
   burn_outputs out;
 } burn;
 
@@ -249,7 +251,8 @@ int burn_fault_reset(burn *b, const burn_inputs *in);
 void burn_step(burn *b, uint32_t now, const burn_inputs *in);
 
 uint8_t burn_state(const burn *b);
-/* The power cap the board's temperature allows now, % (100: no derate). */
+/* The power cap the board's temperature and the input budget (fan_budget_ma) allow now, % (100:
+ * no derate). */
 uint8_t burn_power_cap(const burn *b, int16_t board_c10);
 /* Seconds of priming left (0 when not priming). */
 uint16_t burn_prime_left_s(const burn *b, uint32_t now);

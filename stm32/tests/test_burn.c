@@ -515,6 +515,39 @@ static void test_board_derate(void) {
   CHECK_EQ(r2.b.out.fan_rpm, 1800 + (4500 - 1800) * 44 / 100);
 }
 
+/* PWR-2: when the input budget leaves the fan less than its recorded current, the run is capped at
+ * the highest level whose fan current fits, as for a hot board (the fuel follows the air); the
+ * tighter of the two caps holds. */
+static void test_budget_fan_cap(void) {
+  rig r;
+  rig_init(&r, 0, 10);
+  CHECK_EQ(burn_power_cap(&r.b, 400), 100); /* no limit by default */
+  r.b.fan_budget_ma = 2800;
+  CHECK_EQ(burn_power_cap(&r.b, 400), 100);
+  r.b.fan_budget_ma = 1400;
+  CHECK_EQ(burn_power_cap(&r.b, 400), 55); /* level 6 */
+  r.b.fan_budget_ma = 0;
+  CHECK_EQ(burn_power_cap(&r.b, 400), 0);  /* the lowest level */
+  r.b.fan_budget_ma = 1400;
+  CHECK_EQ(burn_power_cap(&r.b, 950), 44); /* the board's 1.33 A is tighter */
+  CHECK_EQ(burn_power_cap(&r.b, 880), 55); /* the budget's 1.4 A is */
+
+  r.b.fan_budget_ma = 0xFFFFu;
+  CHECK_EQ(start(&r, HEAT, 100), 0);
+  CHECK(run_until_step(&r, BURN_STEP_RUNNING, 5 * MIN));
+  run(&r, 20 * SEC);
+  CHECK_EQ(r.b.running_power, 100);
+  r.b.fan_budget_ma = 1400;
+  run(&r, TICK);
+  CHECK_EQ(r.b.running_power, 55); /* the fuel steps down at once */
+  run(&r, 20 * SEC);
+  CHECK_EQ(r.b.out.fan_rpm, 1800 + (4500 - 1800) * 55 / 100);
+  r.b.fan_budget_ma = 0xFFFFu;
+  run(&r, 30 * SEC);
+  CHECK_EQ(r.b.running_power, 100);
+  CHECK_EQ(r.air_below_fuel, 0);
+}
+
 static void test_board_too_hot(void) {
   rig r;
   rig_init(&r, 0, 10);
@@ -771,6 +804,7 @@ int main(void) {
   test_precheck();
   test_pump_stage_fault();
   test_board_derate();
+  test_budget_fan_cap();
   test_board_too_hot();
   test_plug_refused();
   test_fan_stall();

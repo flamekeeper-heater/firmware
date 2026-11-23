@@ -9,6 +9,7 @@
 
 #include "../../common/co/co_alarm.h"
 #include "../../common/link/link.h"
+#include "budget.h"
 #include "burn.h"
 #include "checks.h"
 #include "fan.h"
@@ -48,6 +49,8 @@ typedef struct {
   params params;
   plug plug;
   monitor mon;            /* the MCU's own supply and tick (PWR-5, GLW-1) */
+  budget budget;          /* the input-current budget (PWR-1, PWR-2) */
+  uint16_t glow_limit_w;  /* ... the glow's power limit at the last glow period */
   co_alarm co;            /* the CO alarm, present as the CO-fitted parameter says (CO-1) */
   uint32_t co_r0_saved;   /* the R0 flash holds (0: none) */
   uint32_t co_r0_saved_ms; /* when it was written (or the reset) */

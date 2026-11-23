@@ -404,6 +404,8 @@ static void info_line(console *c, uint16_t i) {
       put_u(c, c->b->vdda_mv);
       kv(c, "vrefint_cal", c->b->vrefint_cal);
       kv(c, "tick_permille", s->mon.tick_permille); /* GLW-1: the LSI's count per the tick's */
+      kv(c, "input_ma", budget_avg_ma(&s->budget)); /* PWR-1: the estimate over 10 s */
+      kv(c, "glow_limit_w", s->glow_limit_w);       /* PWR-2 */
       kv(c, "plug_record", s->plug.rec.verified_v);
       kv(c, "plug_setting", s->burn.p.plug_v);
       kv(c, "link_bad_frames", (int32_t) s->parser.bad);

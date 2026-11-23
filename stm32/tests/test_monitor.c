@@ -159,6 +159,19 @@ static void test_tick(void) {
   /* A fault clears once a check passes again (the first one after the change straddles it). */
   t = run_clock(&m, t, t + 2500, 1000, 0);
   CHECK(!m.tick_bad && monitor_clear(&m) == 1 && m.fault == MONITOR_OK);
+  /* A tick fault latched, then VDDA out of its window: the VDDA fault takes its place (it holds
+   * every output); a tick fault never takes a VDDA fault's. */
+  setup(&m, 0);
+  feed(&m, 0, 1, 3300);
+  t = run_clock(&m, 0, 2010, 500, 0);
+  CHECK(m.fault == MONITOR_TICK && !monitor_holding(&m));
+  feed(&m, t, 11, 3700);
+  CHECK(m.fault == MONITOR_VDDA_HIGH && monitor_holding(&m));
+  t = run_clock(&m, t, t + 2010, 500, 0);
+  CHECK(m.fault == MONITOR_VDDA_HIGH);
+  /* VDDA back and reset while the tick is still off: the tick fault, at once. */
+  feed(&m, t, 1, 3300);
+  CHECK(monitor_clear(&m) == 0 && m.fault == MONITOR_TICK);
   /* The loop stalled (a flash erase): 60 ms of the second clock with no tick in a second is 6 %. */
   setup(&m, 0);
   uint32_t real = 0;
