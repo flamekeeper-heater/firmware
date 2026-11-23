@@ -246,7 +246,10 @@ repository, and `keys/` holds its public half. `tools/release.sh` builds, signs 
 release manifest.
 
 **The safety MCU** is updated by the ESP32 with the image its own build carries (`mcu_update.*` on
-`stm32_boot.*`, Home Assistant's "Update heater firmware"):
+`stm32_boot.*`, Home Assistant's "Update heater firmware"). That image is `stm32/build/safety.bin`
+from the same checkout (`safety_link`'s `mcu_firmware:`; the release tools build it first), and the
+ESPHome build refuses one that is missing, older than its sources, has no vector table, or whose
+HELLO text is not the version in `stm32/core/safety.h`. An update:
 
 - `UPDATE_PREPARE` first: only with the heater off and cold, and the MCU then refuses starts until
   it resets. The ESP32 holds STM_BOOT high, pulses STM_NRST, and talks to the STM32's ROM

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Builds a board profile, signs it with the release key and installs it over the network with
-# ESPHome's own OTA: the everyday way to flash a board once it runs a build with signed updates
-# (every unsigned image is refused from then on).
+# Builds a board profile (and the safety MCU's firmware it carries), signs it with the release key
+# and installs it over the network with ESPHome's own OTA: the everyday way to flash a board once
+# it runs a build with signed updates (every unsigned image is refused from then on).
 #
 #   flash_signed.sh PROFILE.yaml [DEVICE]
 #
@@ -21,11 +21,15 @@ profile "$yaml" || die "unknown profile $(basename "$yaml")"
 [[ -f $KEYS/release_public.bin ]] || die "no public key in $KEYS (run tools/signing_key.sh create first)"
 
 esphome() { (cd "$dir" && uv run --quiet --with "esphome==$ESPHOME_VERSION" esphome "$@"); }
+if $safety_mcu; then
+  build_safety_mcu || die "the safety MCU firmware did not build"
+fi
 esphome -s update_public_key "$KEYS/release_public.bin" compile "$(basename "$yaml")"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 signed="$tmp/signed.bin"
 "$HERE/signing_key.sh" sign "$scheme" "$dir/.esphome/build/$name/build/firmware.ota.bin" "$signed"
+fits_app_slot "$signed" "$dir/.esphome/build/$name" || die "the signed image does not fit the board"
 args=(upload "$(basename "$yaml")" --file "$signed")
 [[ -n ${2:-} ]] && args+=(--device "$2")
 esphome -s update_public_key "$KEYS/release_public.bin" "${args[@]}"
