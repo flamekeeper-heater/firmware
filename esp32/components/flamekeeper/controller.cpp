@@ -554,6 +554,7 @@ const FaultRow FAULTS[] = {
     {Fault::INTAKE_SENSOR, "Intake air sensor", FaultAlert::BURN},
     {Fault::COMMS, "Heater communication", FaultAlert::BURN},
     {Fault::CO_SENSOR, "CO sensor", FaultAlert::CO_SENSOR},
+    {Fault::CONTROLLER, "Heater controller", FaultAlert::BURN},
 };
 
 struct ReasonRow {
@@ -584,11 +585,12 @@ const ReasonRow REASONS[] = {
     {Reason::BOARD_HOT, "the board stayed too hot, even at the lowest power", FaultAlert::BURN, false},
     {Reason::PLUG_TYPE, "the glow plug may not be the type set", FaultAlert::BURN, false},
     {Reason::CO_SENSOR, "the CO sensor reads open or failed its check", FaultAlert::CO_SENSOR, false},
-    // Codes the safety MCU is about to add; each gets a Reason value (heater.h) and a row here (a new
-    // fault code: a Fault value and a FAULTS row), and test_controller's loop its new last code:
-    //   PWR-5  the board's own supply out of its window    "the board's supply is out of range", BURN
-    //   GLW-1  the glow time check (its tick)               "the glow plug timing check failed", BURN
-    //   PWR-1  the supply's input budget (cap, or fault)    a cap: NONE; a fault: BURN
+    {Reason::VDDA_HIGH, "the controller's 3.3 V supply is too high", FaultAlert::BURN, false},
+    {Reason::VDDA_LOW, "the controller's 3.3 V supply is too low", FaultAlert::BURN, false},
+    {Reason::TICK, "the controller's clock check failed", FaultAlert::BURN, false},
+    // A new code from the safety MCU (stm32/core/burn.h) gets a Reason value (heater.h) and a row
+    // here (a new fault code: a Fault value and a FAULTS row), and test_controller's loop its new
+    // last code. The input budget (PWR-1, PWR-2) only caps the glow and the fan: no code.
 };
 
 const FaultRow *fault_row(Fault f) {

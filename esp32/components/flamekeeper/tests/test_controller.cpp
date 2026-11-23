@@ -511,7 +511,7 @@ static void test_fault_table() {
   using fk::Fault;
   using fk::FaultAlert;
   using fk::Reason;
-  for (unsigned r = 0; r <= uint8_t(Reason::CO_SENSOR); r++) {
+  for (unsigned r = 0; r <= uint8_t(Reason::TICK); r++) {
     const char *t = fk::reason_text(uint8_t(r));
     CHECK(t != nullptr);
     if (t != nullptr) {
@@ -519,7 +519,7 @@ static void test_fault_table() {
       CHECK(std::strlen(t) <= 70);  // fits "heater fault: <fault> (<reason> again: ...)"
     }
   }
-  CHECK(fk::reason_text(uint8_t(Reason::CO_SENSOR) + 1) == nullptr);  // a code not in the table yet
+  CHECK(fk::reason_text(uint8_t(Reason::TICK) + 1) == nullptr);  // a code not in the table yet
   CHECK(fk::reason_text(0xFF) == nullptr);
   for (unsigned r = 0; r < 256; r++)
     CHECK(fk::reason_retried(uint8_t(r)) == (r == uint8_t(Reason::FAN_STALL) || r == uint8_t(Reason::FAN_SPIN_UP)));
@@ -528,6 +528,8 @@ static void test_fault_table() {
   CHECK(fk::fault_alert(Fault::FAN, uint8_t(Reason::FAN_STALL)) == FaultAlert::BURN);
   CHECK(fk::fault_alert(Fault::CO, uint8_t(Reason::CO)) == FaultAlert::CO_ALARM);
   CHECK(fk::fault_alert(Fault::CO, 0) == FaultAlert::CO_ALARM);
+  CHECK(fk::fault_alert(Fault::CONTROLLER, uint8_t(Reason::TICK)) == FaultAlert::BURN);
+  CHECK(fk::fault_alert(Fault::CONTROLLER, 0) == FaultAlert::BURN);
   CHECK(fk::fault_alert(Fault::CO_SENSOR, uint8_t(Reason::CO_SENSOR)) == FaultAlert::CO_SENSOR);
   CHECK(fk::fault_alert(Fault::CO_SENSOR, 0) == FaultAlert::CO_SENSOR);
   CHECK(fk::fault_alert(Fault::CO_SENSOR, 0xEE) == FaultAlert::CO_SENSOR);  // an unknown reason: by fault

@@ -75,6 +75,7 @@ enum class Fault : uint8_t {
   INTAKE_SENSOR = 12,
   COMMS = 13,
   CO_SENSOR = 14,  // the CO sensor's reading is not plausible (open, unheated)
+  CONTROLLER = 15, // the safety MCU's own supply or clock failed (PWR-5, GLW-1)
   OTHER = 255,
 };
 
@@ -103,6 +104,9 @@ enum class Reason : uint8_t {
   BOARD_HOT = 18,       // the board stayed too hot even at the lowest power
   PLUG_TYPE = 19,       // the glow plug is not the type set, or its check is missing
   CO_SENSOR = 20,       // the CO sensor reads open, or failed its heater check
+  VDDA_HIGH = 21,       // the safety MCU's 3.3 V supply above 3.6 V
+  VDDA_LOW = 22,        // the safety MCU's 3.3 V supply below 3.0 V, or never up after a reset
+  TICK = 23,            // the safety loop's clock and the second clock disagree
 };
 
 // The alert a fault raises (automation.h maps it to the alert bit, push.h to the urgency).
