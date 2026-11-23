@@ -224,7 +224,7 @@ static void test_state_and_telemetry() {
   ble::encode_state(s, out);
   CHECK_EQ(out[12], uint8_t(Source::TIMER));
   s.ending_source = Source::NONE;
-  CHECK_EQ(ble::encode_telemetry(s, out), 41);
+  CHECK_EQ(ble::encode_telemetry(s, out), 45);
   CHECK_EQ(u16(out + 0), 0x8000);
   CHECK_EQ(u16(out + 2), 0x8000);
   for (int at : {4, 6, 8, 10, 12, 14, 16, 20, 24})
@@ -244,6 +244,21 @@ static void test_state_and_telemetry() {
   CHECK_EQ(u16(out + 39), 0x8000);
   s.room_probe_c = NAN;
   s.room_ha_c = NAN;
+  // The fuel trim: the altitude's (off: 0x80), the one in effect, the smoothed altitude.
+  ble::encode_telemetry(s, out);
+  CHECK_EQ(out[41], 0x80);
+  CHECK_EQ(out[42], 0);
+  CHECK_EQ(u16(out + 43), 0x8000);
+  s.altitude_trim_pct = -17;
+  s.fuel_trim_pct = -12;
+  s.altitude_smoothed_m = 1712.6f;
+  ble::encode_telemetry(s, out);
+  CHECK_EQ(int8_t(out[41]), -17);
+  CHECK_EQ(int8_t(out[42]), -12);
+  CHECK_EQ(int16_t(u16(out + 43)), 1713);
+  s.altitude_trim_pct = INT8_MIN;
+  s.fuel_trim_pct = 0;
+  s.altitude_smoothed_m = NAN;
 
   s.answering = true;
   s.failsafe_stopped = true;

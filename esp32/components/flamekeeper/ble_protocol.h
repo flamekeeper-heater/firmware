@@ -30,7 +30,7 @@ enum Board : uint8_t { BOARD_FLAMEKEEPER_REV_A2 = 2 };  // other codes: other bo
 
 static const size_t INFO_SIZE = 24;
 static const size_t STATE_SIZE = 33;
-static const size_t TELEMETRY_SIZE = 41;
+static const size_t TELEMETRY_SIZE = 45;
 // What a result or event record may grow to: one indication at the minimum ATT MTU of 135.
 static const size_t RESULT_MAX = 132;
 // The longest command with room to spare: WEB_PASSWORD_SET with two 64-byte passwords is request
@@ -84,6 +84,7 @@ static const uint8_t LOG_READ = 0x79;
 static const uint8_t GLOW_HEALTH = 0x7A;
 static const uint8_t GLOW_NEW_PLUG = 0x7B;
 static const uint8_t BURNOFF_START = 0x7C;
+static const uint8_t RUN_UNTIL = 0x7D;  // u32 UTC: the current run stops then (0 = no end)
 static const uint8_t SENSOR_SCAN = 0x80;
 static const uint8_t SENSOR_FOUND = 0x81;
 static const uint8_t SENSOR_USE = 0x82;

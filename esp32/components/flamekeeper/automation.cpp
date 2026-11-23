@@ -97,7 +97,7 @@ Automation::Automation(Controller &controller) : c_(controller) {
     s.burnoff_left_min = this->burnoff_minutes_left(this->c_.now());
     const bool timer = this->auto_run_ == Source::TIMER && this->timer_slot_ >= 0;
     s.timer_slot = timer ? uint8_t(this->timer_slot_) : 0xFF;
-    s.timer_end_utc = timer ? this->timer_end_utc_ : 0;
+    s.run_end_utc = this->run_end_utc_;
   });
 }
 
@@ -428,7 +428,7 @@ void Automation::step_runs_(uint32_t now, const Status &s) {
     }
     this->auto_run_ = Source::NONE;
     this->timer_slot_ = -1;
-    this->timer_end_utc_ = 0;
+    this->run_end_utc_ = 0;
   }
   this->prev_run_ = run;
 }
@@ -620,8 +620,7 @@ void Automation::step_timers_(uint32_t now, const Status &s, uint32_t utc) {
   this->set_alert_(alert::NO_CLOCK, any && utc == 0, "timers are set, but the board does not know the time: open the app");
   if (utc == 0)
     return;
-  if (this->auto_run_ == Source::TIMER && this->timer_end_utc_ != 0 && utc >= this->timer_end_utc_ &&
-      s.mode != Mode::OFF && !this->stop_asked_)
+  if (this->run_end_utc_ != 0 && utc >= this->run_end_utc_ && s.mode != Mode::OFF && !this->stop_asked_)
     this->stop_(Source::TIMER, "timer finished");
 
   for (size_t i = 0; i < TIMERS; i++) {
@@ -662,7 +661,7 @@ void Automation::step_timers_(uint32_t now, const Status &s, uint32_t utc) {
     if (this->start_(Source::TIMER, mode, HeatMode(t.heat_mode), t.power, t.target_x10 / 10.0f, &wait)) {
       this->fired_[i] = occ;
       this->timer_slot_ = int(i);
-      this->timer_end_utc_ = end;
+      this->run_end_utc_ = end;
       return;  // one run at a time
     }
     if (!wait)
@@ -956,6 +955,23 @@ void Automation::step_maintenance_(uint32_t now, const Status &s, float dt) {
     this->burnoff_done_ = true;
     this->stop_(Source::BOARD, "carbon burn-off finished");
   }
+}
+
+Outcome Automation::run_until(uint32_t end_utc, Source source) {
+  (void) source;
+  const Status &s = this->c_.status();
+  if (s.run_source == Source::NONE || s.mode == Mode::OFF)
+    return Outcome::refuse(Result::REFUSED, "the heater is not running");
+  if (end_utc != 0) {
+    const uint32_t utc = this->utc(this->c_.now());
+    if (utc == 0)
+      return Outcome::refuse(Result::REFUSED, "the board does not know the time: open the app");
+    if (end_utc <= utc || end_utc - utc > 24 * 3600)
+      return Outcome::refuse(Result::OUT_OF_RANGE, "the end must be within the next 24 hours");
+  }
+  this->run_end_utc_ = end_utc;
+  this->c_.refresh();
+  return Outcome::ok();
 }
 
 Outcome Automation::burnoff_start(uint8_t minutes, Source source) {

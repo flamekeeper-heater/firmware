@@ -197,7 +197,7 @@ size_t PushEngine::encode_payload(const Item &lead, uint16_t other_alerts, uint1
   put_fixed_u16(out + 25, s.co_ppm, 1.0f);
   put_fixed_i16(out + 27, s.room_c, 10.0f);
   put_fixed_i16(out + 29, s.target_c, 10.0f);
-  put_u32(out + 31, s.timer_end_utc);
+  put_u32(out + 31, s.run_end_utc);
   out[35] = uint8_t(tl);
   std::memcpy(out + 36, text, tl);
   return push::PAYLOAD_FIXED + tl;

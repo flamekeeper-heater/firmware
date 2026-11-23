@@ -77,6 +77,9 @@ struct Status : HeaterStatus {
   Source ending_source{Source::NONE};  // who started the run now stopping or cooling down (State byte 12)
   bool failsafe_stopped{false};     // the last stop came from the failsafe
   bool thermo_paused{false};        // a heat run the thermostat holds off: warm enough (State flag bit 6)
+  int8_t altitude_trim_pct{INT8_MIN};  // the altitude's fuel trim, % (INT8_MIN: off, or no altitude yet; Telemetry)
+  int8_t fuel_trim_pct{0};             // the fuel trim in effect: the set trim plus the altitude's, held to +-30 %
+  float altitude_smoothed_m{NAN};      // the smoothed altitude the trim follows
   uint32_t failsafe_left_s{UINT32_MAX};  // UINT32_MAX = not counting
   // Filled by the board's automation (automation.h)
   uint16_t alerts{0};
@@ -84,7 +87,7 @@ struct Status : HeaterStatus {
   uint8_t fuel_left{0xFF};   // %, 0xFF = no tank size
   uint8_t burnoff_left_min{0};  // carbon burn-off run, minutes left
   uint8_t timer_slot{0xFF};      // the timer whose run this is (0xFF none)
-  uint32_t timer_end_utc{0};     // ...and when it ends
+  uint32_t run_end_utc{0};       // when the current run stops by itself: its timer's end or RUN_UNTIL (0 none)
   bool board_updating{false};    // a board firmware update runs: every start is refused
   uint8_t relay_phones{0};       // phones signed in through the internet relay (State flag bit 5)
 };
@@ -227,6 +230,7 @@ class Controller : public HeaterListener {
   AltitudeTrim altitude_;
   int altitude_trim_{0};
   int trims_sent_fuel_{0x7FFF}, trims_sent_fan_{0x7FFF};
+  int fuel_trim_() const;  // the set fuel trim plus the altitude's, held to +-30 %
   bool bluetooth_room_{false};
   bool ha_room_{false};
   bool board_updating_{false};

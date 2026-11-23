@@ -57,10 +57,11 @@ five failed pairings, power-up no longer opens it. Up to 8 phones can be bonded.
   refuses the command with `13`.
 - **State** (`1002`): what is asked of the heater and what the controller is doing: mode, heat mode,
   power, target and room temperature, heater state, controller status, fault, who started the run,
-  alerts, automatic starts, fuel level, the run's identity, and the number of the newest entry in the
-  heater's fault log. Notified on change, at most 4 times a second.
+  alerts, automatic starts, fuel level, the run's end and identity, and the number of the newest entry
+  in the heater's fault log. Notified on change, at most 4 times a second.
 - **Telemetry** (`1003`): measurements: heat exchanger and intake temperatures, supply voltage, fan,
-  pump and glow plug, CO, altitude and pressure, running times, and each room temperature source.
+  pump and glow plug, CO, altitude and pressure, running times, each room temperature source, and the
+  fuel trim in effect with the altitude's part of it.
   Notified every second while the heater runs, every 10 s otherwise.
 
 Heater states: 0 unknown (no reply), 1 off, 2 starting, 3 heating, 4 fan only, 5 stopping,
@@ -80,7 +81,7 @@ as text. Send the next command after the previous result.
 | `40`, `41` | PIN_SET, WEB_PASSWORD_SET |
 | `50`-`52` | Wi-Fi: WIFI_STATUS, WIFI_SET, WIFI_OFF |
 | `60`-`63` | Home Assistant: HA_STATUS, HA_SET, HA_KEY, HA_KEY_NEW |
-| `70`-`7C` | Clock, meters, tank, alerts, timers, event log, glow plug health, carbon burn-off |
+| `70`-`7D` | Clock, meters, tank, alerts, timers, event log, glow plug health, carbon burn-off, run end |
 | `80`-`83` | Bluetooth thermometers: SENSOR_SCAN, SENSOR_FOUND, SENSOR_USE, SENSOR_STATUS |
 | `90`-`93` | Board firmware update: UPDATE_BEGIN, UPDATE_STATUS, UPDATE_FINISH, UPDATE_ABORT |
 | `A0`-`A4` | Internet relay and push notifications |

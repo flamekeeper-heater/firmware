@@ -53,6 +53,7 @@ class AltitudeTrim {
   }
 
   bool valid() const { return valid_; }
+  bool active() const { return s_.enabled && valid_; }  // trimming: on, with an altitude
   float smoothed_m() const { return valid_ ? smoothed_ : NAN; }
 
   // Unquantised trim in percent (negative = less fuel).

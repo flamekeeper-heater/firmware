@@ -489,7 +489,7 @@ static void test_timers() {
   CHECK(r.c.status().run_source == Source::TIMER);
   CHECK(r.c.status().target_c == 21.5f);
   CHECK_EQ(r.c.status().timer_slot, 0);  // the chip "Timer until 07:30"
-  CHECK_EQ(r.c.status().timer_end_utc, MON_0600_CET + 90 * 60);
+  CHECK_EQ(r.c.status().run_end_utc, MON_0600_CET + 90 * 60);
   r.heater_follows();
   r.step(58 * MIN);
   CHECK(r.c.status().mode == Mode::HEAT);
@@ -687,6 +687,53 @@ static void test_fading_flame() {
     CHECK(!(r.c.status().alerts & al::AUTO_OFF));
     CHECK(r.count(2) == 1);
   }
+}
+
+static void test_run_until() {
+  Rig r;
+  // Not running: refused.
+  CHECK(r.a.run_until(MON_0600_CET + 600, Source::PHONE).result == Result::REFUSED);
+  CHECK(r.c.set_mode(Mode::HEAT, Source::HOME_ASSISTANT).accepted());
+  r.heater_follows();
+  r.step(2 * SEC);
+  // No clock: an end is refused; clearing is fine.
+  CHECK(r.a.run_until(MON_0600_CET + 600, Source::PHONE).result == Result::REFUSED);
+  CHECK(r.a.run_until(0, Source::PHONE).accepted());
+  CHECK(r.a.set_clock(MON_0600_CET, BERLIN, fk::ClockSource::APP, r.now).accepted());
+  r.step(2 * SEC);
+  const uint32_t utc = r.a.utc(r.c.now());
+  CHECK(r.a.run_until(utc, Source::PHONE).result == Result::OUT_OF_RANGE);              // passed
+  CHECK(r.a.run_until(utc + 24 * 3600 + 1, Source::PHONE).result == Result::OUT_OF_RANGE);  // too far
+  CHECK_EQ(r.c.status().run_end_utc, 0);
+  // A run started from Home Assistant stops 10 minutes from now; State shows the end, no timer slot.
+  CHECK(r.a.run_until(utc + 600, Source::PHONE).accepted());
+  r.step(1 * SEC);
+  CHECK_EQ(r.c.status().run_end_utc, utc + 600);
+  CHECK_EQ(r.c.status().timer_slot, 0xFF);
+  CHECK(r.c.status().run_source == Source::HOME_ASSISTANT);
+  r.step(9 * MIN);
+  CHECK(r.c.status().mode == Mode::HEAT);
+  r.step(1 * MIN + 2 * SEC);
+  CHECK(r.c.status().mode == Mode::OFF);
+  r.heater_follows();
+  r.step(5 * SEC);
+  CHECK(!(r.c.status().alerts & al::BURN));  // asked: not "stopped by itself"
+  CHECK_EQ(r.c.status().run_end_utc, 0);    // cleared with the run
+  // The next run has no end; an end set and then cleared does not stop it.
+  CHECK(r.c.set_mode(Mode::FAN, Source::PHONE).accepted());
+  r.heater_follows();
+  r.step(2 * SEC);
+  CHECK_EQ(r.c.status().run_end_utc, 0);
+  const uint32_t utc2 = r.a.utc(r.now);
+  CHECK(r.a.run_until(utc2 + 120, Source::PHONE).accepted());
+  CHECK(r.a.run_until(0, Source::PHONE).accepted());
+  r.step(5 * MIN);
+  CHECK(r.c.status().mode == Mode::FAN);
+  // A later end replaces an earlier one; it also moves a run's end the person shortens.
+  CHECK(r.a.run_until(r.a.utc(r.now) + 300, Source::PHONE).accepted());
+  CHECK(r.a.run_until(r.a.utc(r.now) + 60, Source::PHONE).accepted());
+  r.step(62 * SEC);
+  CHECK(r.c.status().mode == Mode::OFF);
 }
 
 static void test_bluetooth_room() {
@@ -1186,7 +1233,7 @@ static void test_automation_commands() {
   r.h.st.co_state = uint8_t(fk::CoState::LEARNING);
   r.step(2 * SEC);
   uint8_t tel[ble::TELEMETRY_SIZE];
-  CHECK_EQ(ble::encode_telemetry(r.c.status(), tel), 41);
+  CHECK_EQ(ble::encode_telemetry(r.c.status(), tel), 45);
   CHECK_EQ(tel[30], 2);
 }
 
@@ -1371,6 +1418,7 @@ int main() {
   test_timers();
   test_burn_alerts();
   test_fading_flame();
+  test_run_until();
   test_bluetooth_room();
   test_protocol();
   test_low_battery();

@@ -287,7 +287,7 @@ static void test_payload_layout() {
   s.co_ppm = NAN;
   s.room_c = 4.8f;
   s.target_c = NAN;
-  s.timer_end_utc = 0;
+  s.run_end_utc = 0;
   fk::PushEngine::Item lead{0, 0, 0, 77, 1790000000u};
   uint8_t out[100];
   size_t n = fk::PushEngine::encode_payload(lead, 0x0008, 0x0010, 0x01, s, "fuel low: 12 % left", out, sizeof(out));

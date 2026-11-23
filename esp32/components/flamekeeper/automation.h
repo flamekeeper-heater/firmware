@@ -137,6 +137,10 @@ class Automation {
 
   // --- maintenance, battery, CO ---
   Outcome burnoff_start(uint8_t minutes, Source source);
+  // The current run, whoever started it, stops at end_utc (0: no end). Only while it runs, with the
+  // clock known, at most 24 hours ahead; the run's end clears it, and so does a board restart (which
+  // stops the heater).
+  Outcome run_until(uint32_t end_utc, Source source);
   uint8_t burnoff_minutes_left(uint32_t now) const;
   const Maintenance &maintenance() const { return this->maint_; }
   Outcome glow_new_plug();
@@ -224,7 +228,7 @@ class Automation {
   Source prev_run_{Source::NONE};
   Source auto_run_{Source::NONE};
   int timer_slot_{-1};
-  uint32_t timer_end_utc_{0};
+  uint32_t run_end_utc_{0};  // the current run stops then: its timer's end, or RUN_UNTIL (0 none)
   bool stop_asked_{false};    // someone (or this) asked for off during the current run
   bool person_off_{false};    // a person did
   bool own_stop_{false};      // this is stopping it (low fuel), not a person

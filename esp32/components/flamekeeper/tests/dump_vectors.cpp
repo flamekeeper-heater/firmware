@@ -256,7 +256,7 @@ static void records() {
         .add("controllerStatus", num(int(s.control))).add("fault", "0").add("primeSecondsLeft", "0")
         .add("failsafeSecondsLeft", "null").add("runSource", num(int(fk::Source::PHONE)))
         .add("stagedChanges", "0").add("alerts", "0").add("automatic", "0").add("fuelLeft", "null")
-        .add("burnoffMinutesLeft", "0").add("timerSlot", "null").add("timerEndUtc", "null")
+        .add("burnoffMinutesLeft", "0").add("timerSlot", "null").add("runEndUtc", "null")
         .add("runId", num(s.run_id)).add("heaterLogSeq", "7");
     CHECK(s.run_id == 1);
     record("state, heating from a phone", "state", out, n, e);
@@ -291,7 +291,7 @@ static void records() {
     s.fuel_left = odd ? 37 : 0xFF;
     s.burnoff_left_min = odd ? 17 : 0;
     s.timer_slot = odd ? 3 : 0xFF;
-    s.timer_end_utc = odd ? 1768199400u : 0;
+    s.run_end_utc = odd ? 1768199400u : 0;
     s.run_id = odd ? 0xA5C30007u : 0x00010001u;
     s.thermo_paused = odd;  // bit 6
     s.fault_log_seq = odd ? 201 : 0;
@@ -310,7 +310,7 @@ static void records() {
         .add("stagedChanges", num(s.params_pending)).add("alerts", num(s.alerts))
         .add("automatic", num(s.automatic)).add("fuelLeft", odd ? "37" : "null")
         .add("burnoffMinutesLeft", odd ? "17" : "0").add("timerSlot", odd ? "3" : "null")
-        .add("timerEndUtc", odd ? "1768199400" : "null")
+        .add("runEndUtc", odd ? "1768199400" : "null")
         .add("runId", num(s.run_id)).add("heaterLogSeq", odd ? "201" : "0");
     char name[48];
     std::snprintf(name, sizeof(name), "state, flags 0x%02x", m);
@@ -340,16 +340,20 @@ static void records() {
     s.room_probe_c = 19.4f;
     s.room_ha_c = 21.06f;
     s.room_bt_c = -4.5f;
+    s.altitude_trim_pct = -17;
+    s.fuel_trim_pct = -12;
+    s.altitude_smoothed_m = 1705.6f;
     uint8_t out[ble::TELEMETRY_SIZE];
     size_t n = ble::encode_telemetry(s, out);
-    CHECK_EQ(n, 41);
+    CHECK_EQ(n, 45);
     Obj e;
     e.add("exchangerC", "187.3").add("supplyV", "12.34").add("fanRpm", "3412").add("pumpHz", "2.8")
         .add("glowW", "0").add("powerPercent", "55").add("panelFault", "8").add("intakeC", "-12")
         .add("coPpm", "3").add("altitudeM", "1712").add("runningSeconds", "123456").add("fanV", "7.86")
         .add("glowV", "9.5").add("glowA", "8.04").add("pressureHpa", "1013.3").add("coState", "3")
         .add("runSeconds", "8040").add("roomProbeC", "19.4").add("roomHomeAssistantC", "21.1")
-        .add("roomBluetoothC", "-4.5");
+        .add("roomBluetoothC", "-4.5").add("altitudeTrimPercent", "-17").add("fuelTrimPercent", "-12")
+        .add("altitudeSmoothedM", "1706");
     record("telemetry, every value", "telemetry", out, n, e);
 
     fk::Status u;  // everything unknown
@@ -360,7 +364,8 @@ static void records() {
         .add("coPpm", "null").add("altitudeM", "null").add("runningSeconds", "null").add("fanV", "null")
         .add("glowV", "null").add("glowA", "null").add("pressureHpa", "null").add("coState", "0")
         .add("runSeconds", "0").add("roomProbeC", "null").add("roomHomeAssistantC", "null")
-        .add("roomBluetoothC", "null");
+        .add("roomBluetoothC", "null").add("altitudeTrimPercent", "null").add("fuelTrimPercent", "0")
+        .add("altitudeSmoothedM", "null");
     record("telemetry, everything unknown", "telemetry", out, n, z);
   }
 
@@ -715,6 +720,65 @@ static void records() {
     record("result, HEATER_LOG_CLEAR", "result", hc.data(), hc.size(), result_expect(hc));
   }
 
+  // --- RUN_UNTIL: the current run, whoever started it, stops at a UTC time (0 = no end) ---
+  {
+    Rig r;
+    auto cmd_vec = [&](const char *name, const Bytes &cmd) {
+      Obj e;
+      e.add("requestId", num(cmd[0])).add("opcode", num(cmd[1])).add("args", q(hex(cmd.data() + 2, cmd.size() - 2)));
+      record(name, "command", cmd.data(), cmd.size(), e);
+    };
+    auto res = [&](const char *name, const Bytes &cmd) {
+      Bytes out = r.run(cmd);
+      record(name, "result", out.data(), out.size(), result_expect(out));
+      return out;
+    };
+    const uint32_t now_utc = 1768194000u;  // the board's clock
+    const uint32_t end = now_utc + 45 * 60;  // "stop in 45 min"
+    const Bytes until = {0x40, ble::op::RUN_UNTIL, uint8_t(end), uint8_t(end >> 8), uint8_t(end >> 16),
+                         uint8_t(end >> 24)};
+    const Bytes clear = {0x41, ble::op::RUN_UNTIL, 0, 0, 0, 0};
+    cmd_vec("command RUN_UNTIL, 45 minutes from 1768194000", until);
+    cmd_vec("command RUN_UNTIL 0, no end", clear);
+    CHECK(res("result RUN_UNTIL refused 2f, the heater is not running", until)[2] == 0x2F);
+    CHECK(r.a.set_clock(now_utc, "UTC0", fk::ClockSource::APP, 0).accepted());
+    CHECK(r.run({0x42, ble::op::SET_MODE, 1})[2] == 0);
+    r.h.st.state = fk::HeaterState::HEATING;
+    r.h.st.answering = true;
+    r.c.tick(1000, false);
+    r.a.tick(1000);
+    CHECK(res("result RUN_UNTIL ok", until)[2] == 0);
+    CHECK_EQ(r.c.status().run_end_utc, end);
+    {
+      // State: a run a phone started, with no timer, that stops in 45 minutes.
+      fk::Status st = r.c.status();
+      st.target_c = 21.5f;
+      st.room_c = NAN;
+      st.room_source = fk::RoomSource::PROBE;
+      st.run_id = 0x00010003u;
+      uint8_t rec[ble::STATE_SIZE];
+      size_t n = ble::encode_state(st, rec);
+      Obj e;
+      e.add("heaterAnswering", "true").add("failsafeStopped", "false").add("roomFallback", "false")
+          .add("updateRunning", "false").add("thermostatPaused", "false").add("requestedMode", num(int(st.mode)))
+          .add("heatMode", num(int(st.heat_mode))).add("power", num(st.power)).add("targetC", "21.5")
+          .add("roomC", "null").add("roomSource", num(int(fk::RoomSource::PROBE)))
+          .add("heaterState", num(int(fk::HeaterState::HEATING))).add("controllerStatus", num(int(st.control)))
+          .add("fault", "0").add("primeSecondsLeft", "0").add("failsafeSecondsLeft", "null")
+          .add("runSource", num(int(fk::Source::PHONE))).add("stagedChanges", "0").add("alerts", num(st.alerts))
+          .add("automatic", num(st.automatic)).add("fuelLeft", "null").add("burnoffMinutesLeft", "0")
+          .add("timerSlot", "null").add("runEndUtc", num(end)).add("runId", num(st.run_id))
+          .add("heaterLogSeq", "0");
+      CHECK(st.failsafe_left_s == UINT32_MAX && st.fuel_left == 0xFF && st.timer_slot == 0xFF && rec[0] == 0x01);
+      record("state, a phone's run that stops in 45 minutes (RUN_UNTIL)", "state", rec, n, e);
+    }
+    const Bytes past = {0x43, ble::op::RUN_UNTIL, uint8_t(now_utc), uint8_t(now_utc >> 8), uint8_t(now_utc >> 16),
+                        uint8_t(now_utc >> 24)};
+    CHECK(res("result RUN_UNTIL out of range 12, the end has passed", past)[2] == 0x12);
+    CHECK(res("result RUN_UNTIL 0 ok", clear)[2] == 0);
+    CHECK_EQ(r.c.status().run_end_utc, 0);
+  }
+
   // --- Event 06: the heater's answer to FAULT_RESET (the texts LinkClient sends) ---
   {
     struct V {
@@ -863,7 +927,7 @@ static std::string relay_vectors() {
   s.co_ppm = NAN;
   s.room_c = 4.8f;
   s.target_c = 21.0f;
-  s.timer_end_utc = 0;
+  s.run_end_utc = 0;
   fk::PushEngine::Item lead{0, 0, 0, 1234, 1795000000u};
   uint8_t payload[100];
   size_t pn = fk::PushEngine::encode_payload(lead, 0x0020, 0, 0, s, "fuel low: 12 % left", payload, sizeof(payload));
@@ -919,7 +983,7 @@ static std::string relay_vectors() {
   pv[1].s.supply_v = 12.62f;
   pv[1].s.room_c = 9.4f;
   pv[1].s.target_c = 19.5f;
-  pv[1].s.timer_end_utc = 1795010800u;
+  pv[1].s.run_end_utc = 1795010800u;
   pv[1].text = nullptr;
   // Every value unknown: no clock (record time 0), no tank size, no supply, CO, room or target
   // reading, no timer, no text; leading alert bit 9.

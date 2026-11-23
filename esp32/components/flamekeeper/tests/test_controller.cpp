@@ -446,11 +446,17 @@ static void test_tuning_params() {
   CHECK(c.param_set(fk::T_FUEL_TRIM, -5, Source::PHONE).accepted());
   CHECK_EQ(saved, 1);
   CHECK_EQ(h.fuel_trim, -5);
+  c.tick(4000, true);
+  CHECK_EQ(c.status().fuel_trim_pct, -5);                 // Telemetry: the trim in effect
+  CHECK_EQ(int(c.status().altitude_trim_pct), INT8_MIN);  // altitude trim off
   CHECK(c.param_set(fk::A_ENABLED, 1, Source::PHONE).accepted());
   CHECK(c.param_set(fk::A_OFFSET, 0, Source::PHONE).accepted());
   c.set_altitude(1000.0f);  // 10 % less fuel per 1000 m by default
   c.tick(5000, true);
   CHECK_EQ(h.fuel_trim, -15);
+  CHECK_EQ(c.status().altitude_trim_pct, -10);
+  CHECK_EQ(c.status().fuel_trim_pct, -15);
+  CHECK(c.status().altitude_smoothed_m == 1000.0f);
   // The offset corrects the board's reading: shown, sent to the heater and trimmed on.
   CHECK(c.param_set(fk::A_OFFSET, -500, Source::PHONE).accepted());
   c.set_altitude(1000.0f);

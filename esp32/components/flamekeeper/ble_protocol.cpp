@@ -263,6 +263,10 @@ size_t automation_command(uint8_t req, uint8_t opcode, const uint8_t *arg, size_
       if (n != 1)
         return bad();
       return outcome(req, opcode, a.burnoff_start(arg[0], source), out, cap);
+    case op::RUN_UNTIL:
+      if (n != 4)
+        return bad();
+      return outcome(req, opcode, a.run_until(get_u32(arg), source), out, cap);
     case op::SENSOR_STATUS: {
       if (n != 0)
         return bad();
@@ -343,7 +347,7 @@ size_t encode_state(const Status &s, uint8_t *out) {
   out[21] = s.fuel_left;
   out[22] = s.burnoff_left_min;
   out[23] = s.timer_slot;
-  put_u32(out + 24, s.timer_end_utc);
+  put_u32(out + 24, s.run_end_utc);  // any run's end: its timer's, or RUN_UNTIL's
   put_u32(out + 28, s.run_id);
   out[32] = s.fault_log_seq;  // the heater's fault log: its newest entry (0 none); read it when this changes
   return STATE_SIZE;
@@ -375,6 +379,9 @@ size_t encode_telemetry(const Status &s, uint8_t *out) {
   put_fixed_i16(out + 35, s.room_probe_c, 10.0f);  // every room source's reading, the one in use or not
   put_fixed_i16(out + 37, s.room_ha_c, 10.0f);
   put_fixed_i16(out + 39, s.room_bt_c, 10.0f);
+  out[41] = uint8_t(s.altitude_trim_pct);  // 0x80: altitude trim off, or no altitude yet
+  out[42] = uint8_t(s.fuel_trim_pct);      // the fuel trim in effect (set + altitude), % signed
+  put_fixed_i16(out + 43, s.altitude_smoothed_m, 1.0f);
   return TELEMETRY_SIZE;
 }
 
@@ -835,7 +842,8 @@ size_t handle_command(const uint8_t *in, size_t len, Controller &c, Link &link, 
     case op::LOG_READ:
     case op::GLOW_HEALTH:
     case op::GLOW_NEW_PLUG:
-    case op::BURNOFF_START: {
+    case op::BURNOFF_START:
+    case op::RUN_UNTIL: {
       Automation *a = c.automation();
       if (a == nullptr)
         return result(req, opcode, Result::NOT_SUPPORTED, "not on this board", out, cap);

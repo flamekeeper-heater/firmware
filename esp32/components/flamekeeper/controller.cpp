@@ -304,9 +304,13 @@ void Controller::apply_tuning_() {
   this->send_trims_();
 }
 
-void Controller::send_trims_() {
+int Controller::fuel_trim_() const {
   int fuel = this->tuning_.fuel_trim() + this->altitude_trim_;
-  fuel = fuel < -30 ? -30 : (fuel > 30 ? 30 : fuel);
+  return fuel < -30 ? -30 : (fuel > 30 ? 30 : fuel);
+}
+
+void Controller::send_trims_() {
+  int fuel = this->fuel_trim_();
   int fan = this->tuning_.fan_trim();
   if (fuel == this->trims_sent_fuel_ && fan == this->trims_sent_fan_)
     return;
@@ -445,6 +449,9 @@ void Controller::refresh_() {
     s.altitude_m = this->altitude_m_;
   if (std::isnan(s.pressure_hpa))
     s.pressure_hpa = this->pressure_hpa_;
+  s.altitude_trim_pct = this->altitude_.active() ? int8_t(this->altitude_trim_) : INT8_MIN;
+  s.fuel_trim_pct = int8_t(this->fuel_trim_());
+  s.altitude_smoothed_m = this->altitude_.smoothed_m();
   s.run_source = this->run_source_;
   const bool shown = this->run_shown_;
   s.run_id = shown ? (uint32_t(this->boot_id_) << 16) | this->run_number_ : 0;
