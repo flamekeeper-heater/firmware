@@ -77,6 +77,7 @@ struct Status : HeaterStatus {
   Source ending_source{Source::NONE};  // who started the run now stopping or cooling down (State byte 12)
   bool failsafe_stopped{false};     // the last stop came from the failsafe
   bool thermo_paused{false};        // a heat run the thermostat holds off: warm enough (State flag bit 6)
+  uint8_t starter_slot{0xFF};       // the key slot of the phone that started this run (0xFF none; the live card)
   int8_t altitude_trim_pct{INT8_MIN};  // the altitude's fuel trim, % (INT8_MIN: off, or no altitude yet; Telemetry)
   int8_t fuel_trim_pct{0};             // the fuel trim in effect: the set trim plus the altitude's, held to +-30 %
   float altitude_smoothed_m{NAN};      // the smoothed altitude the trim follows
@@ -107,6 +108,9 @@ class Controller : public HeaterListener {
 
   // --- requests (every source) ---
   Outcome set_mode(Mode mode, Source source);
+  // The phone key slot behind the next set_mode (the command handler sets it around the call, -1
+  // after): kept as the run's starter when that call starts a run.
+  void set_start_slot(int slot) { this->start_slot_ = slot; }
   Outcome set_heat_mode(HeatMode mode, Source source);
   Outcome set_power(int percent, Source source);  // 0..100 %
   Outcome set_target(float celsius, Source source);
@@ -216,6 +220,8 @@ class Controller : public HeaterListener {
   Source run_shown_source_{Source::NONE};
   uint32_t run_stop_ms_{0};  // when the stop was asked (0: still running); the run time stops there
   Source run_source_{Source::NONE};
+  int start_slot_{-1};  // the phone key slot asking for the next start (set_start_slot)
+  int run_slot_{-1};    // ...and the one that started this run
   bool failsafe_stopped_{false};
   uint32_t ha_lost_ms_{0};  // 0 = not counting
 

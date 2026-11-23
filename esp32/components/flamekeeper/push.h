@@ -39,6 +39,14 @@ static const size_t TEXT_MAX = 48;
 static const size_t NONCE_SIZE = 12;
 static const size_t TAG_SIZE = 16;
 
+// The live card (LIVE, PROTOCOL.md).
+static const size_t LIVE_RECORD_SIZE = 33;
+static const uint8_t LIVE_START = 0, LIVE_UPDATE = 1, LIVE_END = 2;
+static const uint8_t LIVE_IMPORTANT = 0x01, LIVE_FAULT_END = 0x02;  // LIVE flags
+static const uint16_t LIVE_STALE_S = 360;
+static const uint16_t LIVE_DISMISS_S = 300, LIVE_DISMISS_FAULT_S = 900;
+static const uint16_t LIVE_FAULT_ALERTS = (1u << 1) | (1u << 2) | (1u << 7) | (1u << 10);
+
 // The urgency class of an alert bit (3 alarm, 2 urgent, 1 notice, 0 quiet). Events are 0.
 uint8_t alert_class(uint8_t bit);
 }  // namespace push
@@ -50,7 +58,10 @@ class PushEngine : public PushControl {
   static const uint32_t HOLD_BIT4_MS = 6u * 60u * 60u * 1000u;
   static const uint32_t CO_REPEAT_MS = 5u * 60u * 1000u;
   static const uint8_t CO_REPEATS = 2;  // after the first: 3 in all
-  static const uint32_t WANT_WAIT_MS = 5000;  // after sign-in, wait this long for WANT before sending held pushes
+  static const uint32_t WANT_WAIT_MS = 5000;
+  static const uint32_t LIVE_GAP_MS = 20000;        // at most one LIVE per 20 s (an end never waits)
+  static const uint32_t LIVE_HEARTBEAT_MS = 120000;  // an update at least this often while a card runs
+  static const int LIVE_ROOM_C10 = 5;                // a room change this big is a change  // after sign-in, wait this long for WANT before sending held pushes
 
   // Kept over restarts: the preferences, bound to the key they were set for.
   struct Saved {
@@ -63,8 +74,9 @@ class PushEngine : public PushControl {
       uint8_t used;
       uint8_t reserved[2];
     } slots[relay::SLOTS];
+    uint32_t live_floor;  // LIVE sequence numbers below this may have been used: a restart starts here
   };
-  static const uint32_t SAVED_CHECK = 0x50534831UL;  // "PSH1"
+  static const uint32_t SAVED_CHECK = 0x50534832UL;  // "PSH2"
 
   PushEngine(Controller &c, Automation &a, Access &access, RelayClient &relay, relay::Random random);
 
@@ -83,12 +95,28 @@ class PushEngine : public PushControl {
   // PushControl
   bool prefs_get(int slot, PushPrefs &out) const override;
   Outcome prefs_set(int slot, const PushPrefs &p) override;
-  Outcome local_alerts(int slot, bool on) override;
+  Outcome local_alerts(int slot, uint8_t bits) override;
   // A Bluetooth phone's link dropped: it no longer shows alerts itself.
   void bluetooth_gone(int slot);
 
   // How many PUSH messages went out (tests).
   uint32_t sent() const { return this->sent_; }
+  // How many LIVE messages went out (tests).
+  uint32_t live_sent() const { return this->live_sent_; }
+
+  // The live card's content (PROTOCOL.md "Live card"), version 1.
+  struct LiveContent {
+    uint8_t state{0}, kind{0}, source{0}, fault{0};
+    uint16_t alerts{0};
+    int16_t room_c10{INT16_MIN}, target_c10{INT16_MIN};
+    uint8_t power{0xFF};
+    uint32_t run_end_utc{0}, burnoff_end_utc{0}, started_utc{0};
+    uint8_t fuel_left{0xFF};
+  };
+  static size_t encode_live_record(uint32_t seq, uint32_t utc, const LiveContent &c, uint8_t out[push::LIVE_RECORD_SIZE]);
+  // 00 07 || event || flags || stale s || dismissal s || starter slot || n (0: blobs are appended).
+  static size_t encode_live_header(uint8_t event, uint8_t flags, uint16_t stale_s, uint16_t dismissal_s,
+                                   uint8_t starter, uint8_t out[10]);
 
   // One payload (PROTOCOL.md); exposed for the golden vectors.
   struct Item {
@@ -116,6 +144,12 @@ class PushEngine : public PushControl {
   bool wants_(int slot, const std::vector<Pending> &items) const;
   PushPrefs prefs_(int slot) const;
   void save_();
+  // The live card: what it shows now, whether to send, and the sending.
+  void live_loop_(uint32_t now, bool ready);
+  LiveContent live_content_(uint32_t now, const Status &s);
+  bool live_wants_(int slot, uint8_t source) const;
+  bool live_send_(uint8_t event, uint8_t flags, uint16_t dismissal_s, const LiveContent &c, uint32_t now);
+  uint32_t live_next_seq_();
 
   Controller &c_;
   Automation &a_;
@@ -141,6 +175,25 @@ class PushEngine : public PushControl {
   bool relay_was_up_{false};
   uint32_t relay_up_ms_{0};
   uint32_t sent_{0};
+
+  // live card
+  bool watching_[relay::SLOTS]{};  // LOCAL_ALERTS bit 1: the phone shows the card itself
+  uint32_t live_seq_{0};
+  bool live_seq_loaded_{false};
+  uint32_t live_run_{0};         // the run the card follows (State's run id), 0 none
+  uint8_t live_starter_{0xFF};
+  bool live_started_{false};     // its start went out
+  bool live_end_owed_{false};    // it ended while the relay was down
+  LiveContent live_last_{};      // what was last sent
+  LiveContent live_end_{};       // the final content, while the end is owed
+  uint16_t live_end_dismiss_{0};
+  uint8_t live_end_flags_{0};
+  uint32_t live_sent_ms_{0};
+  bool live_dirty_{false};       // changed since the last send
+  bool live_important_{false};   // ...and the change is worth priority
+  bool live_was_ready_{false};
+  uint32_t live_sent_{0};
+  uint32_t live_burnoff_end_{0};
 };
 
 }  // namespace flamekeeper

@@ -35,6 +35,7 @@ struct Rig {
   bool link_ok = true;
   uint32_t now = 1000;
   int saves = 0;
+  fk::PushEngine::Saved last_saved{};
   const fk::WifiKey *k0 = nullptr, *k1 = nullptr;
 
   Rig() {
@@ -45,20 +46,73 @@ struct Rig {
                     sent.emplace_back(d, d + n);
                     return true;
                   }});
-    push.on_save([this](const fk::PushEngine::Saved &) { saves++; });
+    push.on_save([this](const fk::PushEngine::Saved &s) {
+      saves++;
+      last_saved = s;
+    });
     const uint8_t p0[6] = {1, 1, 1, 1, 1, 1}, p1[6] = {2, 2, 2, 2, 2, 2};
     k0 = access.issue_app_key(p0);
     k1 = access.issue_app_key(p1);
     relay.set(true, nullptr, 0);
     step(0);
   }
-  void relay_up(uint8_t want) {
+  void relay_up(uint8_t want, uint8_t live = 0, uint8_t startable = 0) {
     relay.connected(now);
     std::vector<uint8_t> ch = {0, 1};
     ch.resize(34, 9);
     relay.message(ch.data(), ch.size(), now);
-    const uint8_t w[4] = {0, 8, want, 0};
-    relay.message(w, 4, now);
+    const uint8_t w[5] = {0, 8, want, live, startable};
+    relay.message(w, 5, now);
+  }
+  // The LIVE messages sent since index `from`.
+  std::vector<std::vector<uint8_t>> lives(size_t from = 0) const {
+    std::vector<std::vector<uint8_t>> out;
+    for (size_t i = from; i < sent.size(); i++)
+      if (sent[i].size() >= 10 && sent[i][0] == 0 && sent[i][1] == rl::op::LIVE)
+        out.push_back(sent[i]);
+    return out;
+  }
+  // The slots a LIVE carries a blob for, in order.
+  static std::vector<int> live_slots(const std::vector<uint8_t> &m) {
+    std::vector<int> out;
+    size_t at = 10;
+    for (uint8_t i = 0; i < m[9]; i++) {
+      out.push_back(m[at]);
+      at += 2 + m[at + 1];
+    }
+    return out;
+  }
+  // Opens slot `slot`'s live record (AD: board id || 0x10 | event).
+  std::vector<uint8_t> open_live(const std::vector<uint8_t> &m, int slot, const fk::WifiKey *k) const {
+    size_t at = 10;
+    for (uint8_t i = 0; i < m[9]; i++) {
+      uint8_t s = m[at], len = m[at + 1];
+      const uint8_t *blob = m.data() + at + 2;
+      if (s == slot) {
+        uint8_t key[16];
+        rl::push_key(k->secret, 32, key);
+        uint8_t ad[17];
+        std::memcpy(ad, relay.identity().id(), 16);
+        ad[16] = uint8_t(0x10 | m[2]);
+        std::vector<uint8_t> pt(len - 12 - 16);
+        if (!fk::crypto::gcm_open(key, blob, ad, 17, blob + 12, len - 12, pt.data()))
+          return {};
+        return pt;
+      }
+      at += 2 + len;
+    }
+    return {};
+  }
+  // A start from the phone in key slot `slot` (as the command handler does it), the heater following.
+  void phone_start(int slot, Mode mode = Mode::HEAT) {
+    c.set_start_slot(slot);
+    CHECK(c.set_mode(mode, Source::PHONE).accepted());
+    c.set_start_slot(-1);
+    h.st.state = mode == Mode::FAN ? HeaterState::FAN_ONLY : HeaterState::HEATING;
+  }
+  void heater_off() {
+    CHECK(c.set_mode(Mode::OFF, Source::PHONE).accepted());
+    h.st.state = HeaterState::OFF;
   }
   void step(uint32_t ms) {
     uint32_t end = now + ms;
@@ -332,6 +386,176 @@ static void test_fan_retry_not_pushed() {
   }
 }
 
+// The live card: a run's start, its updates (changes at most every 20 s, else every 120 s) and its
+// end, to the phones whose preferences take the run, each sealed for that phone.
+static void test_live_card() {
+  Rig r;
+  r.relay_up(0x03, 0x00, 0x03);  // both phones can be sent a card's start
+  r.step(6 * SEC);
+  // A run from Home Assistant: others' runs are off by default, so no card.
+  size_t mark = r.sent.size();
+  CHECK(r.c.set_mode(Mode::HEAT, Source::HOME_ASSISTANT).accepted());
+  r.h.st.state = HeaterState::HEATING;
+  r.step(30 * SEC);
+  CHECK(r.lives(mark).empty());
+  r.heater_off();
+  r.step(30 * SEC);
+  CHECK(r.lives(mark).empty());
+
+  // A run the phone in slot 0 starts: its card, for it only (slot 1 takes no others' runs).
+  mark = r.sent.size();
+  r.phone_start(0);
+  r.step(SEC);
+  auto ls = r.lives(mark);
+  CHECK_EQ(ls.size(), 1);
+  if (ls.size() != 1)
+    return;
+  CHECK(ls[0][2] == fk::push::LIVE_START && ls[0][3] == fk::push::LIVE_IMPORTANT);
+  CHECK(u16(ls[0].data() + 4) == 360 && u16(ls[0].data() + 6) == 0 && ls[0][8] == 0);
+  CHECK(Rig::live_slots(ls[0]) == std::vector<int>({0}));
+  auto rec = r.open_live(ls[0], 0, r.k0);
+  CHECK_EQ(rec.size(), 33);
+  if (rec.size() == 33) {
+    CHECK(rec[0] == 1 && rec[9] == uint8_t(HeaterState::HEATING) && rec[11] == uint8_t(Source::PHONE));
+    CHECK(rec[10] == 1);  // heat by power (the controller's default)
+  }
+  CHECK(r.open_live(ls[0], 1, r.k1).empty());
+  const uint32_t seq0 = rec.size() == 33 ? u32(rec.data() + 1) : 0;
+
+  // A change within 20 s waits for the window, then goes as one update.
+  r.step(5 * SEC);
+  mark = r.sent.size();
+  CHECK(r.c.set_power(70, Source::PHONE).accepted());
+  r.step(10 * SEC);
+  CHECK(r.lives(mark).empty());
+  r.step(6 * SEC);
+  ls = r.lives(mark);
+  CHECK_EQ(ls.size(), 1);
+  if (ls.size() == 1) {
+    CHECK(ls[0][2] == fk::push::LIVE_UPDATE && ls[0][3] == 0);  // power: not important
+    rec = r.open_live(ls[0], 0, r.k0);
+    CHECK(rec.size() == 33 && rec[19] == 70 && u32(rec.data() + 1) > seq0);
+  }
+  // Nothing changes: a heartbeat every 120 s.
+  mark = r.sent.size();
+  r.step(110 * SEC);  // the update went out 2 s before the mark
+  CHECK(r.lives(mark).empty());
+  r.step(10 * SEC);
+  CHECK_EQ(r.lives(mark).size(), 1);
+  // The phone watches its card itself (LOCAL_ALERTS bit 1): no LIVE for it.
+  CHECK(r.push.local_alerts(0, 0x02).accepted());
+  mark = r.sent.size();
+  r.step(125 * SEC);
+  CHECK(r.lives(mark).empty());
+  r.push.bluetooth_gone(0);
+  // The end: at off, 300 s dismissal.
+  r.step(125 * SEC);
+  mark = r.sent.size();
+  r.heater_off();
+  r.step(SEC);
+  ls = r.lives(mark);
+  CHECK_EQ(ls.size(), 1);
+  if (ls.size() == 1) {
+    CHECK(ls[0][2] == fk::push::LIVE_END && ls[0][3] == fk::push::LIVE_IMPORTANT && u16(ls[0].data() + 6) == 300);
+    rec = r.open_live(ls[0], 0, r.k0);
+    CHECK(rec.size() == 33 && rec[9] == uint8_t(HeaterState::OFF) && rec[11] == uint8_t(Source::PHONE));
+  }
+  mark = r.sent.size();
+  r.step(200 * SEC);
+  CHECK(r.lives(mark).empty());  // no card: nothing more
+}
+
+static void test_live_card_rules() {
+  Rig r;
+  r.relay_up(0x03, 0x01, 0x02);
+  r.step(6 * SEC);
+  // A timer's run: the board's runs are on by default, so both phones.
+  size_t mark = r.sent.size();
+  CHECK(r.c.set_mode(Mode::HEAT, Source::TIMER).accepted());
+  r.h.st.state = HeaterState::STARTING;
+  r.step(SEC);
+  auto ls = r.lives(mark);
+  CHECK(ls.size() == 1 && Rig::live_slots(ls[0]) == std::vector<int>({0, 1}) && ls[0][8] == 0xFF);
+  // Starting to heating: a state change is important, but waits for the 20 s window.
+  r.step(3 * SEC);
+  mark = r.sent.size();
+  r.h.st.state = HeaterState::HEATING;
+  r.step(10 * SEC);
+  CHECK(r.lives(mark).empty());
+  r.step(10 * SEC);
+  ls = r.lives(mark);
+  CHECK(ls.size() == 1 && ls[0][3] == fk::push::LIVE_IMPORTANT);
+  // The phone in slot 1 keeps its card but drops the board's runs (flags 0x03): slot 0 only.
+  fk::PushPrefs p;
+  p.flags = fk::push::FLAG_ON | fk::push::FLAG_LIVE;
+  CHECK(r.push.prefs_set(1, p).accepted());
+  r.step(125 * SEC);
+  mark = r.sent.size();
+  r.step(125 * SEC);
+  ls = r.lives(mark);
+  CHECK(ls.size() == 1 && Rig::live_slots(ls[0]) == std::vector<int>({0}));
+  // A fault stop: the end carries flags bit 1 and 900 s.
+  r.step(25 * SEC);
+  mark = r.sent.size();
+  r.h.st.fault = fk::Fault::FLAME_OUT;
+  r.h.st.state = HeaterState::OFF;
+  r.h.st.mode = Mode::OFF;
+  r.step(2 * SEC);
+  ls = r.lives(mark);
+  bool end = false;
+  for (auto &m : ls)
+    if (m[2] == fk::push::LIVE_END) {
+      end = true;
+      CHECK(m[3] == (fk::push::LIVE_IMPORTANT | fk::push::LIVE_FAULT_END) && u16(m.data() + 6) == 900);
+    }
+  CHECK(end);
+  // Priming never gets a card.
+  r.h.st.fault = fk::Fault::NONE;
+  r.step(30 * SEC);
+  mark = r.sent.size();
+  r.h.st.state = HeaterState::PRIMING;
+  r.step(30 * SEC);
+  CHECK(r.lives(mark).empty());
+}
+
+static void test_live_card_relay_down() {
+  Rig r;
+  r.relay_up(0x01, 0x01, 0x01);
+  r.step(6 * SEC);
+  r.phone_start(0);
+  r.step(SEC);
+  CHECK_EQ(r.lives().size(), 1);
+  // The relay goes away: nothing queued; back, an important update at once.
+  r.link_ok = false;
+  r.relay.closed(0, r.now);
+  r.step(300 * SEC);
+  r.link_ok = true;
+  size_t mark = r.sent.size();
+  r.relay_up(0x01, 0x01, 0x01);
+  r.step(SEC);
+  auto ls = r.lives(mark);
+  CHECK(ls.size() == 1 && ls[0][2] == fk::push::LIVE_UPDATE && ls[0][3] == fk::push::LIVE_IMPORTANT);
+  // Down again, and the run ends meanwhile: the end goes when the relay is back.
+  r.link_ok = false;
+  r.relay.closed(0, r.now);
+  r.step(30 * SEC);
+  r.heater_off();
+  r.step(30 * SEC);
+  r.link_ok = true;
+  mark = r.sent.size();
+  r.relay_up(0x01, 0x01, 0x01);
+  r.step(SEC);
+  ls = r.lives(mark);
+  CHECK(ls.size() == 1 && ls[0][2] == fk::push::LIVE_END);
+  // The sequence only grows over a restart: a new engine starts above the saved floor.
+  auto rec = ls.empty() ? std::vector<uint8_t>() : r.open_live(ls[0], 0, r.k0);
+  const uint32_t last = rec.size() == 33 ? u32(rec.data() + 1) : 0;
+  CHECK(last > 0 && r.last_saved.live_floor > last);
+  fk::PushEngine again{r.c, r.a, r.access, r.relay, RNG};
+  again.load(r.last_saved);
+  CHECK(r.last_saved.check == fk::PushEngine::SAVED_CHECK);
+}
+
 int main() {
   test_payload_layout();
   test_alert_reaches_each_phone();
@@ -341,5 +565,8 @@ int main() {
   test_held_while_relay_down();
   test_events();
   test_fan_retry_not_pushed();
+  test_live_card();
+  test_live_card_rules();
+  test_live_card_relay_down();
   return report("push");
 }

@@ -203,10 +203,11 @@ bool parse_control(const uint8_t *in, size_t len, Control &out) {
       out.code = uint16_t(in[3] | (in[4] << 8));
       return true;
     case op::WANT:
-      if (len != 4)
+      if (len != 5)
         return false;
       out.push_mask = in[2];
       out.live_mask = in[3];
+      out.startable_mask = in[4];
       return true;
     default:
       return false;

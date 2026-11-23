@@ -107,7 +107,8 @@ struct Control {
   uint8_t slot{0};                    // OPEN
   uint16_t code{0};                   // CLOSE
   uint8_t push_mask{0};               // WANT
-  uint8_t live_mask{0};               // WANT
+  uint8_t live_mask{0};               // WANT: slots with a live card
+  uint8_t startable_mask{0};          // WANT: slots that can be sent a card's start
 };
 // False for anything malformed (including a channel or slot out of range).
 bool parse_control(const uint8_t *in, size_t len, Control &out);

@@ -448,7 +448,12 @@ size_t handle_command(const uint8_t *in, size_t len, Controller &c, Link &link, 
         break;
       if (arg[0] > uint8_t(Mode::FAN))  // priming has its own command (it needs the confirmation)
         return result(req, opcode, Result::OUT_OF_RANGE, "mode is 0 off, 1 heat, 2 fan only", out, cap);
-      return outcome(req, opcode, c.set_mode(Mode(arg[0]), PHONE), out, cap);
+    {
+      c.set_start_slot(link.phone_slot());  // the live card's starter, if this starts a run
+      const Outcome o = c.set_mode(Mode(arg[0]), PHONE);
+      c.set_start_slot(-1);
+      return outcome(req, opcode, o, out, cap);
+    }
     case op::SET_HEAT_MODE:
       if (!need(1))
         break;
@@ -765,12 +770,12 @@ size_t handle_command(const uint8_t *in, size_t len, Controller &c, Link &link, 
       if (opcode == op::LOCAL_ALERTS) {
         if (!need(1))
           break;
-        if (arg[0] > 1)
-          return result(req, opcode, Result::OUT_OF_RANGE, "0 off, 1 on", out, cap);
+        if (arg[0] > 3)
+          return result(req, opcode, Result::OUT_OF_RANGE, "bit 0 alerts, bit 1 live card: 0-3", out, cap);
         if (link.transport() != Transport::BLUETOOTH)
           return result(req, opcode, Result::BLUETOOTH_ONLY, "alerts shown by the phone itself: over Bluetooth only",
                         out, cap);
-        return outcome(req, opcode, pc->local_alerts(slot, arg[0] == 1), out, cap);
+        return outcome(req, opcode, pc->local_alerts(slot, arg[0]), out, cap);
       }
       if (!need(0))
         break;
@@ -847,7 +852,10 @@ size_t handle_command(const uint8_t *in, size_t len, Controller &c, Link &link, 
       Automation *a = c.automation();
       if (a == nullptr)
         return result(req, opcode, Result::NOT_SUPPORTED, "not on this board", out, cap);
-      return automation_command(req, opcode, arg, n, *a, c, PHONE, out, cap);
+      c.set_start_slot(opcode == op::BURNOFF_START ? link.phone_slot() : -1);  // a burn-off run's starter
+      const size_t k = automation_command(req, opcode, arg, n, *a, c, PHONE, out, cap);
+      c.set_start_slot(-1);
+      return k;
     }
 
     default:

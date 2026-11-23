@@ -138,6 +138,7 @@ Outcome Controller::set_mode_(Mode mode, Source source) {
   // again, whatever changes on the way (power, target, heat <-> fan, thermostat cycles).
   if (outcome.accepted() && was == Mode::OFF && this->user_mode_(after) != Mode::OFF) {
     this->run_source_ = source;
+    this->run_slot_ = this->start_slot_;
     if (++this->run_number_ == 0)
       this->run_number_ = 1;  // never 0: State's run id is 0 only while off
     this->run_start_ms_ = this->now_;
@@ -458,6 +459,7 @@ void Controller::refresh_() {
   const uint32_t until = this->run_stop_ms_ != 0 ? this->run_stop_ms_ : this->now_;
   s.run_s = shown ? uint32_t(until - this->run_start_ms_) / 1000 : 0;
   s.ending_source = shown && this->run_source_ == Source::NONE ? this->run_shown_source_ : Source::NONE;
+  s.starter_slot = shown && this->run_slot_ >= 0 ? uint8_t(this->run_slot_) : 0xFF;
   s.board_updating = this->board_updating_;
   s.failsafe_stopped = this->failsafe_stopped_;
   s.thermo_paused = this->thermo_stopped_ && this->run_source_ != Source::NONE;

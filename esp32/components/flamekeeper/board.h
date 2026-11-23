@@ -155,7 +155,7 @@ namespace push {
 static const uint16_t DEFAULT_ALERTS = 0x1FEF;  // every alert but bit 4 (thermometer not heard)
 static const uint16_t DEFAULT_EVENTS = 0;
 static const uint8_t FLAG_ON = 0x01;           // notifications on (off: nothing but the CO alarm)
-static const uint8_t FLAG_LIVE = 0x02;         // the live card on (kept; the board sends no LIVE yet)
+static const uint8_t FLAG_LIVE = 0x02;         // the live card on
 static const uint8_t FLAG_LIVE_BOARD = 0x04;   // ...for the board's own runs (timer, frost, burn-off)
 static const uint8_t FLAG_LIVE_OTHERS = 0x08;  // ...for others' runs (other phones, Home Assistant, the panel)
 static const uint8_t FLAGS_KNOWN = 0x0F;
@@ -173,7 +173,8 @@ class PushControl {
   virtual ~PushControl() = default;
   virtual bool prefs_get(int slot, PushPrefs &out) const = 0;
   virtual Outcome prefs_set(int slot, const PushPrefs &p) = 0;
-  virtual Outcome local_alerts(int slot, bool on) = 0;
+  // bit 0: this phone shows alerts itself; bit 1: it watches the live card itself (no LIVE for it).
+  virtual Outcome local_alerts(int slot, uint8_t bits) = 0;
 };
 
 

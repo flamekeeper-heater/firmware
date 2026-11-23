@@ -174,7 +174,10 @@ Each phone derives its relay token and push key from its own Wi-Fi key, so nothi
 Bluetooth.
 
 **Push notifications** are chosen, filtered and encrypted per phone by the board; the relay only
-hands them to the phone's push service.
+hands them to the phone's push service. The same goes for the **live card** (a run's state, room,
+target and end, kept current on the phone's lock screen while the app is closed): the board seals a
+small record for each phone that wants the run's card, at most every 20 s, and the relay passes it
+on.
 
 ## Board firmware updates
 

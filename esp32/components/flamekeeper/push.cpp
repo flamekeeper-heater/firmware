@@ -8,6 +8,7 @@
 #include "event_log.h"
 #include "relay_client.h"
 #include "bytes.h"
+#include <cstdlib>
 
 namespace esphome {
 namespace flamekeeper {
@@ -87,16 +88,17 @@ Outcome PushEngine::prefs_set(int slot, const PushPrefs &p) {
   return Outcome::ok();
 }
 
-Outcome PushEngine::local_alerts(int slot, bool on) {
+Outcome PushEngine::local_alerts(int slot, uint8_t bits) {
   if (slot < 0 || slot >= int(relay::SLOTS) || this->access_.app_key(size_t(slot)) == nullptr)
     return Outcome::refuse(Result::KEY_UNKNOWN, "this phone has no Wi-Fi key yet: ask for one first");
-  this->local_[slot] = on;
+  this->local_[slot] = (bits & 0x01) != 0;
+  this->watching_[slot] = (bits & 0x02) != 0;
   return Outcome::ok();
 }
 
 void PushEngine::bluetooth_gone(int slot) {
   if (slot >= 0 && slot < int(relay::SLOTS))
-    this->local_[slot] = false;
+    this->local_[slot] = this->watching_[slot] = false;
 }
 
 // ---------------------------------------------------------------- what to push
@@ -295,6 +297,8 @@ void PushEngine::loop(uint32_t now) {
   this->relay_was_up_ = up;
   const bool ready = up && (this->relay_.push_mask() != 0 || uint32_t(now - this->relay_up_ms_) >= WANT_WAIT_MS);
 
+  this->live_loop_(now, ready);
+
   // A coalescing window has closed: send, or hold the alerts until the relay is back.
   if (!this->pending_.empty() && uint32_t(now - this->window_start_ms_) >= COALESCE_MS) {
     std::vector<Pending> items;
@@ -344,6 +348,221 @@ void PushEngine::loop(uint32_t now) {
         this->send_(again, uint8_t(this->co_repeats_ << 1), now);
       }
     }
+  }
+}
+
+// ---------------------------------------------------------------- the live card
+
+size_t PushEngine::encode_live_record(uint32_t seq, uint32_t utc, const LiveContent &c,
+                                      uint8_t out[push::LIVE_RECORD_SIZE]) {
+  out[0] = 1;  // version
+  put_u32(out + 1, seq);
+  put_u32(out + 5, utc);
+  out[9] = c.state;
+  out[10] = c.kind;
+  out[11] = c.source;
+  out[12] = c.fault;
+  put_u16(out + 13, c.alerts);
+  put_u16(out + 15, uint16_t(c.room_c10));
+  put_u16(out + 17, uint16_t(c.target_c10));
+  out[19] = c.power;
+  put_u32(out + 20, c.run_end_utc);
+  put_u32(out + 24, c.burnoff_end_utc);
+  put_u32(out + 28, c.started_utc);
+  out[32] = c.fuel_left;
+  return push::LIVE_RECORD_SIZE;
+}
+
+size_t PushEngine::encode_live_header(uint8_t event, uint8_t flags, uint16_t stale_s, uint16_t dismissal_s,
+                                      uint8_t starter, uint8_t out[10]) {
+  out[0] = 0;
+  out[1] = relay::op::LIVE;
+  out[2] = event;
+  out[3] = flags;
+  put_u16(out + 4, stale_s);
+  put_u16(out + 6, dismissal_s);
+  out[8] = starter;
+  out[9] = 0;  // n
+  return 10;
+}
+
+namespace {
+int16_t c10(float v) {
+  if (!std::isfinite(v))
+    return INT16_MIN;
+  const long x = std::lround(v * 10.0f);
+  return int16_t(x < -32767 ? -32767 : (x > 32767 ? 32767 : x));
+}
+bool card_state(HeaterState s) {
+  return s == HeaterState::STARTING || s == HeaterState::HEATING || s == HeaterState::FAN_ONLY;
+}
+}  // namespace
+
+PushEngine::LiveContent PushEngine::live_content_(uint32_t now, const Status &s) {
+  LiveContent c;
+  const uint32_t utc = this->a_.utc(now);
+  c.state = uint8_t(s.state);
+  if (s.burnoff_left_min > 0)
+    c.kind = 3;
+  else if (s.mode == Mode::FAN)
+    c.kind = 2;
+  else if (s.mode == Mode::HEAT)
+    c.kind = s.heat_mode == HeatMode::TEMPERATURE ? 0 : 1;
+  else
+    c.kind = this->live_last_.kind;  // stopping: what it was
+  c.source = uint8_t(s.run_source != Source::NONE ? s.run_source : s.ending_source);
+  if (c.source == 0)
+    c.source = this->live_last_.source;  // off: who started it
+  c.fault = uint8_t(s.fault);
+  c.alerts = s.alerts;
+  c.room_c10 = c10(s.room_c);
+  c.target_c10 = c10(s.target_c);
+  c.power = s.power;
+  c.run_end_utc = s.run_end_utc;
+  // Burn-off end and run start: fixed once known (recomputing them would move by a second).
+  if (s.burnoff_left_min == 0)
+    this->live_burnoff_end_ = 0;
+  else if (this->live_burnoff_end_ == 0 && utc != 0)
+    this->live_burnoff_end_ = utc + uint32_t(s.burnoff_left_min) * 60;
+  c.burnoff_end_utc = this->live_burnoff_end_;
+  c.started_utc = this->live_last_.started_utc != 0 ? this->live_last_.started_utc
+                                                    : (utc != 0 && utc > s.run_s ? utc - s.run_s : 0);
+  c.fuel_left = s.fuel_left;
+  return c;
+}
+
+bool PushEngine::live_wants_(int slot, uint8_t source) const {
+  const PushPrefs p = this->prefs_(slot);
+  if (!(p.flags & push::FLAG_LIVE) || this->watching_[slot])
+    return false;
+  if (slot == int(this->live_starter_))
+    return true;  // the phone that started the run
+  const Source src = Source(source);
+  return (p.flags & (is_automatic(src) ? push::FLAG_LIVE_BOARD : push::FLAG_LIVE_OTHERS)) != 0;
+}
+
+uint32_t PushEngine::live_next_seq_() {
+  if (!this->live_seq_loaded_) {
+    this->live_seq_loaded_ = true;
+    this->live_seq_ = this->saved_.live_floor > 0 ? this->saved_.live_floor : 1;
+  }
+  if (this->live_seq_ >= this->saved_.live_floor) {
+    this->saved_.live_floor = this->live_seq_ + 256;  // saved once per 256 frames
+    this->save_();
+  }
+  return this->live_seq_++;
+}
+
+bool PushEngine::live_send_(uint8_t event, uint8_t flags, uint16_t dismissal_s, const LiveContent &c, uint32_t now) {
+  const uint8_t masks = uint8_t(this->relay_.live_mask() | this->relay_.startable_mask());
+  uint8_t record[push::LIVE_RECORD_SIZE];
+  std::vector<uint8_t> m(10);
+  encode_live_header(event, flags, push::LIVE_STALE_S, dismissal_s, this->live_starter_, m.data());
+  uint8_t n = 0;
+  bool sealed_any = false;
+  uint32_t seq = 0;
+  for (int slot = 0; slot < int(relay::SLOTS); slot++) {
+    const WifiKey *k = this->access_.app_key(size_t(slot));
+    if (k == nullptr || !(masks & (1u << slot)) || !this->live_wants_(slot, c.source))
+      continue;
+    if (!sealed_any) {
+      seq = this->live_next_seq_();
+      encode_live_record(seq, this->a_.utc(now), c, record);
+      sealed_any = true;
+    }
+    uint8_t key[relay::PUSH_KEY_SIZE];
+    uint8_t nonce[push::NONCE_SIZE];
+    uint8_t blob[push::NONCE_SIZE + push::LIVE_RECORD_SIZE + push::TAG_SIZE];
+    this->random_(nonce, sizeof(nonce));
+    size_t bl = 0;
+    if (relay::push_key(k->secret, KEY_SECRET_SIZE, key))
+      bl = seal_blob(key, nonce, this->relay_.identity().id(), uint8_t(0x10 | event), record, sizeof(record), blob,
+                     sizeof(blob));
+    crypto::wipe(key, sizeof(key));
+    if (bl == 0)
+      continue;
+    m.push_back(uint8_t(slot));
+    m.push_back(uint8_t(bl));
+    m.insert(m.end(), blob, blob + bl);
+    n++;
+  }
+  if (n != 0) {
+    m[9] = n;
+    if (!this->relay_.send_control(m.data(), m.size()))
+      return false;
+    this->live_sent_++;
+  }
+  this->live_sent_ms_ = now == 0 ? 1 : now;
+  this->live_last_ = c;
+  this->live_dirty_ = this->live_important_ = false;
+  return true;
+}
+
+void PushEngine::live_loop_(uint32_t now, bool ready) {
+  const Status &s = this->c_.status();
+  const bool reconnected = ready && !this->live_was_ready_;
+  this->live_was_ready_ = ready;
+
+  // An end owed from while the relay was down.
+  if (this->live_end_owed_ && ready && this->live_run_ == 0) {
+    if (this->live_send_(push::LIVE_END, this->live_end_flags_, this->live_end_dismiss_, this->live_end_, now))
+      this->live_end_owed_ = false;
+  }
+
+  if (this->live_run_ != 0 && (s.run_id != this->live_run_ || s.state == HeaterState::OFF)) {
+    // The run is over: the card's end, with its final content.
+    const LiveContent c = this->live_content_(now, s);
+    const bool bad = s.fault != Fault::NONE || (s.alerts & push::LIVE_FAULT_ALERTS);
+    const uint8_t flags = uint8_t(push::LIVE_IMPORTANT | (bad ? push::LIVE_FAULT_END : 0));
+    const uint16_t dismiss = bad ? push::LIVE_DISMISS_FAULT_S : push::LIVE_DISMISS_S;
+    if (this->live_started_ && !(ready && this->live_send_(push::LIVE_END, flags, dismiss, c, now))) {
+      this->live_end_owed_ = true;
+      this->live_end_ = c;
+      this->live_end_flags_ = flags;
+      this->live_end_dismiss_ = dismiss;
+    }
+    this->live_run_ = 0;
+    this->live_started_ = false;
+    this->live_last_ = LiveContent{};
+    this->live_burnoff_end_ = 0;
+  }
+
+  if (this->live_run_ == 0) {
+    // A run the card follows begins when the heater leaves off for starting, heating or fan only.
+    if (s.run_id == 0 || !card_state(s.state))
+      return;
+    this->live_run_ = s.run_id;
+    this->live_starter_ = s.starter_slot;
+    this->live_started_ = false;
+    this->live_end_owed_ = false;  // a new card replaces an old card's owed end
+    this->live_last_ = LiveContent{};
+    this->live_last_ = this->live_content_(now, s);
+    this->live_dirty_ = this->live_important_ = true;
+  } else {
+    const LiveContent c = this->live_content_(now, s);
+    const LiveContent &l = this->live_last_;
+    const bool room_moved = (c.room_c10 == INT16_MIN) != (l.room_c10 == INT16_MIN) ||
+                            (c.room_c10 != INT16_MIN && std::abs(int(c.room_c10) - int(l.room_c10)) >= LIVE_ROOM_C10);
+    if (c.state != l.state || (c.alerts & ~l.alerts) || (c.fault != l.fault && c.fault != 0))
+      this->live_important_ = true;
+    if (c.state != l.state || c.kind != l.kind || c.source != l.source || c.fault != l.fault ||
+        c.alerts != l.alerts || c.target_c10 != l.target_c10 || c.power != l.power ||
+        c.run_end_utc != l.run_end_utc || room_moved)
+      this->live_dirty_ = true;
+    if (reconnected)
+      this->live_dirty_ = this->live_important_ = true;  // the relay may have lost the card meanwhile
+  }
+
+  if (!ready)
+    return;
+  const uint32_t gap = uint32_t(now - this->live_sent_ms_);
+  const bool may = this->live_sent_ms_ == 0 || gap >= LIVE_GAP_MS;
+  const LiveContent c = this->live_content_(now, s);
+  if (!this->live_started_) {
+    if (may && this->live_send_(push::LIVE_START, push::LIVE_IMPORTANT, 0, c, now))
+      this->live_started_ = true;
+  } else if (may && (this->live_dirty_ || gap >= LIVE_HEARTBEAT_MS)) {
+    this->live_send_(push::LIVE_UPDATE, this->live_important_ ? push::LIVE_IMPORTANT : 0, 0, c, now);
   }
 }
 
