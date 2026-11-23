@@ -120,11 +120,14 @@ void console_ms(console *c, uint32_t now);
 /* One received byte (the UART tap below calls it for every byte the board reads). */
 void console_feed(console *c, uint8_t byte);
 
-/* The console defines hal_uart_getc() (every byte goes to console_feed, then to the link),
- * hal_iwdg_refresh() (skipped after "wdg stop"), hal_glow_period() and hal_pump_oc_arm() (noted,
- * passed on unchanged) and hal_co_heater() (passed on, or held low) over these, which the chip provides: on the STM32
- * the driver's own functions, renamed at compile time (build.sh bringup), in the tests the fake
- * chip. */
+/* The console defines five of the HAL's functions (board/hal.h) over the chip's own, which
+ * `build.sh bringup` renames to these when it compiles the driver (and run.sh when it compiles the
+ * tests' fake chip):
+ *   hal_uart_getc      every byte goes to console_feed, then to the link
+ *   hal_iwdg_refresh   skipped after "wdg stop"
+ *   hal_glow_period    its readings noted, passed on unchanged
+ *   hal_pump_oc_arm    its arming noted, passed on unchanged
+ *   hal_co_heater      passed on, or held low ("co heater off") */
 int bringup_chip_uart_getc(void);
 void bringup_chip_iwdg_refresh(void);
 uint8_t bringup_chip_glow_period(hal_glow_sample *g);

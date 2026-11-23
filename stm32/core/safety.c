@@ -225,6 +225,16 @@ static int on_param_defaults(void *ctx) {
   return LINK_OK;
 }
 
+#ifdef SAFETY_BENCH
+int safety_bench_tune(safety *s, const param_def *d, int32_t value) {
+  if (!heater_off(s))
+    return LINK_NOT_OFF;
+  params_write_field(&s->params.live, d, value);
+  take_params(s);
+  return LINK_OK;
+}
+#endif
+
 static int on_glow_new_plug(void *ctx) {
   safety *s = (safety *) ctx;
   plug_new_plug(&s->plug);

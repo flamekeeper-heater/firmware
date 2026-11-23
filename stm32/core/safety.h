@@ -158,6 +158,12 @@ static inline int safety_checks_may_run(const safety *s) {
 }
 
 #ifdef SAFETY_BENCH
+/* The bring-up console's tune: a burn_params figure outside the parameter table (d describes it),
+ * in RAM. It goes into the applied values (params.live) and to the sequencer as an apply does, so
+ * a later apply or "defaults" (the table's values only) keeps it; the flash image never holds it,
+ * and a reset forgets it. LINK_NOT_OFF unless the heater is off; d's range is the caller's. */
+int safety_bench_tune(safety *s, const param_def *d, int32_t value);
+
 /* A bench glow probe waits for the heartbeat to have run this long (GLW-7: the gate supply). */
 #define SAFETY_BENCH_GLOW_HB_MS 20u
 #endif

@@ -41,6 +41,10 @@ extern const param_def PARAM_TABLE[];
 extern const size_t PARAM_COUNT;
 
 const param_def *params_find(uint16_t id);
+/* The burn_params field d describes (offset, size, signedness): a table entry, or a figure outside
+ * the table described the same way (the bring-up console's tune). No range check. */
+int32_t params_read_field(const burn_params *bp, const param_def *d);
+void params_write_field(burn_params *bp, const param_def *d, int32_t value);
 
 typedef struct {
   burn_params live;       /* what the sequencer runs with */
@@ -60,7 +64,7 @@ int32_t params_staged(const params *ps, size_t index);
 int params_set(params *ps, uint16_t id, int32_t value);        /* stage */
 int params_apply(params *ps, int heater_off, int save);       /* the staged changes, together */
 void params_discard(params *ps);
-void params_defaults(params *ps);                             /* every value back, and saved */
+void params_defaults(params *ps);                             /* every table value back, and saved */
 
 /* The flash image: magic, version, count, id/value pairs, CRC16. At most 32 entries (staged_mask). */
 #define PARAMS_IMAGE_MAX (4u + 32u * 6u + 2u)

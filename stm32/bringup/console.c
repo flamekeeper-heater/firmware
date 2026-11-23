@@ -331,26 +331,18 @@ static const char *const HELP[] = {
     "reset                       software reset",
 };
 
-/* Provisional figures outside the parameter table that the bench may change, in RAM. */
-typedef struct {
-  const char *name;
-  uint16_t offset;
-  uint16_t lo, hi;
-} tunable;
-#define TUNE(field, lo, hi) {#field, (uint16_t) offsetof(burn_params, field), lo, hi}
-static const tunable TUNABLES[] = {
+/* Provisional figures outside the parameter table that the bench may change, in RAM
+ * (safety_bench_tune), described as the table's entries are (params.h): unsigned, min to max. */
+#define TUNE(field, lo, hi)                                                                         \
+  {.name = #field, .min = lo, .max = hi, .offset = (uint16_t) offsetof(burn_params, field),         \
+   .size = (uint8_t) sizeof(((burn_params *) 0)->field)}
+static const param_def TUNABLES[] = {
     TUNE(reset_fan_s, 0, 120),          /* GLW-21 */
     TUNE(reset_fan_within_s, 0, 600),   /* GLW-21 */
     TUNE(fan_retry_wait_s, 1, 60),      /* FAN-5 */
     TUNE(fan_retry_forget_s, 60, 3600), /* FAN-5 */
 };
 #define N_TUNABLES (sizeof(TUNABLES) / sizeof(TUNABLES[0]))
-static uint16_t tune_get(const burn_params *p, const tunable *t) {
-  uint16_t v;
-  memcpy(&v, (const uint8_t *) p + t->offset, 2);
-  return v;
-}
-static void tune_set(burn_params *p, const tunable *t, uint16_t v) { memcpy((uint8_t *) p + t->offset, &v, 2); }
 
 static void info_line(console *c, uint16_t i) {
   safety *s = &c->b->s;
@@ -529,11 +521,11 @@ static void tune_line(console *c, uint16_t i) {
   put(c, "tune ");
   put(c, TUNABLES[i].name);
   put(c, " = ");
-  put_u(c, tune_get(&c->b->s.burn.p, &TUNABLES[i]));
+  put_u(c, (uint32_t) params_read_field(&c->b->s.params.live, &TUNABLES[i]));
   put(c, " (");
-  put_u(c, TUNABLES[i].lo);
+  put_u(c, (uint32_t) TUNABLES[i].min);
   put_ch(c, '-');
-  put_u(c, TUNABLES[i].hi);
+  put_u(c, (uint32_t) TUNABLES[i].max);
   put_ch(c, ')');
 }
 
@@ -701,17 +693,13 @@ static const char *cmd_tune(console *c, words *ws) {
   if (ws->n != 3)
     return "usage: tune [<name> <value>]";
   for (unsigned i = 0; i < N_TUNABLES; i++) {
-    const tunable *t = &TUNABLES[i];
+    const param_def *t = &TUNABLES[i];
     if (!eq(ws->w[1], t->name))
       continue;
     uint32_t v;
-    if (!num(ws->w[2], t->lo, t->hi, &v))
+    if (!num(ws->w[2], (uint32_t) t->min, (uint32_t) t->max, &v))
       return "out of range";
-    if (s->burn.step != BURN_STEP_OFF)
-      return "not off";
-    tune_set(&s->burn.p, t, (uint16_t) v);
-    tune_set(&s->params.live, t, (uint16_t) v); /* so an applied table change keeps it */
-    return NULL;
+    return safety_bench_tune(s, t, (int32_t) v) == LINK_OK ? NULL : "not off";
   }
   return "unknown name (tune lists them)";
 }

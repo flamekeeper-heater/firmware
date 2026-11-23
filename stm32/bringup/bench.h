@@ -102,7 +102,7 @@ typedef struct {
   uint16_t pump_n, pump_cHz, pump_done, peak_min, peak_max;
   uint32_t strokes0;
   uint8_t was_stroking;
-  uint8_t stopping;     /* the pump's tail after a stop */
+  uint8_t tail_end;     /* the pump's tail: how the action ends then (BENCH_END_*) */
   uint16_t oc_saved;    /* pump_oc: the cut's own threshold, back at the end (0: not lowered) */
   bench_event ev[BENCH_EVENTS];
   uint8_t ev_n;

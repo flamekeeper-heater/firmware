@@ -15,15 +15,19 @@ int bench_interlocks_ok(const safety *s) {
 static int burn_off(const safety *s) { return s->burn.step == BURN_STEP_OFF; }
 static int is_pump(uint8_t out) { return out == BENCH_ACT_PUMP || out == BENCH_ACT_PUMP_OC; }
 
+/* The oldest event leaves the queue. */
+static void pop_front(bench *bn) {
+  memmove(bn->ev, bn->ev + 1, sizeof(bn->ev[0]) * (BENCH_EVENTS - 1));
+  bn->ev_n--;
+}
+
 static void push(bench *bn, uint8_t action, uint8_t end) {
   bench_event e;
   memset(&e, 0, sizeof(e));
   e.action = action;
   e.end = end;
-  if (bn->ev_n == BENCH_EVENTS) { /* full: the oldest goes */
-    memmove(bn->ev, bn->ev + 1, sizeof(bn->ev[0]) * (BENCH_EVENTS - 1));
-    bn->ev_n--;
-  }
+  if (bn->ev_n == BENCH_EVENTS) /* full: the oldest goes */
+    pop_front(bn);
   bn->ev[bn->ev_n++] = e;
 }
 static bench_event *last(bench *bn) { return &bn->ev[bn->ev_n - 1]; }
@@ -32,8 +36,7 @@ int bench_next_event(bench *bn, bench_event *ev) {
   if (bn->ev_n == 0)
     return 0;
   *ev = bn->ev[0];
-  memmove(bn->ev, bn->ev + 1, sizeof(bn->ev[0]) * (BENCH_EVENTS - 1));
-  bn->ev_n--;
+  pop_front(bn);
   return 1;
 }
 
@@ -78,7 +81,6 @@ static int start_out(bench *bn, safety *s, uint32_t now, uint8_t action, uint8_t
   bn->phase = phase;
   bn->phase_ms = now;
   bn->out_end_ms = now + limit_ms;
-  bn->stopping = 0;
   if (phase == PH_PRECHECK)
     checks_begin_pre_start(&s->chk, now);
   return BENCH_OK;
@@ -181,18 +183,19 @@ static void end_out(bench *bn, safety *s, uint8_t end) {
   s->bench.glow_probe = 0;
 }
 
-/* The pump's stop: PUMP_CMD low first, the heartbeat a decay wait later (PMP-10). */
-static void pump_tail(bench *bn, uint32_t now, int stopped) {
+/* The pump's stop: PUMP_CMD low first, the heartbeat a decay wait later (PMP-10); then the action
+ * ends as end (BENCH_END_DONE, _STOPPED or _TIMEOUT). */
+static void pump_tail(bench *bn, uint32_t now, uint8_t end) {
   bn->phase = PH_TAIL;
   bn->phase_ms = now;
-  bn->stopping = (uint8_t) stopped;
+  bn->tail_end = end;
 }
 
 void bench_stop(bench *bn, safety *s, uint32_t now) {
   if (bn->fan)
     end_fan(bn, BENCH_END_STOPPED, 0);
   if (is_pump(bn->out) && (bn->phase == PH_RUN || bn->phase == PH_TAIL))
-    pump_tail(bn, now, 1);
+    pump_tail(bn, now, BENCH_END_STOPPED);
   else if (bn->out)
     end_out(bn, s, BENCH_END_STOPPED);
   s->bench.fan_duty = 0;
@@ -248,13 +251,13 @@ static void step_out(bench *bn, safety *s, uint32_t now) {
       }
       bn->was_stroking = s->pump.stroking;
       if (bn->pump_done >= bn->pump_n)
-        pump_tail(bn, now, 0);
+        pump_tail(bn, now, BENCH_END_DONE);
       else if (reached(now, bn->out_end_ms))
-        pump_tail(bn, now, 2);
+        pump_tail(bn, now, BENCH_END_TIMEOUT);
       return;
     }
     if (bn->phase == PH_TAIL && in_phase >= (uint32_t) s->pump.p.decay_ms + 2u)
-      end_out(bn, s, bn->stopping == 1 ? BENCH_END_STOPPED : bn->stopping == 2 ? BENCH_END_TIMEOUT : BENCH_END_DONE);
+      end_out(bn, s, bn->tail_end);
     return;
   }
 
@@ -315,7 +318,7 @@ void bench_ms(bench *bn, safety *s, uint32_t now) {
     } else if (bn->out != BENCH_ACT_HB && reached(now, bn->out_end_ms) &&
                !(is_pump(bn->out) && bn->phase == PH_TAIL)) {
       if (is_pump(bn->out) && bn->phase == PH_RUN)
-        pump_tail(bn, now, 2);
+        pump_tail(bn, now, BENCH_END_TIMEOUT);
       else
         end_out(bn, s, BENCH_END_TIMEOUT);
     } else {

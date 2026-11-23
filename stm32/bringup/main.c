@@ -1,7 +1,7 @@
 /* The bring-up image's main: the production start-up (the watchdog first, then the clocks and
  * peripherals), the production board layer once a millisecond, and the console after it. Built by
- * `build.sh bringup`, which compiles the STM32 driver with hal_uart_getc and hal_iwdg_refresh
- * renamed to bringup_chip_*, so the console's versions sit between the board layer and the chip. */
+ * `build.sh bringup`, which compiles the STM32 driver with five of its functions renamed to
+ * bringup_chip_* (console.h), so the console's versions sit between the board layer and the chip. */
 #include <string.h>
 
 #include "../board/board.h"

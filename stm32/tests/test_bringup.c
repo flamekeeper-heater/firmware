@@ -302,6 +302,11 @@ static void test_readings(void) {
   cmd("par 0x05 30");
   cmd("par apply");
   CHECK(b.s.burn.p.prime_s == 30 && b.s.burn.p.reset_fan_s == 45); /* the tune survives an apply */
+  burn_params dflt;
+  burn_params_default(&dflt);
+  CHECK(b.s.mcu.param_defaults(b.s.mcu.ctx) == LINK_OK); /* the table's defaults (the link's DF) */
+  CHECK(b.s.burn.p.prime_s == dflt.prime_s && b.s.burn.p.reset_fan_s == 45); /* and the tune stays */
+  CHECK(memcmp(&b.s.burn.p, &b.s.params.live, sizeof(burn_params)) == 0);
   cmd("watch 100");
   run(1000);
   CHECK(count("w t=") >= 8 && said("vin=12.") && said(" off "));

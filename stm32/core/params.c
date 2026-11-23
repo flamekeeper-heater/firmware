@@ -74,7 +74,7 @@ const param_def *params_find(uint16_t id) {
   return i < PARAM_COUNT ? &PARAM_TABLE[i] : NULL;
 }
 
-static int32_t read_field(const burn_params *bp, const param_def *d) {
+int32_t params_read_field(const burn_params *bp, const param_def *d) {
   const uint8_t *p = (const uint8_t *) bp + d->offset;
   if (d->size == 1)
     return d->is_signed ? (int32_t) * (const int8_t *) p : (int32_t) *p;
@@ -85,7 +85,7 @@ static int32_t read_field(const burn_params *bp, const param_def *d) {
   return d->is_signed ? (int32_t) s : (int32_t) u;
 }
 
-static void write_field(burn_params *bp, const param_def *d, int32_t v) {
+void params_write_field(burn_params *bp, const param_def *d, int32_t v) {
   uint8_t *p = (uint8_t *) bp + d->offset;
   if (d->size == 1) {
     *p = (uint8_t) v;
@@ -111,7 +111,7 @@ void params_init(params *ps) {
   burn_params_default(&ps->live);
 }
 
-int32_t params_value(const params *ps, size_t index) { return read_field(&ps->live, &PARAM_TABLE[index]); }
+int32_t params_value(const params *ps, size_t index) { return params_read_field(&ps->live, &PARAM_TABLE[index]); }
 
 /* Every field is at most 16 bits: a value in range keeps all of it in a uint16_t. */
 int32_t params_staged(const params *ps, size_t index) {
@@ -139,7 +139,7 @@ int params_apply(params *ps, int heater_off, int save) {
   burn_params next = ps->live;
   for (size_t i = 0; i < PARAM_COUNT; i++)
     if (ps->staged_mask & (1u << i))
-      write_field(&next, &PARAM_TABLE[i], params_staged(ps, i));
+      params_write_field(&next, &PARAM_TABLE[i], params_staged(ps, i));
   if (!consistent(&next))
     return LINK_OUT_OF_RANGE; /* kept staged: the app can correct one and apply again */
   ps->live = next;
@@ -151,8 +151,12 @@ int params_apply(params *ps, int heater_off, int save) {
 
 void params_discard(params *ps) { ps->staged_mask = 0; }
 
+/* The table's values only: a figure outside it (the bring-up build's tune) stays as it is. */
 void params_defaults(params *ps) {
-  burn_params_default(&ps->live);
+  burn_params d;
+  burn_params_default(&d);
+  for (size_t i = 0; i < PARAM_COUNT; i++)
+    params_write_field(&ps->live, &PARAM_TABLE[i], params_read_field(&d, &PARAM_TABLE[i]));
   ps->staged_mask = 0;
   ps->save_pending = 1;
 }
@@ -196,7 +200,7 @@ int params_unpack(params *ps, const uint8_t *in, size_t len) {
       continue; /* a parameter this build no longer has */
     if (!in_range(d, v))
       return 0;
-    write_field(&next, d, v);
+    params_write_field(&next, d, v);
   }
   if (!consistent(&next))
     return 0;
