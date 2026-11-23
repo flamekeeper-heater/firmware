@@ -33,7 +33,7 @@ void hal_adc_scan(uint16_t raw[HAL_ADC_COUNT]) {
   raw[HAL_ADC_NTC] = chip.ntc_raw;
   raw[HAL_ADC_BOARD] = chip.board_raw;
   raw[HAL_ADC_VIN] = counts(chip.vin * 6.8 / 106.8);
-  raw[HAL_ADC_VREF] = counts(VREFINT);
+  raw[HAL_ADC_VREF] = counts(chip.vdda > 0 ? VREFINT * VDDA / chip.vdda : VREFINT);
   raw[HAL_ADC_CO] = 0;
   fake_chip_adc(raw);
 }
@@ -86,6 +86,10 @@ void hal_latch_reset(uint8_t level) {
 void hal_co_heater(uint8_t on) { chip.co_heater = on; }
 int hal_uart_getc(void) { return chip.rx_pos < chip.rx_len ? chip.rx[chip.rx_pos++] : -1; }
 void hal_iwdg_refresh(void) { chip.iwdg_refreshes++; }
+uint16_t hal_second_clock(void) {
+  uint64_t ratio = chip.clock_permille ? chip.clock_permille : 1000u;
+  return (uint16_t) ((uint64_t) chip.now * HAL_SECOND_CLOCK_HZ * ratio / 1000000u % HAL_SECOND_CLOCK_WRAP);
+}
 
 /* ---------------------------------------------------------------- the flash */
 

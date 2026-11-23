@@ -214,6 +214,10 @@ void burn_init(burn *b, const burn_params *p, uint32_t now, const burn_inputs *i
 static int start_blocked(burn *b, const burn_inputs *in) {
   if (b->fault_latched)
     return 1;
+  if (in->mcu_fault) {
+    b->fault = BURN_FAULT_MCU, b->why = in->mcu_fault, b->fault_latched = 1;
+    return 1;
+  }
   if (in->overheat_latch) {
     b->fault = BURN_FAULT_OVERHEAT, b->why = BURN_WHY_OVERHEAT_LATCH, b->fault_latched = 1;
     return 1;
@@ -351,7 +355,8 @@ void burn_set_power(burn *b, uint8_t power) { b->power = power > 100 ? 100 : pow
 int burn_fault_reset(burn *b, const burn_inputs *in) {
   if (!b->fault_latched)
     return R_REFUSED;
-  if (in->overheat_latch || in->co_alarm || in->co_fault || in->glow_fault || in->fan_fault || in->pump_fault)
+  if (in->overheat_latch || in->co_alarm || in->co_fault || in->glow_fault || in->fan_fault || in->pump_fault ||
+      in->mcu_fault)
     return R_REFUSED; /* the cause is still there */
   b->fault_latched = 0;
   b->fault = BURN_FAULT_NONE;
@@ -389,7 +394,10 @@ static void checks(burn *b, uint32_t now, uint32_t dt, const burn_inputs *in) {
   const burn_params *p = &b->p;
   int burning = fuel_delivered(b);
 
-  /* The latched faults: no restart until a fault reset. */
+  /* The latched faults: no restart until a fault reset. The MCU's own supply or clock first: every
+   * other reading and timing rests on them (PWR-5, GLW-1). */
+  if (latch(b, in->mcu_fault != 0, BURN_FAULT_MCU, in->mcu_fault, now))
+    return;
   if (latch(b, in->overheat_latch, BURN_FAULT_OVERHEAT, BURN_WHY_OVERHEAT_LATCH, now))
     return; /* OVH-4: fuel off, fan on */
   if (latch(b, in->glow_fault, BURN_FAULT_GLOW, BURN_WHY_GLOW_STAGE, now))

@@ -234,6 +234,17 @@ time-limited, and reaches the stages only through the core's bench requests (com
 `SAFETY_BENCH`), which the core honours only while the burn is off and no self-test runs, through
 the same stage drivers and rules as a run; a glow request is one probe pulse, cleared by the core.
 
+`stm32/core/monitor.*` checks the MCU itself; either fault latches (fault 15, its reason in the
+fault detail) and ends a run as any fault does:
+
+- VDDA, from VREFINT every millisecond, outside 3.0-3.6 V on every reading for 10 ms (one stray
+  conversion is not a fault): every enable off and the heartbeat stopped at once. After a reset a
+  rail still rising only holds everything off and the power-up test waits; one not up within
+  500 ms is the fault.
+- Once a second, the safety loop's tick against the LSI (the watchdog's oscillator) through the
+  RTC's sub-second counter: more than 20 % apart is the fault, since the glow caps and every other
+  timing are counted in that tick.
+
 `stm32/core/safety.*` joins them all to the link: the start-number rule, the dead-man, the status and
 the update handshake.
 

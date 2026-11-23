@@ -80,6 +80,55 @@ void hal_iwdg_start(void) {
 
 void hal_iwdg_refresh(void) { IWDG_KR = IWDG_KR_KEY_RELOAD; }
 
+/* GLW-1: the second clock. The RTC on the LSI (the watchdog's oscillator, independent of HSI16 and
+ * the PLL that make the tick), its asynchronous prescaler at 128 (LSI 32 kHz / 128 = 250 Hz) and
+ * its synchronous one at the full 15 bits, so the sub-second counter (RTC_SSR) counts down from
+ * 32767 at 250 Hz and wraps every 131 s; read straight from the counter (BYPSHAD). The calendar
+ * runs too, unused. Started in every reset (RTCSEL is written once per backup-domain reset), every
+ * wait bounded: a dead LSI leaves the count still, which the tick check reports.
+ * UNVERIFIED on the chip: the RTC kernel clock from the LSI, SSR's rate, and that two reads in a row
+ * agree within a few tries. */
+#define RTC_PREDIV_A 127u
+#define RTC_PREDIV_S (HAL_SECOND_CLOCK_WRAP - 1u)
+typedef char rtc_gives_the_second_clock[(32000u / (RTC_PREDIV_A + 1u) == HAL_SECOND_CLOCK_HZ) ? 1 : -1];
+
+static void rtc_init(void) {
+  RCC_APBENR1 |= RCC_APBENR1_PWREN | RCC_APBENR1_RTCAPBEN;
+  PWR_CR1 |= PWR_CR1_DBP;
+  RCC_CSR |= RCC_CSR_LSION; /* on already when the IWDG runs */
+  for (volatile int i = 0; i < 20000 && !(RCC_CSR & RCC_CSR_LSIRDY); i++) {
+  }
+  if ((RCC_BDCR & RCC_BDCR_RTCSEL) != RCC_BDCR_RTCSEL_LSI) {
+    RCC_BDCR = RCC_BDCR_BDRST;
+    RCC_BDCR = 0;
+  }
+  RCC_BDCR = RCC_BDCR_RTCSEL_LSI | RCC_BDCR_RTCEN;
+  RTC_WPR = RTC_WPR_KEY_UNLOCK1;
+  RTC_WPR = RTC_WPR_KEY_UNLOCK2;
+  RTC_ICSR = RTC_ICSR_INIT;
+  for (volatile int i = 0; i < 20000 && !(RTC_ICSR & RTC_ICSR_INITF); i++) {
+  }
+  RTC_PRER = RTC_PRER_PREDIV_S(RTC_PREDIV_S); /* two writes, synchronous first (RM0454) */
+  RTC_PRER = RTC_PRER_PREDIV_S(RTC_PREDIV_S) | RTC_PRER_PREDIV_A(RTC_PREDIV_A);
+  RTC_CR = RTC_CR_BYPSHAD;
+  RTC_ICSR = 0; /* out of init: the counters run */
+  RTC_WPR = RTC_WPR_KEY_LOCK;
+}
+
+uint16_t hal_second_clock(void) {
+  /* Straight from the counter: two equal reads in a row. */
+  uint32_t a, b = RTC_SSR & RTC_SSR_SS;
+  for (int i = 0; i < 4; i++) {
+    a = b;
+    b = RTC_SSR & RTC_SSR_SS;
+    if (a == b)
+      break;
+  }
+  if (b > RTC_PREDIV_S)
+    b = RTC_PREDIV_S;
+  return (uint16_t) (RTC_PREDIV_S - b); /* counting up */
+}
+
 /* ---------------------------------------------------------------- pins */
 
 static void pin_mode(uint32_t port, unsigned pin, unsigned mode) {
@@ -665,6 +714,7 @@ void hal_init(void) {
 
   adc_init();
   adc_schedule_init();
+  rtc_init();
 
   /* USART2 at 115200 8N1 (PA2 TX, PA3 RX). */
   USART_BRR = SYSCLK_HZ / 115200u;

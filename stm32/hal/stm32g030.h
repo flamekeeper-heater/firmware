@@ -18,6 +18,7 @@
 #define RCC_APBENR1 REG(RCC + 0x3C)
 #define RCC_APBENR2 REG(RCC + 0x40)
 #define RCC_CSR REG(RCC + 0x60)
+#define RCC_BDCR REG(RCC + 0x5C)
 
 /* FLASH */
 #define FLASH 0x40022000u
@@ -98,6 +99,16 @@
 #define IWDG_RLR REG(IWDG + 0x08)
 #define IWDG_SR REG(IWDG + 0x0C)
 
+/* PWR and the RTC: the second clock for GLW-1's tick check */
+#define PWR 0x40007000u
+#define PWR_CR1 REG(PWR + 0x00)
+#define RTC 0x40002800u
+#define RTC_SSR REG(RTC + 0x08)
+#define RTC_ICSR REG(RTC + 0x0C)
+#define RTC_PRER REG(RTC + 0x10)
+#define RTC_CR REG(RTC + 0x18)
+#define RTC_WPR REG(RTC + 0x24)
+
 /* Cortex-M0+ */
 #define SYST_CSR REG(0xE000E010u)
 #define SYST_RVR REG(0xE000E014u)
@@ -167,11 +178,31 @@
 #define RCC_APBENR2_TIM16EN (1u << 17)
 #define RCC_APBENR2_TIM17EN (1u << 18)
 #define RCC_APBENR2_ADCEN (1u << 20)
+#define RCC_APBENR1_RTCAPBEN (1u << 10)
+#define RCC_APBENR1_PWREN (1u << 28)
+#define RCC_CSR_LSION (1u << 0)
+#define RCC_CSR_LSIRDY (1u << 1)
 #define RCC_CSR_RMVF (1u << 23)
 #define RCC_CSR_PINRSTF (1u << 26)
 #define RCC_CSR_PWRRSTF (1u << 27)
 #define RCC_CSR_SFTRSTF (1u << 28)
 #define RCC_CSR_IWDGRSTF (1u << 29)
+
+/* The backup domain and the RTC (GLW-1): the RTC on the LSI, its sub-second counter read straight */
+#define RCC_BDCR_RTCSEL (3u << 8)
+#define RCC_BDCR_RTCSEL_LSI (2u << 8)
+#define RCC_BDCR_RTCEN (1u << 15)
+#define RCC_BDCR_BDRST (1u << 16)
+#define PWR_CR1_DBP (1u << 8) /* the backup domain (RCC_BDCR, the RTC) writable */
+#define RTC_SSR_SS 0xFFFFu
+#define RTC_ICSR_INITF (1u << 6)
+#define RTC_ICSR_INIT (1u << 7)
+#define RTC_PRER_PREDIV_S(v) ((uint32_t) (v) << 0)
+#define RTC_PRER_PREDIV_A(v) ((uint32_t) (v) << 16)
+#define RTC_CR_BYPSHAD (1u << 5) /* the calendar and SSR read from the counters, not the shadows */
+#define RTC_WPR_KEY_UNLOCK1 0xCAu /* the write protection's two keys, in this order */
+#define RTC_WPR_KEY_UNLOCK2 0x53u
+#define RTC_WPR_KEY_LOCK 0xFFu    /* any other value locks it again */
 
 /* IWDG */
 #define IWDG_KR_KEY_START 0xCCCCu

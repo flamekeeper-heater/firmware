@@ -63,6 +63,7 @@ enum {
   BURN_FAULT_START = 10,
   BURN_FAULT_CO = 11,
   BURN_FAULT_CO_SENSOR = 14, /* CO-2: the CO sensor's reading is not plausible */
+  BURN_FAULT_MCU = 15,       /* the safety MCU's own supply or clock (PWR-5, GLW-1): needs looking at */
 };
 
 /* Why a run stopped, beyond the fault code (link_status.fault_detail). */
@@ -88,6 +89,9 @@ enum {
   BURN_WHY_BOARD_HOT = 18,      /* the board stayed too hot even at the lowest power */
   BURN_WHY_PLUG_TYPE = 19,      /* the glow plug is not the type set, or its check is missing */
   BURN_WHY_CO_SENSOR = 20,      /* the CO sensor reads open, or failed its heater check */
+  BURN_WHY_VDDA_HIGH = 21,      /* PWR-5: the MCU's 3.3 V supply above 3.6 V */
+  BURN_WHY_VDDA_LOW = 22,       /* PWR-5: ... below 3.0 V, or never up after a reset */
+  BURN_WHY_TICK = 23,           /* GLW-1: the safety loop's tick and the second clock disagree */
 };
 
 typedef struct {
@@ -176,6 +180,7 @@ typedef struct {
   uint8_t pump_fault;      /* the pump stage's fault (pump.h PUMP_FAULT_*), 0 none */
   uint8_t plug_refused;    /* the plug-type check refused this start (plug.h PLUG_REFUSE_*), 0 none */
   int16_t board_c10;       /* BOARD_NTC near the power stage, 0.1 C, or BURN_UNKNOWN_TEMP */
+  uint8_t mcu_fault;       /* the MCU's own check failed: BURN_WHY_VDDA_HIGH, _VDDA_LOW or _TICK; 0 none */
 } burn_inputs;
 
 enum {
