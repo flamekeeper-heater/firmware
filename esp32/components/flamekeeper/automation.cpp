@@ -785,7 +785,7 @@ void Automation::step_(uint32_t now) {
     lost = age == 0xFFFF ? uint32_t(now - this->sensor_chosen_ms_) >= RoomSensors::STALE_MS
                          : uint32_t(age) * 1000 >= RoomSensors::STALE_MS;
   }
-  this->set_alert_(alert::SENSOR_LOST, lost, "the Bluetooth thermometer has not been heard for 10 minutes");
+  this->set_alert_(alert::SENSOR_LOST, lost, "the Bluetooth thermometer has sent no reading for 10 minutes");
 
   const Status s = this->c_.status();
   const float dt = float(uint32_t(now - this->last_ms_)) / 1000.0f;
