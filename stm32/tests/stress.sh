@@ -20,7 +20,7 @@ what=${1:-all}
 strict="-std=c99 -pedantic -Wall -Wextra -Werror -Wconversion -Wno-sign-conversion"
 san="-fsanitize=address,undefined -fno-sanitize-recover=undefined -g -O1"
 objs=""
-for f in burn glow fan checks pump params plug safety; do
+for f in burn glow fan checks pump params plug monitor budget safety; do
   cc $strict $san -c "$core/$f.c" -o "$out/$f.o"
   objs="$objs $out/$f.o"
 done
@@ -38,7 +38,7 @@ if [ "$what" = fuzz ] || [ "$what" = all ]; then
     mkdir -p "$out/corpus"
     "$out/fuzz_seeds" --write-corpus "$out/corpus"
     lf=""
-    for f in burn glow fan checks pump params plug safety; do
+    for f in burn glow fan checks pump params plug monitor budget safety; do
       $fuzz_cxx -x c $strict -fsanitize=fuzzer-no-link,address,undefined -g -O1 -c "$core/$f.c" -o "$out/lf_$f.o"
       lf="$lf $out/lf_$f.o"
     done

@@ -128,6 +128,11 @@ off -> fan only -> off          off -> pre-check -> priming -> off
 - A hot board (its thermistor above 85 C) holds the fan back: the allowed fan current falls with
   the temperature, and the run is capped at the highest power level whose fan current fits. Still
   too hot at the lowest level, it stops.
+- The input current, glow + fan + pump + logic (each stage's average switch current, the logic's
+  7.5 W over the supply), stays at or below 11 A over 10 s (`stm32/core/budget.*`): the glow's
+  power is held to what the budget leaves after the others (less 0.2 A of headroom), and should
+  the fan, pump and logic alone leave the fan less than its recorded current, the run is capped as
+  for a hot board.
 
 Every timing and limit is a named parameter (`burn_params`). The defaults are provisional until
 they are tuned on a real heater.
@@ -234,6 +239,17 @@ time-limited, and reaches the stages only through the core's bench requests (com
 `SAFETY_BENCH`), which the core honours only while the burn is off and no self-test runs, through
 the same stage drivers and rules as a run; a glow request is one probe pulse, cleared by the core.
 
+`stm32/core/monitor.*` checks the MCU itself; either fault latches (fault 15, its reason in the
+fault detail) and ends a run as any fault does:
+
+- VDDA, from VREFINT every millisecond, outside 3.0-3.6 V on every reading for 10 ms (one stray
+  conversion is not a fault): every enable off and the heartbeat stopped at once. After a reset a
+  rail still rising only holds everything off and the power-up test waits; one not up within
+  500 ms is the fault.
+- Once a second, the safety loop's tick against the LSI (the watchdog's oscillator) through the
+  RTC's sub-second counter: more than 20 % apart is the fault, since the glow caps and every other
+  timing are counted in that tick.
+
 `stm32/core/safety.*` joins them all to the link: the start-number rule, the dead-man, the status and
 the update handshake.
 
@@ -297,7 +313,8 @@ erased. DETAIL carries the state and a rough ppm reading.
   record decoders), and `test_soak.cpp` runs the whole safety MCU for hours of simulated time per
   seed under random user actions, link loss and noise, MCU resets and injected faults, checking the
   safety rules after every call (no glow without airflow, the glow caps, fuel only with the
-  heartbeat and air, no start without a new start number, latched faults, the dead-man, ...).
+  heartbeat and air, no start without a new start number, latched faults, the dead-man, VDDA and
+  the tick check, the input budget, ...).
   `stm32/tests/stress.sh [fuzz|soak]` runs the long versions (`SOAK_SEEDS`, `SOAK_HOURS`,
   `FUZZ_ITERS`; libFuzzer when the compiler has it), and `test_soak --shrink SEED` cuts a failing
   seed down to a regression test.

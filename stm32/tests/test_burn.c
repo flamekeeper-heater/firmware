@@ -16,7 +16,7 @@ typedef struct {
   burn b;
   heater_model m;
   uint32_t now;
-  uint8_t latch, co, co_fault, glow_fault, fan_fault, pump_fault, plug_refused;
+  uint8_t latch, co, co_fault, glow_fault, fan_fault, pump_fault, plug_refused, mcu_fault;
   uint8_t precheck; /* what the pre-start self-test reports (passes by default) */
   int16_t board_c10; /* the board thermistor */
   int air_below_fuel; /* passes where the fan's level fell below the fuel's */
@@ -39,6 +39,7 @@ static burn_inputs inputs(const rig *r) {
   in.pump_fault = r->pump_fault;
   in.board_c10 = r->board_c10;
   in.plug_refused = r->plug_refused;
+  in.mcu_fault = r->mcu_fault;
   return in;
 }
 
@@ -326,6 +327,52 @@ static void test_co_sensor_fault(void) {
   CHECK_EQ(start(&r, HEAT, 50), 0x2F);
 }
 
+/* PWR-5, GLW-1: the safety MCU's own supply or clock failed: the run ends at once (fuel and glow
+ * off, burn-off and cooldown once fuel went in), latched until the cause has gone and the user
+ * resets it; nothing starts meanwhile. */
+static void test_mcu_fault(void) {
+  static const uint8_t whys[] = {BURN_WHY_VDDA_HIGH, BURN_WHY_VDDA_LOW, BURN_WHY_TICK};
+  for (unsigned i = 0; i < sizeof(whys); i++) {
+    rig r;
+    rig_init(&r, 0, 10);
+    CHECK_EQ(start(&r, HEAT, 50), 0);
+    CHECK(run_until_step(&r, BURN_STEP_RUNNING, 5 * MIN));
+    r.mcu_fault = whys[i];
+    run(&r, TICK);
+    CHECK_EQ(r.b.fault, BURN_FAULT_MCU);
+    CHECK_EQ(r.b.why, whys[i]);
+    CHECK(r.b.fault_latched);
+    CHECK_EQ(r.b.step, BURN_STEP_BURN_OFF);
+    CHECK_EQ(r.b.out.pump_cHz, 0);
+    CHECK_EQ(r.b.out.glow_w, 0);
+    CHECK(run_until_step(&r, BURN_STEP_OFF, 25 * MIN));
+    burn_inputs in = inputs(&r);
+    CHECK_EQ(burn_fault_reset(&r.b, &in), 0x2F); /* the cause is still there */
+    CHECK_EQ(start(&r, FAN, 50), 0x2F);
+    r.mcu_fault = 0;
+    CHECK_EQ(start(&r, HEAT, 50), 0x2F); /* latched until a user reset */
+    in = inputs(&r);
+    CHECK_EQ(burn_fault_reset(&r.b, &in), 0);
+    CHECK_EQ(start(&r, HEAT, 50), 0);
+  }
+  /* In preheat (no fuel yet): straight to off. Off: latched at once, and no start. */
+  rig r;
+  rig_init(&r, 0, 10);
+  CHECK_EQ(start(&r, HEAT, 50), 0);
+  CHECK(run_until_step(&r, BURN_STEP_PREHEAT, 30 * SEC));
+  r.mcu_fault = BURN_WHY_VDDA_LOW;
+  run(&r, TICK);
+  CHECK_EQ(r.b.step, BURN_STEP_OFF);
+  CHECK_EQ(r.b.out.glow_w, 0);
+  CHECK_EQ(r.b.out.fan_rpm, 0);
+  rig_init(&r, 0, 10);
+  r.mcu_fault = BURN_WHY_TICK;
+  run(&r, TICK);
+  CHECK_EQ(r.b.fault, BURN_FAULT_MCU);
+  CHECK(r.b.fault_latched);
+  CHECK_EQ(start(&r, PRIME, 50), 0x2F);
+}
+
 static void test_glow_stage_fault(void) {
   rig r;
   rig_init(&r, 0, 10);
@@ -466,6 +513,39 @@ static void test_board_derate(void) {
   CHECK_EQ(start(&r2, FAN, 100), 0);
   run(&r2, TICK);
   CHECK_EQ(r2.b.out.fan_rpm, 1800 + (4500 - 1800) * 44 / 100);
+}
+
+/* PWR-2: when the input budget leaves the fan less than its recorded current, the run is capped at
+ * the highest level whose fan current fits, as for a hot board (the fuel follows the air); the
+ * tighter of the two caps holds. */
+static void test_budget_fan_cap(void) {
+  rig r;
+  rig_init(&r, 0, 10);
+  CHECK_EQ(burn_power_cap(&r.b, 400), 100); /* no limit by default */
+  r.b.fan_budget_ma = 2800;
+  CHECK_EQ(burn_power_cap(&r.b, 400), 100);
+  r.b.fan_budget_ma = 1400;
+  CHECK_EQ(burn_power_cap(&r.b, 400), 55); /* level 6 */
+  r.b.fan_budget_ma = 0;
+  CHECK_EQ(burn_power_cap(&r.b, 400), 0);  /* the lowest level */
+  r.b.fan_budget_ma = 1400;
+  CHECK_EQ(burn_power_cap(&r.b, 950), 44); /* the board's 1.33 A is tighter */
+  CHECK_EQ(burn_power_cap(&r.b, 880), 55); /* the budget's 1.4 A is */
+
+  r.b.fan_budget_ma = 0xFFFFu;
+  CHECK_EQ(start(&r, HEAT, 100), 0);
+  CHECK(run_until_step(&r, BURN_STEP_RUNNING, 5 * MIN));
+  run(&r, 20 * SEC);
+  CHECK_EQ(r.b.running_power, 100);
+  r.b.fan_budget_ma = 1400;
+  run(&r, TICK);
+  CHECK_EQ(r.b.running_power, 55); /* the fuel steps down at once */
+  run(&r, 20 * SEC);
+  CHECK_EQ(r.b.out.fan_rpm, 1800 + (4500 - 1800) * 55 / 100);
+  r.b.fan_budget_ma = 0xFFFFu;
+  run(&r, 30 * SEC);
+  CHECK_EQ(r.b.running_power, 100);
+  CHECK_EQ(r.air_below_fuel, 0);
 }
 
 static void test_board_too_hot(void) {
@@ -718,11 +798,13 @@ int main(void) {
   test_overheat_latch();
   test_co_alarm();
   test_co_sensor_fault();
+  test_mcu_fault();
   test_glow_stage_fault();
   test_fan_stage_faults();
   test_precheck();
   test_pump_stage_fault();
   test_board_derate();
+  test_budget_fan_cap();
   test_board_too_hot();
   test_plug_refused();
   test_fan_stall();

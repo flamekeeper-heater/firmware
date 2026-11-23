@@ -150,12 +150,14 @@ static const char *const STEP[] = {"off",     "fan_check", "preheat",  "ignition
                                    "warm_up", "running",   "burn_off", "cooldown", "fan_only",
                                    "priming", "pre_check", "fan_retry"};
 static const char *const FAULT[] = {"none",     "?",      "supply_low", "supply_high", "glow",  "pump",
-                                    "overheat", "fan",    "flame_out",  "sensor",      "start", "co"};
+                                    "overheat", "fan",    "flame_out",  "sensor",      "start", "co",
+                                    "?",        "?",      "co_sensor",  "mcu"};
 static const char *const WHY[] = {"none",          "asked",         "deadman",       "no_flame",
                                   "flame_lost",    "overheat_limit", "overheat_latch", "fan_stall",
                                   "fan_spin_up",   "sensor_open",   "no_temp_rise",  "supply",
                                   "cooldown_limit", "co",           "glow_stage",    "fan_stage",
-                                  "self_test",     "pump_stage",    "board_hot",     "plug_type"};
+                                  "self_test",     "pump_stage",    "board_hot",     "plug_type",
+                                  "co_sensor",     "vdda_high",     "vdda_low",      "tick"};
 static const char *const RESET[] = {"unknown", "power_on", "watchdog", "pin", "brown_out", "bootloader", "software"};
 static const char *const CHECK_FAIL[] = {"latch_hold",       "latch_rearm",       "static_heartbeat",
                                          "pump_hs_fault",    "pump_no_current",   "pump_hs_short",
@@ -402,6 +404,9 @@ static void info_line(console *c, uint16_t i) {
       put(c, "vdda_mv ");
       put_u(c, c->b->vdda_mv);
       kv(c, "vrefint_cal", c->b->vrefint_cal);
+      kv(c, "tick_permille", s->mon.tick_permille); /* GLW-1: the LSI's count per the tick's */
+      kv(c, "input_ma", budget_avg_ma(&s->budget)); /* PWR-1: the estimate over 10 s */
+      kv(c, "glow_limit_w", s->glow_limit_w);       /* PWR-2 */
       kv(c, "plug_record", s->plug.rec.verified_v);
       kv(c, "plug_setting", s->burn.p.plug_v);
       kv(c, "link_bad_frames", (int32_t) s->parser.bad);

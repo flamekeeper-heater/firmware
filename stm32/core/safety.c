@@ -56,7 +56,7 @@ static void fill_status(safety *s, link_status *o) {
   o->supply = s->in.supply_cv;
   o->fan_rpm = s->in.fan_rpm;
   o->pump = b->out.pump_cHz;
-  o->glow_w = b->out.glow_w;
+  o->glow_w = b->out.glow_w < s->glow_limit_w ? b->out.glow_w : s->glow_limit_w; /* PWR-2 */
   o->prime_left_s = burn_prime_left_s(b, s->now);
   o->run_time_s = s->run_time_s;
 }
@@ -262,14 +262,32 @@ void safety_load_params(safety *s, const uint8_t *image, size_t len) {
 
 /* ---------------------------------------------------------------- faults */
 
+/* The monitor's fault as the sequencer's why (0: none). */
+static uint8_t mcu_why(const monitor *m) {
+  switch (m->fault) {
+    case MONITOR_VDDA_HIGH: return BURN_WHY_VDDA_HIGH;
+    case MONITOR_VDDA_LOW: return BURN_WHY_VDDA_LOW;
+    case MONITOR_TICK: return BURN_WHY_TICK;
+    default: return 0;
+  }
+}
+
+void safety_vdda(safety *s, uint32_t now, uint16_t vdda_mv) { monitor_vdda(&s->mon, now, vdda_mv); }
+
+void safety_clock_check(safety *s, uint32_t now, uint32_t count) { monitor_clock(&s->mon, now, count); }
+
 static int on_fault_reset(void *ctx) {
   safety *s = (safety *) ctx;
   /* The CO alarm's latches first: an alarm clears once the air has been clean a minute, a sensor
    * fault once the reading is plausible (and its heater check runs again). */
   if (s->co.alarm || s->co.fault)
     (void) co_reset(&s->co, s->now);
+  /* The MCU's own supply or tick: once its cause has gone. */
+  if (s->mon.fault != MONITOR_OK)
+    (void) monitor_clear(&s->mon);
   /* The stages' own faults clear with a user reset too, once the burn agrees. */
   burn_inputs in = s->in;
+  in.mcu_fault = mcu_why(&s->mon);
   in.co_alarm = s->co.alarm;
   in.co_fault = s->co.fault;
   in.glow_fault = 0;
@@ -288,6 +306,7 @@ static int on_fault_reset(void *ctx) {
     s->in.pump_fault = 0;
     s->in.co_alarm = 0;
     s->in.co_fault = 0;
+    s->in.mcu_fault = 0;
   }
   return r;
 }
@@ -319,6 +338,8 @@ void safety_init(safety *s, uint32_t now, const burn_inputs *in, uint8_t reset_r
     checks_params chk;
     pump_params pump;
     co_config co;
+    monitor_params mon;
+    budget_params budget;
   } d;
   plug_params_default(&d.plug);
   plug_init(&s->plug, &d.plug, now);
@@ -330,6 +351,11 @@ void safety_init(safety *s, uint32_t now, const burn_inputs *in, uint8_t reset_r
   checks_init(&s->chk, &d.chk, now);
   pump_params_default(&d.pump);
   pump_init(&s->pump, &d.pump);
+  monitor_params_default(&d.mon, SAFETY_CLOCK_HZ, SAFETY_CLOCK_WRAP);
+  monitor_init(&s->mon, &d.mon, now);
+  budget_params_default(&d.budget);
+  budget_init(&s->budget, &d.budget, now);
+  s->glow_limit_w = 0xFFFFu;
   params_init(&s->params);
   burn_init(&s->burn, &s->params.live, now, in);
   co_default_config(&d.co);
@@ -380,11 +406,13 @@ void safety_step(safety *s, uint32_t now, const burn_inputs *in) {
    * after that is a hardware overheat trip. */
   s->in.overheat_latch = (uint8_t) (in->overheat_latch || (s->latch_was_armed && !s->latch_armed));
   s->in.co_fault = (uint8_t) (in->co_fault || s->co.fault);
+  s->in.mcu_fault = in->mcu_fault ? in->mcu_fault : mcu_why(&s->mon);
   if (burn_burning(&s->burn)) {
     s->run_ms += dt;
     s->run_time_s += s->run_ms / 1000u;
     s->run_ms %= 1000u;
   }
+  s->burn.fan_budget_ma = budget_fan_allowed_ma(&s->budget); /* PWR-2: then the fan */
   if (link_deadman_expired(&s->deadman, now, burn_active(&s->burn)))
     burn_stop(&s->burn, BURN_WHY_DEADMAN, now); /* a full burn-off and cooldown, on its own */
   burn_step(&s->burn, now, &s->in);
@@ -395,9 +423,11 @@ const burn_outputs *safety_outputs(const safety *s) { return &s->burn.out; }
 safety_io safety_ms(safety *s, uint32_t now, const checks_obs *o, pump_meas *pm) {
   checks *c = &s->chk;
   s->latch_armed = o->latch_armed;
+  budget_pump_ms(&s->budget, pm->i_ma); /* PWR-1: the pump's share */
   if (pm->overcurrent)
     pump_cut(&s->pump); /* the watchdog has cut already; whatever runs, the fault latches now */
-  if (!s->power_up_started) {
+  /* The power-up test waits for VDDA to be up (PWR-5: a rail still rising after the reset). */
+  if (!s->power_up_started && !monitor_holding(&s->mon)) {
     s->power_up_started = 1;
     checks_begin_power_up(c, now, o);
   }
@@ -441,6 +471,11 @@ safety_io safety_ms(safety *s, uint32_t now, const checks_obs *o, pump_meas *pm)
     io.pump_oc_armed = po.oc_armed;
     io.heartbeat = hb && !po.hb_hold_off ? CHECKS_HB_RUNNING : CHECKS_HB_STOPPED;
   }
+  if (monitor_holding(&s->mon)) {
+    /* PWR-5: VDDA out of its window (or still rising): every enable off, the heartbeat stopped. */
+    memset(&io, 0, sizeof(io));
+    io.heartbeat = CHECKS_HB_STOPPED;
+  }
   if (io.heartbeat == CHECKS_HB_RUNNING)
     s->hb_running_ms = (uint16_t) (s->hb_running_ms < 60000u ? s->hb_running_ms + 1u : 60000u);
   else
@@ -449,6 +484,7 @@ safety_io safety_ms(safety *s, uint32_t now, const checks_obs *o, pump_meas *pm)
 }
 
 uint16_t safety_fan_step(safety *s, uint32_t now, const fan_meas *m) {
+  budget_pass(&s->budget, now, m->isense_ma, s->in.supply_cv); /* PWR-1: the fan and logic shares */
 #ifdef SAFETY_BENCH
   if (s->burn.step == BURN_STEP_OFF && s->bench.fan_duty > 0)
     return fan_step_open(&s->fan, now, s->bench.fan_duty, m);
@@ -469,7 +505,16 @@ glow_cmd safety_glow_period(safety *s, uint32_t now, glow_meas *m) {
   if (bench_probe)
     power_w = s->burn.p.glow_w; /* the planner's first pulse is always a probe (GLW-5) */
 #endif
+  if (monitor_holding(&s->mon))
+    power_w = 0; /* PWR-5: GLOW_EN low, no pulse */
+  /* PWR-2: the glow first, held to what the input budget leaves after the fan, pump and logic. */
+  s->glow_limit_w = budget_glow_limit_w(&s->budget, m->vin_cv);
+  if (power_w > s->glow_limit_w)
+    power_w = s->glow_limit_w;
+  uint16_t last_width = s->glow.last_width_us; /* the pulse that went out last period */
   glow_cmd c = glow_period(&s->glow, now, power_w, m);
+  if (last_width > 0)
+    budget_glow_pulse(&s->budget, m->pulse_ca, last_width); /* PWR-1: its share, as read in it */
 #ifdef SAFETY_BENCH
   if (bench_probe && c.width_us > 0)
     s->bench.glow_probe = 0; /* one pulse, then the plug is off again */

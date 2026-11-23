@@ -15,6 +15,13 @@ uint16_t analog_vdda_mv(uint16_t vref_raw, uint16_t vrefint_cal) {
   return (uint16_t) (mv > 3600u ? 3600u : mv);
 }
 
+uint16_t analog_vdda_check_mv(uint16_t vref_raw, uint16_t vrefint_cal) {
+  if (vref_raw == 0)
+    return 0xFFFFu;
+  uint32_t mv = 3000u * vrefint_cal / vref_raw;
+  return (uint16_t) (mv > 0xFFFFu ? 0xFFFFu : mv);
+}
+
 uint32_t analog_mv(uint16_t raw, uint16_t vdda_mv) { return (uint32_t) raw * vdda_mv / 4095u; }
 
 static uint16_t clamp16(uint32_t v) { return (uint16_t) (v > 0xFFFFu ? 0xFFFFu : v); }

@@ -70,6 +70,13 @@ void hal_uart_write(const uint8_t *data, size_t len);
 
 void hal_iwdg_refresh(void);                 /* WDG-16: only ever from the safety loop pass */
 
+/* GLW-1: a second clock for the tick check, on an oscillator of its own (the LSI, which also clocks
+ * the watchdog): a count that rises at HAL_SECOND_CLOCK_HZ nominal and wraps at
+ * HAL_SECOND_CLOCK_WRAP. */
+#define HAL_SECOND_CLOCK_HZ 250u
+#define HAL_SECOND_CLOCK_WRAP 32768u
+uint16_t hal_second_clock(void);
+
 /* Flash pages for the saved parameters and the plug record (the plug page also holds the CO
  * sensor's R0 log past the record: board.c). Erasing stalls the CPU: the board layer only writes
  * while the heater is off. hal_flash_write erases the page and writes an image of up to 256 bytes

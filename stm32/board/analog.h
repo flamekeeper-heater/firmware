@@ -15,6 +15,9 @@ extern "C" {
 
 /* VDDA from VREFINT (PWR-6: its calibration was taken at 3.0 V), mV. */
 uint16_t analog_vdda_mv(uint16_t vref_raw, uint16_t vrefint_cal);
+/* The same, not clamped, for its window check (PWR-5): up to 0xFFFF, and 0xFFFF for a reading of 0
+ * (no VREFINT conversion is no VDDA either). */
+uint16_t analog_vdda_check_mv(uint16_t vref_raw, uint16_t vrefint_cal);
 /* A 12-bit count as mV at this VDDA. */
 uint32_t analog_mv(uint16_t raw, uint16_t vdda_mv);
 

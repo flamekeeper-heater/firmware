@@ -45,6 +45,8 @@ typedef struct {
   uint32_t flash_writes, flash_programs, flash_bad_programs;
   uint8_t ecc_bad[2]; /* a double ECC error somewhere in the page: reading it raises the NMI */
   uint8_t unreadable; /* what the NMI handler recorded, a bit per page */
+  double vdda;        /* the 3.3 V rail as VREFINT reads it: 0 is the nominal VDDA */
+  uint32_t clock_permille; /* the second clock against the tick (GLW-1): 0 is 1000, agreeing */
 } fake_chip;
 
 extern fake_chip chip;
