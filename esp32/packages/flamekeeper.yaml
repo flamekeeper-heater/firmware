@@ -5,12 +5,14 @@
 #   board_model   Device Information "Model Number" over BLE, e.g. "Flamekeeper rev A2"
 #   board_id      Info byte 2: flamekeeper_rev_a2, or a board code 1-255
 # and, from the release script (tools/release.sh), firmware_version: the "major.minor.patch" Info
-# reports and the update manifests compare (0.1.0 for builds made by hand).
+# reports and the update manifests compare (0.1.0 for builds made by hand). Optional:
+#   room_temperature_entity  a Home Assistant temperature sensor for the "Interior" room reading
 # Every entity is declared here, so the entity list is the same on every board. Values a heater
 # does not report stay "unknown"; commands it cannot do are refused with a reason in the log.
 
 substitutions:
   firmware_version: "0.1.0"
+  room_temperature_entity: sensor.room_temperature
 
 esphome:
   project:
@@ -468,7 +470,7 @@ sensor:
   # The "Interior" sensor on the Climate Control dashboard: a room temperature source.
   - platform: homeassistant
     id: room_ha
-    entity_id: sensor.mobius_air_quality_monitor_temperature
+    entity_id: ${room_temperature_entity}
     internal: true
   - platform: wifi_signal
     name: WiFi signal
