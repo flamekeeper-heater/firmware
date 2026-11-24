@@ -88,19 +88,6 @@ Outcome PushEngine::prefs_set(int slot, const PushPrefs &p) {
   return Outcome::ok();
 }
 
-Outcome PushEngine::local_alerts(int slot, uint8_t bits) {
-  if (slot < 0 || slot >= int(relay::SLOTS) || this->access_.app_key(size_t(slot)) == nullptr)
-    return Outcome::refuse(Result::KEY_UNKNOWN, "this phone has no Wi-Fi key yet: ask for one first");
-  this->local_[slot] = (bits & 0x01) != 0;
-  this->watching_[slot] = (bits & 0x02) != 0;
-  return Outcome::ok();
-}
-
-void PushEngine::bluetooth_gone(int slot) {
-  if (slot >= 0 && slot < int(relay::SLOTS))
-    this->local_[slot] = this->watching_[slot] = false;
-}
-
 // ---------------------------------------------------------------- what to push
 
 void PushEngine::add_(const Item &it, uint32_t now) {
@@ -167,7 +154,7 @@ bool PushEngine::wants_(int slot, const std::vector<Pending> &items) const {
     if (it.what == 0) {
       if (it.code == push::CO_BIT)
         return true;  // the CO alarm reaches every phone, always
-      if ((p.flags & push::FLAG_ON) && (p.alerts & (1u << it.code)) && !this->local_[slot])
+      if ((p.flags & push::FLAG_ON) && (p.alerts & (1u << it.code)))
         return true;
     } else if ((p.flags & push::FLAG_ON) && (p.events & (1u << it.code))) {
       return true;
@@ -374,7 +361,8 @@ size_t PushEngine::encode_live_record(uint32_t seq, uint32_t utc, const LiveCont
 }
 
 size_t PushEngine::encode_live_header(uint8_t event, uint8_t flags, uint16_t stale_s, uint16_t dismissal_s,
-                                      uint8_t starter, uint8_t out[10]) {
+                                      uint8_t starter, uint32_t run_id, uint8_t slots,
+                                      uint8_t out[LIVE_HEADER_SIZE]) {
   out[0] = 0;
   out[1] = relay::op::LIVE;
   out[2] = event;
@@ -382,8 +370,9 @@ size_t PushEngine::encode_live_header(uint8_t event, uint8_t flags, uint16_t sta
   put_u16(out + 4, stale_s);
   put_u16(out + 6, dismissal_s);
   out[8] = starter;
-  out[9] = 0;  // n
-  return 10;
+  put_u32(out + 9, run_id);
+  out[13] = slots;
+  return LIVE_HEADER_SIZE;
 }
 
 namespace {
@@ -433,7 +422,7 @@ PushEngine::LiveContent PushEngine::live_content_(uint32_t now, const Status &s)
 
 bool PushEngine::live_wants_(int slot, uint8_t source) const {
   const PushPrefs p = this->prefs_(slot);
-  if (!(p.flags & push::FLAG_LIVE) || this->watching_[slot])
+  if (!(p.flags & push::FLAG_LIVE))
     return false;
   if (slot == int(this->live_starter_))
     return true;  // the phone that started the run
@@ -453,42 +442,19 @@ uint32_t PushEngine::live_next_seq_() {
   return this->live_seq_++;
 }
 
-bool PushEngine::live_send_(uint8_t event, uint8_t flags, uint16_t dismissal_s, const LiveContent &c, uint32_t now) {
+bool PushEngine::live_send_(uint8_t event, uint8_t flags, uint16_t dismissal_s, uint32_t run_id, const LiveContent &c,
+                            uint32_t now) {
+  // One plain record for every phone it is for (the relay reads it to drive the cards).
   const uint8_t masks = uint8_t(this->relay_.live_mask() | this->relay_.startable_mask());
-  uint8_t record[push::LIVE_RECORD_SIZE];
-  std::vector<uint8_t> m(10);
-  encode_live_header(event, flags, push::LIVE_STALE_S, dismissal_s, this->live_starter_, m.data());
-  uint8_t n = 0;
-  bool sealed_any = false;
-  uint32_t seq = 0;
-  for (int slot = 0; slot < int(relay::SLOTS); slot++) {
-    const WifiKey *k = this->access_.app_key(size_t(slot));
-    if (k == nullptr || !(masks & (1u << slot)) || !this->live_wants_(slot, c.source))
-      continue;
-    if (!sealed_any) {
-      seq = this->live_next_seq_();
-      encode_live_record(seq, this->a_.utc(now), c, record);
-      sealed_any = true;
-    }
-    uint8_t key[relay::PUSH_KEY_SIZE];
-    uint8_t nonce[push::NONCE_SIZE];
-    uint8_t blob[push::NONCE_SIZE + push::LIVE_RECORD_SIZE + push::TAG_SIZE];
-    this->random_(nonce, sizeof(nonce));
-    size_t bl = 0;
-    if (relay::push_key(k->secret, KEY_SECRET_SIZE, key))
-      bl = seal_blob(key, nonce, this->relay_.identity().id(), uint8_t(0x10 | event), record, sizeof(record), blob,
-                     sizeof(blob));
-    crypto::wipe(key, sizeof(key));
-    if (bl == 0)
-      continue;
-    m.push_back(uint8_t(slot));
-    m.push_back(uint8_t(bl));
-    m.insert(m.end(), blob, blob + bl);
-    n++;
-  }
-  if (n != 0) {
-    m[9] = n;
-    if (!this->relay_.send_control(m.data(), m.size()))
+  uint8_t slots = 0;
+  for (int slot = 0; slot < int(relay::SLOTS); slot++)
+    if ((masks & (1u << slot)) && this->access_.app_key(size_t(slot)) != nullptr && this->live_wants_(slot, c.source))
+      slots |= uint8_t(1u << slot);
+  if (slots != 0) {
+    uint8_t m[LIVE_HEADER_SIZE + push::LIVE_RECORD_SIZE];
+    encode_live_header(event, flags, push::LIVE_STALE_S, dismissal_s, this->live_starter_, run_id, slots, m);
+    encode_live_record(this->live_next_seq_(), this->a_.utc(now), c, m + LIVE_HEADER_SIZE);
+    if (!this->relay_.send_control(m, sizeof(m)))
       return false;
     this->live_sent_++;
   }
@@ -505,7 +471,8 @@ void PushEngine::live_loop_(uint32_t now, bool ready) {
 
   // An end owed from while the relay was down.
   if (this->live_end_owed_ && ready && this->live_run_ == 0) {
-    if (this->live_send_(push::LIVE_END, this->live_end_flags_, this->live_end_dismiss_, this->live_end_, now))
+    if (this->live_send_(push::LIVE_END, this->live_end_flags_, this->live_end_dismiss_, this->live_end_run_,
+                         this->live_end_, now))
       this->live_end_owed_ = false;
   }
 
@@ -515,8 +482,9 @@ void PushEngine::live_loop_(uint32_t now, bool ready) {
     const bool bad = s.fault != Fault::NONE || (s.alerts & push::LIVE_FAULT_ALERTS);
     const uint8_t flags = uint8_t(push::LIVE_IMPORTANT | (bad ? push::LIVE_FAULT_END : 0));
     const uint16_t dismiss = bad ? push::LIVE_DISMISS_FAULT_S : push::LIVE_DISMISS_S;
-    if (this->live_started_ && !(ready && this->live_send_(push::LIVE_END, flags, dismiss, c, now))) {
+    if (this->live_started_ && !(ready && this->live_send_(push::LIVE_END, flags, dismiss, this->live_run_, c, now))) {
       this->live_end_owed_ = true;
+      this->live_end_run_ = this->live_run_;
       this->live_end_ = c;
       this->live_end_flags_ = flags;
       this->live_end_dismiss_ = dismiss;
@@ -560,10 +528,10 @@ void PushEngine::live_loop_(uint32_t now, bool ready) {
   const bool may = this->live_sent_ms_ == 0 || gap >= (prompt ? LIVE_PROMPT_GAP_MS : LIVE_GAP_MS);
   const LiveContent c = this->live_content_(now, s);
   if (!this->live_started_) {
-    if (may && this->live_send_(push::LIVE_START, push::LIVE_IMPORTANT, 0, c, now))
+    if (may && this->live_send_(push::LIVE_START, push::LIVE_IMPORTANT, 0, this->live_run_, c, now))
       this->live_started_ = true;
   } else if (may && (this->live_dirty_ || gap >= LIVE_HEARTBEAT_MS)) {
-    this->live_send_(push::LIVE_UPDATE, this->live_important_ ? push::LIVE_IMPORTANT : 0, 0, c, now);
+    this->live_send_(push::LIVE_UPDATE, this->live_important_ ? push::LIVE_IMPORTANT : 0, 0, this->live_run_, c, now);
   }
 }
 

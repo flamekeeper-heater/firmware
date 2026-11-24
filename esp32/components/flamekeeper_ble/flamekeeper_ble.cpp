@@ -510,12 +510,6 @@ void FlamekeeperBLE::gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if
     }
     case ESP_GATTS_DISCONNECT_EVT: {
       uint16_t id = param->disconnect.conn_id;
-      // A phone that showed alerts itself over this link gets pushes again.
-      if (Conn *gone = this->conn_(id)) {
-        fk::PushEngine *pe = this->hub_->board().push_engine();
-        if (pe != nullptr)
-          pe->bluetooth_gone(this->hub_->board().access().app_slot_of_owner(gone->identity));
-      }
       this->conns_.erase(std::remove_if(this->conns_.begin(), this->conns_.end(),
                                         [id](const Conn &c) { return c.id == id; }),
                          this->conns_.end());

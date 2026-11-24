@@ -89,6 +89,8 @@ struct Status : HeaterStatus {
   uint8_t burnoff_left_min{0};  // carbon burn-off run, minutes left
   uint8_t timer_slot{0xFF};      // the timer whose run this is (0xFF none)
   uint32_t run_end_utc{0};       // when the current run stops by itself: its timer's end or RUN_UNTIL (0 none)
+  uint32_t start_at_utc{0};      // START_AT's start to come (0 none)
+  uint16_t start_at_min{0};      // ...and its run's minutes
   bool board_updating{false};    // a board firmware update runs: every start is refused
   uint8_t relay_phones{0};       // phones signed in through the internet relay (State flag bit 5)
 };

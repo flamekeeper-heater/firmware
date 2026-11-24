@@ -67,6 +67,7 @@ void FlamekeeperHub::setup() {
   this->maintenance_pref_ =
       global_preferences->make_preference<Automation::Maintenance>(Automation::MAINTENANCE_CHECK);
   this->log_pref_ = global_preferences->make_preference<EventLog::Saved>(EventLog::SAVED_CHECK);
+  this->start_at_pref_ = global_preferences->make_preference<Automation::StartAt>(Automation::START_AT_CHECK);
   {
     auto *saved = new Automation::Saved();  // too big for the loop task's stack with the meters
     if (this->automation_pref_.load(saved))
@@ -83,11 +84,15 @@ void FlamekeeperHub::setup() {
     if (this->log_pref_.load(log))
       a.load_log(*log);
     delete log;
+    Automation::StartAt start;
+    if (this->start_at_pref_.load(&start))
+      a.load_start_at(start);
   }
   a.on_maintenance_save([this](const Automation::Maintenance &m) { this->maintenance_pref_.save(&m); });
   a.on_log_save([this](const EventLog::Saved &l) { this->log_pref_.save(&l); });
   a.on_save([this](const Automation::Saved &s) { this->automation_pref_.save(&s); });
   a.on_meter_save([this](const FuelMeter::Saved &s) { this->meter_pref_.save(&s); });
+  a.on_start_at_save([this](const Automation::StartAt &s) { this->start_at_pref_.save(&s); });
   a.on_clock_set([](uint32_t utc) {
     struct timeval tv {};
     tv.tv_sec = time_t(utc);

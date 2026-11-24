@@ -68,40 +68,23 @@ struct Rig {
   std::vector<std::vector<uint8_t>> lives(size_t from = 0) const {
     std::vector<std::vector<uint8_t>> out;
     for (size_t i = from; i < sent.size(); i++)
-      if (sent[i].size() >= 10 && sent[i][0] == 0 && sent[i][1] == rl::op::LIVE)
+      if (sent[i].size() >= 14 && sent[i][0] == 0 && sent[i][1] == rl::op::LIVE)
         out.push_back(sent[i]);
     return out;
   }
-  // The slots a LIVE carries a blob for, in order.
+  // The slots a LIVE is for, in order (its slot mask).
   static std::vector<int> live_slots(const std::vector<uint8_t> &m) {
     std::vector<int> out;
-    size_t at = 10;
-    for (uint8_t i = 0; i < m[9]; i++) {
-      out.push_back(m[at]);
-      at += 2 + m[at + 1];
-    }
+    for (int i = 0; i < 8; i++)
+      if (m[13] & (1u << i))
+        out.push_back(i);
     return out;
   }
-  // Opens slot `slot`'s live record (AD: board id || 0x10 | event).
-  std::vector<uint8_t> open_live(const std::vector<uint8_t> &m, int slot, const fk::WifiKey *k) const {
-    size_t at = 10;
-    for (uint8_t i = 0; i < m[9]; i++) {
-      uint8_t s = m[at], len = m[at + 1];
-      const uint8_t *blob = m.data() + at + 2;
-      if (s == slot) {
-        uint8_t key[16];
-        rl::push_key(k->secret, 32, key);
-        uint8_t ad[17];
-        std::memcpy(ad, relay.identity().id(), 16);
-        ad[16] = uint8_t(0x10 | m[2]);
-        std::vector<uint8_t> pt(len - 12 - 16);
-        if (!fk::crypto::gcm_open(key, blob, ad, 17, blob + 12, len - 12, pt.data()))
-          return {};
-        return pt;
-      }
-      at += 2 + len;
-    }
-    return {};
+  // A LIVE's plain record, if it is for slot `slot`; empty if not.
+  static std::vector<uint8_t> live_record(const std::vector<uint8_t> &m, int slot) {
+    if (m.size() != 14 + 33 || !(m[13] & (1u << slot)))
+      return {};
+    return std::vector<uint8_t>(m.begin() + 14, m.end());
   }
   // A start from the phone in key slot `slot` (as the command handler does it), the heater following.
   void phone_start(int slot, Mode mode = Mode::HEAT) {
@@ -226,9 +209,6 @@ static void test_prefs_and_filters() {
   r.step(5 * SEC);
   auto ps = r.pushes(mark);
   CHECK(ps.size() == 1 && ps[0][3] == 2);
-  // A phone that shows alerts itself over Bluetooth gets none but the CO alarm.
-  CHECK(r.push.local_alerts(0, true).accepted());
-  r.push.bluetooth_gone(0);
   // A new key for phone 0 starts from the defaults.
   const uint8_t p0[6] = {1, 1, 1, 1, 1, 1};
   r.access.issue_app_key(p0);
@@ -387,7 +367,7 @@ static void test_fan_retry_not_pushed() {
 }
 
 // The live card: a run's start, its updates (what the user asked for 5 s after the last frame,
-// other changes 20 s after, else every 120 s) and its end, to the phones whose preferences take the run, each sealed for that phone.
+// other changes 20 s after, else every 120 s) and its end, to the phones whose preferences take the run, one plain record with the phones it is for.
 static void test_live_card() {
   Rig r;
   r.relay_up(0x03, 0x00, 0x03);  // both phones can be sent a card's start
@@ -412,14 +392,16 @@ static void test_live_card() {
     return;
   CHECK(ls[0][2] == fk::push::LIVE_START && ls[0][3] == fk::push::LIVE_IMPORTANT);
   CHECK(u16(ls[0].data() + 4) == 360 && u16(ls[0].data() + 6) == 0 && ls[0][8] == 0);
+  const uint32_t run = u32(ls[0].data() + 9);  // the controller's run id
+  CHECK(run != 0 && run == r.c.status().run_id);
   CHECK(Rig::live_slots(ls[0]) == std::vector<int>({0}));
-  auto rec = r.open_live(ls[0], 0, r.k0);
+  auto rec = Rig::live_record(ls[0], 0);
   CHECK_EQ(rec.size(), 33);
   if (rec.size() == 33) {
     CHECK(rec[0] == 1 && rec[9] == uint8_t(HeaterState::HEATING) && rec[11] == uint8_t(Source::PHONE));
     CHECK(rec[10] == 1);  // heat by power (the controller's default)
   }
-  CHECK(r.open_live(ls[0], 1, r.k1).empty());
+  CHECK(Rig::live_record(ls[0], 1).empty());
   const uint32_t seq0 = rec.size() == 33 ? u32(rec.data() + 1) : 0;
 
   // A power change 1 s after the start goes 5 s after it, not important.
@@ -431,8 +413,8 @@ static void test_live_card() {
   ls = r.lives(mark);
   CHECK_EQ(ls.size(), 1);
   if (ls.size() == 1) {
-    CHECK(ls[0][2] == fk::push::LIVE_UPDATE && ls[0][3] == 0);
-    rec = r.open_live(ls[0], 0, r.k0);
+    CHECK(ls[0][2] == fk::push::LIVE_UPDATE && ls[0][3] == 0 && u32(ls[0].data() + 9) == run);
+    rec = Rig::live_record(ls[0], 0);
     CHECK(rec.size() == 33 && rec[19] == 70 && u32(rec.data() + 1) > seq0);
   }
   // A room change waits for the 20 s window.
@@ -444,7 +426,7 @@ static void test_live_card() {
   ls = r.lives(mark);
   CHECK_EQ(ls.size(), 1);
   if (ls.size() == 1) {
-    rec = r.open_live(ls[0], 0, r.k0);
+    rec = Rig::live_record(ls[0], 0);
     CHECK(rec.size() == 33 && int16_t(u16(rec.data() + 15)) == 180);
   }
   // Nothing changes: a heartbeat every 120 s.
@@ -453,12 +435,6 @@ static void test_live_card() {
   CHECK(r.lives(mark).empty());
   r.step(10 * SEC);
   CHECK_EQ(r.lives(mark).size(), 1);
-  // The phone watches its card itself (LOCAL_ALERTS bit 1): no LIVE for it.
-  CHECK(r.push.local_alerts(0, 0x02).accepted());
-  mark = r.sent.size();
-  r.step(125 * SEC);
-  CHECK(r.lives(mark).empty());
-  r.push.bluetooth_gone(0);
   // The end: at off, 300 s dismissal.
   r.step(125 * SEC);
   mark = r.sent.size();
@@ -467,8 +443,9 @@ static void test_live_card() {
   ls = r.lives(mark);
   CHECK_EQ(ls.size(), 1);
   if (ls.size() == 1) {
-    CHECK(ls[0][2] == fk::push::LIVE_END && ls[0][3] == fk::push::LIVE_IMPORTANT && u16(ls[0].data() + 6) == 300);
-    rec = r.open_live(ls[0], 0, r.k0);
+    CHECK(ls[0][2] == fk::push::LIVE_END && ls[0][3] == fk::push::LIVE_IMPORTANT && u16(ls[0].data() + 6) == 300 &&
+          u32(ls[0].data() + 9) == run);
+    rec = Rig::live_record(ls[0], 0);
     CHECK(rec.size() == 33 && rec[9] == uint8_t(HeaterState::OFF) && rec[11] == uint8_t(Source::PHONE));
   }
   mark = r.sent.size();
@@ -572,7 +549,7 @@ static void test_live_card_relay_down() {
   ls = r.lives(mark);
   CHECK(ls.size() == 1 && ls[0][2] == fk::push::LIVE_END);
   // The sequence only grows over a restart: a new engine starts above the saved floor.
-  auto rec = ls.empty() ? std::vector<uint8_t>() : r.open_live(ls[0], 0, r.k0);
+  auto rec = ls.empty() ? std::vector<uint8_t>() : Rig::live_record(ls[0], 0);
   const uint32_t last = rec.size() == 33 ? u32(rec.data() + 1) : 0;
   CHECK(last > 0 && r.last_saved.live_floor > last);
   fk::PushEngine again{r.c, r.a, r.access, r.relay, RNG};

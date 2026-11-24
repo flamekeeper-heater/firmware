@@ -108,7 +108,6 @@ struct FakePush : fk::PushControl {
     p = in;
     return fk::Outcome::ok();
   }
-  fk::Outcome local_alerts(int, uint8_t) override { return fk::Outcome::ok(); }
 };
 
 struct FakeBoard : fk::BoardSettings {
@@ -244,7 +243,7 @@ static void records() {
     const fk::Status &s = r.c.status();
     uint8_t out[ble::STATE_SIZE];
     size_t n = ble::encode_state(s, out);
-    CHECK_EQ(n, 33);
+    CHECK_EQ(n, 39);
     CHECK_EQ(s.fault_log_seq, 7);
     CHECK(s.run_source == fk::Source::PHONE);
     Obj e;
@@ -257,7 +256,7 @@ static void records() {
         .add("failsafeSecondsLeft", "null").add("runSource", num(int(fk::Source::PHONE)))
         .add("stagedChanges", "0").add("alerts", "0").add("automatic", "0").add("fuelLeft", "null")
         .add("burnoffMinutesLeft", "0").add("timerSlot", "null").add("runEndUtc", "null")
-        .add("runId", num(s.run_id)).add("heaterLogSeq", "7");
+        .add("runId", num(s.run_id)).add("heaterLogSeq", "7").add("startAtUtc", "null").add("startAtMinutes", "0");
     CHECK(s.run_id == 1);
     record("state, heating from a phone", "state", out, n, e);
   }
@@ -295,6 +294,8 @@ static void records() {
     s.run_id = odd ? 0xA5C30007u : 0x00010001u;
     s.thermo_paused = odd;  // bit 6
     s.fault_log_seq = odd ? 201 : 0;
+    s.start_at_utc = odd ? 1768195800u : 0;
+    s.start_at_min = odd ? 45 : 0;
     uint8_t out[ble::STATE_SIZE];
     size_t n = ble::encode_state(s, out);
     CHECK_EQ(out[0], m | (odd ? 0x40 : 0));
@@ -311,7 +312,8 @@ static void records() {
         .add("automatic", num(s.automatic)).add("fuelLeft", odd ? "37" : "null")
         .add("burnoffMinutesLeft", odd ? "17" : "0").add("timerSlot", odd ? "3" : "null")
         .add("runEndUtc", odd ? "1768199400" : "null")
-        .add("runId", num(s.run_id)).add("heaterLogSeq", odd ? "201" : "0");
+        .add("runId", num(s.run_id)).add("heaterLogSeq", odd ? "201" : "0")
+        .add("startAtUtc", odd ? "1768195800" : "null").add("startAtMinutes", odd ? "45" : "0");
     char name[48];
     std::snprintf(name, sizeof(name), "state, flags 0x%02x", m);
     record(name, "state", out, n, e);
@@ -950,11 +952,6 @@ static std::string relay_vectors() {
   const Bytes get_cmd = {0x62, ble::op::PUSH_PREFS_GET};
   const Bytes get_res = r.run(get_cmd);
   CHECK(get_res.size() == 9 && get_res[8] == 2);
-  const Bytes local_cmd = {0x63, ble::op::LOCAL_ALERTS, 0x01};
-  CHECK(r.run(local_cmd)[2] == 0);
-  const Bytes watch_cmd = {0x64, ble::op::LOCAL_ALERTS, 0x03};  // alerts and the live card, shown by the phone
-  CHECK(r.run(watch_cmd)[2] == 0);
-  CHECK(r.run({0x65, ble::op::LOCAL_ALERTS, 0x04})[2] == 0x12);
 
   // The live card (LIVE): a run a phone in slot 2 started, heating by temperature, ending at 21:45.
   fk::PushEngine::LiveContent lc;
@@ -976,28 +973,18 @@ static std::string relay_vectors() {
   lu.state = uint8_t(fk::HeaterState::UNKNOWN);
   uint8_t live_unknown[fk::push::LIVE_RECORD_SIZE];
   fk::PushEngine::encode_live_record(4098, 0, lu, live_unknown);
-  uint8_t lnonce[12];  // one fixed nonce for the vectors; the board draws a fresh one for every blob
-  for (int i = 0; i < 12; i++)
-    lnonce[i] = uint8_t(0xD0 + i);
-  // Whole frames: start, update, end, each with slot 2's blob (sealed with the event in the AD).
-  auto live_frame = [&](uint8_t event, uint8_t flags, uint16_t dismissal, uint8_t blob_out[200], size_t *bl) {
-    uint8_t h[10];
-    fk::PushEngine::encode_live_header(event, flags, fk::push::LIVE_STALE_S, dismissal, 2, h);
-    *bl = fk::PushEngine::seal_blob(p, lnonce, g.id(), uint8_t(0x10 | event), live_rec, sizeof(live_rec), blob_out, 200);
-    std::vector<uint8_t> m(h, h + 10);
-    m[9] = 1;
-    m.push_back(2);
-    m.push_back(uint8_t(*bl));
-    m.insert(m.end(), blob_out, blob_out + *bl);
+  // Whole frames: start, update, end, for the phone in slot 2 (run id 42, which it started).
+  auto live_frame = [&](uint8_t event, uint8_t flags, uint16_t dismissal) {
+    std::vector<uint8_t> m(fk::PushEngine::LIVE_HEADER_SIZE);
+    fk::PushEngine::encode_live_header(event, flags, fk::push::LIVE_STALE_S, dismissal, 2, 42, 0x04, m.data());
+    m.insert(m.end(), live_rec, live_rec + sizeof(live_rec));
     return m;
   };
-  uint8_t lb_start[200], lb_update[200], lb_end[200];
-  size_t lbs = 0, lbu = 0, lbe = 0;
-  const std::vector<uint8_t> live_start = live_frame(fk::push::LIVE_START, fk::push::LIVE_IMPORTANT, 0, lb_start, &lbs);
-  const std::vector<uint8_t> live_update = live_frame(fk::push::LIVE_UPDATE, 0, 0, lb_update, &lbu);
+  const std::vector<uint8_t> live_start = live_frame(fk::push::LIVE_START, fk::push::LIVE_IMPORTANT, 0);
+  const std::vector<uint8_t> live_update = live_frame(fk::push::LIVE_UPDATE, 0, 0);
   const std::vector<uint8_t> live_end = live_frame(fk::push::LIVE_END, fk::push::LIVE_IMPORTANT | fk::push::LIVE_FAULT_END,
-                                                   fk::push::LIVE_DISMISS_FAULT_S, lb_end, &lbe);
-  CHECK(lbs == 61 && live_start.size() == 10 + 2 + 61);
+                                                   fk::push::LIVE_DISMISS_FAULT_S);
+  CHECK(live_start.size() == 14 + 33);
 
   // Three more pushes to the phone in slot 2, each as payload, nonce and blob.
   struct PV {
@@ -1072,7 +1059,6 @@ static std::string relay_vectors() {
       .add("pushClass", "1").add("pushBlob", q(hex(blob, bn))).add("pushMessage", q(hex(push)))
       .add("pushPrefsCommand", q(hex(prefs_cmd))).add("pushPrefsResult", q(hex(prefs_res)))
       .add("pushPrefsGetCommand", q(hex(get_cmd))).add("pushPrefsGetResult", q(hex(get_res)))
-      .add("localAlertsCommand", q(hex(local_cmd))).add("localAlertsWatchCommand", q(hex(watch_cmd)))
       .add("liveRecord", q(hex(live_rec, sizeof(live_rec))))
       .add("liveRecordFields", "{\"version\": 1, \"sequence\": 4097, \"utc\": 1795000000, \"state\": 3, \"kind\": 0, "
                                "\"source\": 2, \"fault\": 0, \"alerts\": 1, \"roomC\": 18.4, \"targetC\": 21.5, "
@@ -1083,10 +1069,7 @@ static std::string relay_vectors() {
                                       "\"source\": 0, \"fault\": 0, \"alerts\": 0, \"roomC\": null, \"targetC\": null, "
                                       "\"power\": null, \"runEndUtc\": 0, \"burnoffEndUtc\": 0, \"startedUtc\": 0, "
                                       "\"fuelLeft\": null}")
-      .add("liveNonce", q(hex(lnonce, 12))).add("liveSlot", "2")
-      .add("liveStartBlob", q(hex(lb_start, lbs))).add("liveStart", q(hex(live_start)))
-      .add("liveUpdateBlob", q(hex(lb_update, lbu))).add("liveUpdate", q(hex(live_update)))
-      .add("liveEndBlob", q(hex(lb_end, lbe))).add("liveEnd", q(hex(live_end)))
+      .add("liveStart", q(hex(live_start))).add("liveUpdate", q(hex(live_update))).add("liveEnd", q(hex(live_end)))
       .add("pushes", pushes);
   return o.str();
 }
@@ -1169,7 +1152,7 @@ static std::string sign_in() {
   rig.h.st.answering = true;
   rig.c.tick(1000, false);
   uint8_t state_rec[ble::STATE_SIZE];
-  CHECK_EQ(ble::encode_state(rig.c.status(), state_rec), 33);
+  CHECK_EQ(ble::encode_state(rig.c.status(), state_rec), 39);
 
   uint8_t sealed[64];
   size_t n = board.seal(w::STATE, state_rec, sizeof(state_rec), sealed, sizeof(sealed));

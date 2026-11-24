@@ -97,9 +97,6 @@ class PushEngine : public PushControl {
   // PushControl
   bool prefs_get(int slot, PushPrefs &out) const override;
   Outcome prefs_set(int slot, const PushPrefs &p) override;
-  Outcome local_alerts(int slot, uint8_t bits) override;
-  // A Bluetooth phone's link dropped: it no longer shows alerts itself.
-  void bluetooth_gone(int slot);
 
   // How many PUSH messages went out (tests).
   uint32_t sent() const { return this->sent_; }
@@ -116,9 +113,11 @@ class PushEngine : public PushControl {
     uint8_t fuel_left{0xFF};
   };
   static size_t encode_live_record(uint32_t seq, uint32_t utc, const LiveContent &c, uint8_t out[push::LIVE_RECORD_SIZE]);
-  // 00 07 || event || flags || stale s || dismissal s || starter slot || n (0: blobs are appended).
+  // 00 07 || event || flags || stale s || dismissal s || starter slot || run id (u32, never 0) ||
+  // slots (a bit per key slot: the phones it is for); the plain record follows.
+  static const size_t LIVE_HEADER_SIZE = 14;
   static size_t encode_live_header(uint8_t event, uint8_t flags, uint16_t stale_s, uint16_t dismissal_s,
-                                   uint8_t starter, uint8_t out[10]);
+                                   uint8_t starter, uint32_t run_id, uint8_t slots, uint8_t out[LIVE_HEADER_SIZE]);
 
   // One payload (PROTOCOL.md); exposed for the golden vectors.
   struct Item {
@@ -150,7 +149,8 @@ class PushEngine : public PushControl {
   void live_loop_(uint32_t now, bool ready);
   LiveContent live_content_(uint32_t now, const Status &s);
   bool live_wants_(int slot, uint8_t source) const;
-  bool live_send_(uint8_t event, uint8_t flags, uint16_t dismissal_s, const LiveContent &c, uint32_t now);
+  bool live_send_(uint8_t event, uint8_t flags, uint16_t dismissal_s, uint32_t run_id, const LiveContent &c,
+                  uint32_t now);
   uint32_t live_next_seq_();
 
   Controller &c_;
@@ -160,7 +160,6 @@ class PushEngine : public PushControl {
   relay::Random random_;
   std::function<void(const Saved &)> save_cb_;
   Saved saved_{};
-  bool local_[relay::SLOTS]{};
   bool begun_{false};
   uint32_t last_seq_{0};
   std::vector<Pending> pending_;
@@ -179,7 +178,6 @@ class PushEngine : public PushControl {
   uint32_t sent_{0};
 
   // live card
-  bool watching_[relay::SLOTS]{};  // LOCAL_ALERTS bit 1: the phone shows the card itself
   uint32_t live_seq_{0};
   bool live_seq_loaded_{false};
   uint32_t live_run_{0};         // the run the card follows (State's run id), 0 none
@@ -190,6 +188,7 @@ class PushEngine : public PushControl {
   LiveContent live_end_{};       // the final content, while the end is owed
   uint16_t live_end_dismiss_{0};
   uint8_t live_end_flags_{0};
+  uint32_t live_end_run_{0};  // the owed end's run
   uint32_t live_sent_ms_{0};
   bool live_dirty_{false};       // changed since the last send
   bool live_important_{false};   // ...and the change is worth priority

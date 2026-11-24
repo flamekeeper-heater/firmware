@@ -899,7 +899,7 @@ static void test_protocol() {
   CHECK(cmd({17, ble::op::TANK_SET, 40}) && out[2] == 0);
   r.step(2 * SEC);
   uint8_t st[ble::STATE_SIZE];
-  CHECK_EQ(ble::encode_state(r.c.status(), st), 33);
+  CHECK_EQ(ble::encode_state(r.c.status(), st), 39);
   CHECK_EQ(st[21], 40);
   CHECK_EQ(st[20] & fk::automatic::CLOCK_KNOWN, fk::automatic::CLOCK_KNOWN);
   n = ble::encode_event(fk::Event::ALERT, Result::OK, 2, "heater fault: Overheat", out, sizeof(out), 0x01020304u);
@@ -1191,6 +1191,77 @@ static void test_event_log() {
   CHECK_EQ(recs[3].source, uint8_t(Source::WIFI_APP));
 }
 
+// START_AT: one start to come, a heat run as things stand then, ending after its minutes.
+static void test_start_at() {
+  Rig r;
+  fk::Automation::StartAt saved{};
+  r.a.on_start_at_save([&](const fk::Automation::StartAt &s) { saved = s; });
+  // No clock: refused; cancelling is fine.
+  CHECK(r.a.start_at(MON_0600_CET + 600, 30).result == Result::REFUSED);
+  CHECK(r.a.start_at(0, 0).accepted());
+  CHECK(r.a.set_clock(MON_0600_CET, BERLIN, fk::ClockSource::APP, r.now).accepted());
+  r.step(2 * SEC);
+  uint32_t utc = r.a.utc(r.c.now());
+  CHECK(r.a.start_at(utc, 30).result == Result::OUT_OF_RANGE);                   // passed
+  CHECK(r.a.start_at(utc + 24 * 3600 + 1, 30).result == Result::OUT_OF_RANGE);   // too far
+  CHECK(r.a.start_at(utc + 60, 0).result == Result::OUT_OF_RANGE);
+  CHECK(r.a.start_at(utc + 60, 1441).result == Result::OUT_OF_RANGE);
+  // Set, through the command; State bytes 33-38 and the saved copy show it.
+  NoLink link;
+  NoBoard board;
+  uint8_t out[ble::RESULT_MAX];
+  const uint32_t at = utc + 120;
+  const std::vector<uint8_t> in = {1, ble::op::START_AT, uint8_t(at), uint8_t(at >> 8), uint8_t(at >> 16),
+                                   uint8_t(at >> 24), 30, 0};
+  ble::handle_command(in.data(), in.size(), r.c, link, board, out, sizeof(out));
+  CHECK_EQ(out[2], 0);
+  uint8_t st[ble::STATE_SIZE];
+  ble::encode_state(r.c.status(), st);
+  CHECK(u32(st + 33) == at && u16(st + 37) == 30);
+  CHECK(saved.check == fk::Automation::START_AT_CHECK && saved.utc == at && saved.minutes == 30);
+  // Kept over a restart while ahead; dropped if it passed while the board was off.
+  {
+    Rig q;
+    q.a.load_start_at(saved);
+    CHECK(q.a.set_clock(utc + 60, BERLIN, fk::ClockSource::APP, q.now).accepted());
+    q.step(2 * SEC);
+    CHECK_EQ(q.c.status().start_at_utc, at);
+    Rig late;
+    late.a.load_start_at(saved);
+    CHECK(late.a.set_clock(at + 5, BERLIN, fk::ClockSource::APP, late.now).accepted());
+    late.step(5 * SEC);
+    CHECK(late.c.status().mode == Mode::OFF && late.c.status().start_at_utc == 0);
+  }
+  // While a run is on: refused.
+  CHECK(r.c.set_power(40, Source::PHONE).accepted());
+  CHECK(r.c.set_mode(Mode::FAN, Source::PHONE).accepted());
+  CHECK(r.a.start_at(utc + 300, 30).result == Result::NOT_OFF);
+  // ...and the run it did not start clears the one set before it.
+  CHECK(r.c.set_mode(Mode::OFF, Source::PHONE).accepted());
+  r.heater_follows();
+  r.step(2 * SEC);
+  CHECK_EQ(r.c.status().start_at_utc, at);
+  CHECK(r.c.set_mode(Mode::FAN, Source::PHONE).accepted());
+  r.heater_follows();
+  r.step(2 * SEC);
+  CHECK(r.c.status().start_at_utc == 0 && saved.utc == 0);
+  CHECK(r.c.set_mode(Mode::OFF, Source::PHONE).accepted());
+  r.heater_follows();
+  r.step(2 * SEC);
+  // Due: a heat run at the power as it stands, a timer's run with no slot, ending after 30 minutes.
+  utc = r.a.utc(r.now);
+  CHECK(r.a.start_at(utc + 60, 30).accepted());
+  r.step(58 * SEC);
+  CHECK(r.c.status().mode == Mode::OFF);
+  r.step(3 * SEC);
+  const fk::Status &s = r.c.status();
+  CHECK(s.mode == Mode::HEAT && s.run_source == Source::TIMER && s.power == 40);
+  CHECK(s.timer_slot == 0xFF && s.run_end_utc == utc + 60 + 30 * 60 && s.start_at_utc == 0);
+  r.heater_follows();
+  r.step(30 * MIN);
+  CHECK(r.c.status().mode == Mode::OFF);
+}
+
 static void test_automation_commands() {
   Rig r;
   NoLink link;
@@ -1419,6 +1490,7 @@ int main() {
   test_burn_alerts();
   test_fading_flame();
   test_run_until();
+  test_start_at();
   test_bluetooth_room();
   test_protocol();
   test_low_battery();

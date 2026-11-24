@@ -177,8 +177,8 @@ static void test_info() {
   CHECK_EQ(out[3], 0x01);
   CHECK_EQ(u16(out + 4), 117);
   // The heater's bits 0-5, bit 7 (Bluetooth thermometers), bit 10 (a Home Assistant room sensor),
-  // bit 11 (the heater's fault log); bit 6 is the board's.
-  CHECK_EQ(i32(out + 6), 0xCBF);
+  // bit 11 (the heater's fault log); bit 6 is the board's, and bit 12 (START_AT) every board's.
+  CHECK_EQ(i32(out + 6), 0x1CBF);
   CHECK_EQ(out[10], 2);
   CHECK_EQ(out[11], 8);
   CHECK_EQ(out[12], 0x31);
@@ -190,12 +190,12 @@ static void test_info() {
   CHECK_EQ(uint32_t(i32(out + 20)), 1795000000u);
   p.can_update = true;
   ble::encode_info(ble::BOARD_FLAMEKEEPER_REV_A2, 0, p, out);
-  CHECK_EQ(i32(out + 6), 0x100);  // bit 8: board firmware updates
+  CHECK_EQ(i32(out + 6), 0x1100);  // bit 8: board firmware updates
   p.can_update = false;
   p.ha_switchable = true;
   p.pin_changed = true;
   ble::encode_info(ble::Board(1), fk::cap::FAN_ONLY, p, out);
-  CHECK_EQ(i32(out + 6), 0x41);
+  CHECK_EQ(i32(out + 6), 0x1041);
   CHECK_EQ(out[15], 0x03);
 }
 
@@ -204,8 +204,9 @@ static void test_state_and_telemetry() {
   uint8_t out[64];
   // Everything unknown.
   s.target_c = NAN;
-  CHECK_EQ(ble::encode_state(s, out), 33);
+  CHECK_EQ(ble::encode_state(s, out), 39);
   CHECK_EQ(out[32], 0);  // the heater's fault log: empty, or none
+  CHECK(i32(out + 33) == 0 && u16(out + 37) == 0);  // no start to come
   CHECK_EQ(out[0], 0);
   CHECK_EQ(u16(out + 4), 0x8000);
   CHECK_EQ(u16(out + 6), 0x8000);
@@ -605,7 +606,7 @@ static void test_relay_commands() {
   p.has_relay = true;
   uint8_t info[ble::INFO_SIZE];
   ble::encode_info(ble::Board(1), 0, p, info);
-  CHECK(i32(info + 6) == 0x200);
+  CHECK(i32(info + 6) == 0x1200);
   fk::Status s;
   s.relay_phones = 1;
   uint8_t st[ble::STATE_SIZE];

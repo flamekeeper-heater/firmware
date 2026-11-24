@@ -141,6 +141,17 @@ class Automation {
   // clock known, at most 24 hours ahead; the run's end clears it, and so does a board restart (which
   // stops the heater).
   Outcome run_until(uint32_t end_utc, Source source);
+  // A heat run to start at start_utc (START_AT), as the heat mode, target and power stand then,
+  // stopping after `minutes` as a one-off timer's run does (no timer slot). One per board: a new one
+  // replaces it, 0 cancels. Any run that starts first clears it; so does its time passing while the
+  // board was off or did not know the time (it is not started late).
+  Outcome start_at(uint32_t start_utc, uint16_t minutes);
+  struct StartAt {
+    uint32_t check;
+    uint32_t utc;
+    uint16_t minutes;
+  };
+  static const uint32_t START_AT_CHECK = 0x53544131UL;  // "STA1"
   uint8_t burnoff_minutes_left(uint32_t now) const;
   const Maintenance &maintenance() const { return this->maint_; }
   Outcome glow_new_plug();
@@ -165,6 +176,13 @@ class Automation {
   void on_maintenance_save(std::function<void(const Maintenance &)> &&cb) { this->maint_cb_ = std::move(cb); }
   void load_log(const EventLog::Saved &in) { this->log_book_.load(in); }
   void on_log_save(std::function<void(const EventLog::Saved &)> &&cb) { this->log_cb_ = std::move(cb); }
+  void load_start_at(const StartAt &in) {
+    if (in.check == START_AT_CHECK && in.minutes >= 1 && in.minutes <= 1440) {
+      this->start_at_utc_ = in.utc;
+      this->start_at_min_ = in.minutes;
+    }
+  }
+  void on_start_at_save(std::function<void(const StartAt &)> &&cb) { this->start_at_cb_ = std::move(cb); }
 
   // For tests and the log: whether the current run is one this started.
 
@@ -199,6 +217,7 @@ class Automation {
   bool start_(Source source, Mode mode, HeatMode heat_mode, uint8_t power, float target_c, bool *wait);
   void stop_(Source source, const char *why);
   void restore_();
+  void set_start_at_(uint32_t utc, uint16_t minutes);
   void disarm_(const char *why);
   void save_();
   void save_meter_();
@@ -229,6 +248,9 @@ class Automation {
   Source auto_run_{Source::NONE};
   int timer_slot_{-1};
   uint32_t run_end_utc_{0};  // the current run stops then: its timer's end, or RUN_UNTIL (0 none)
+  uint32_t start_at_utc_{0};  // START_AT's start to come (0 none)
+  uint16_t start_at_min_{0};
+  bool start_at_seen_{false};  // ...seen ahead, the clock known, since the board started
   bool stop_asked_{false};    // someone (or this) asked for off during the current run
   bool person_off_{false};    // a person did
   bool own_stop_{false};      // this is stopping it (low fuel), not a person
@@ -276,6 +298,7 @@ class Automation {
   std::function<void(const EventLog::Saved &)> log_cb_;
   std::function<void(uint32_t)> clock_cb_;
   std::function<void(const Saved &)> save_cb_;
+  std::function<void(const StartAt &)> start_at_cb_;
   std::function<void(const FuelMeter::Saved &)> meter_cb_;
 };
 

@@ -57,8 +57,8 @@ five failed pairings, power-up no longer opens it. Up to 8 phones can be bonded.
   refuses the command with `13`.
 - **State** (`1002`): what is asked of the heater and what the controller is doing: mode, heat mode,
   power, target and room temperature, heater state, controller status, fault, who started the run,
-  alerts, automatic starts, fuel level, the run's end and identity, and the number of the newest entry
-  in the heater's fault log. Notified on change, at most 4 times a second.
+  alerts, automatic starts, fuel level, the run's end and identity, the number of the newest entry
+  in the heater's fault log, and a start to come (START_AT, capability bit 12). Notified on change, at most 4 times a second.
 - **Telemetry** (`1003`): measurements: heat exchanger and intake temperatures, supply voltage, fan,
   pump and glow plug, CO, altitude and pressure, running times, each room temperature source, and the
   fuel trim in effect with the altitude's part of it.
@@ -81,10 +81,10 @@ as text. Send the next command after the previous result.
 | `40`, `41` | PIN_SET, WEB_PASSWORD_SET |
 | `50`-`52` | Wi-Fi: WIFI_STATUS, WIFI_SET, WIFI_OFF |
 | `60`-`63` | Home Assistant: HA_STATUS, HA_SET, HA_KEY, HA_KEY_NEW |
-| `70`-`7D` | Clock, meters, tank, alerts, timers, event log, glow plug health, carbon burn-off, run end |
+| `70`-`7E` | Clock, meters, tank, alerts, timers, event log, glow plug health, carbon burn-off, run end, start at |
 | `80`-`83` | Bluetooth thermometers: SENSOR_SCAN, SENSOR_FOUND, SENSOR_USE, SENSOR_STATUS |
 | `90`-`93` | Board firmware update: UPDATE_BEGIN, UPDATE_STATUS, UPDATE_FINISH, UPDATE_ABORT |
-| `A0`-`A4` | Internet relay and push notifications |
+| `A0`-`A3` | Internet relay and push notifications |
 
 Opcode values and argument layouts are in `ble_protocol.h` (`namespace op`).
 
@@ -175,9 +175,9 @@ Bluetooth.
 
 **Push notifications** are chosen, filtered and encrypted per phone by the board; the relay only
 hands them to the phone's push service. The same goes for the **live card** (a run's state, room,
-target and end, kept current on the phone's lock screen while the app is closed): the board seals a
-small record for each phone that wants the run's card, at most every 5 s (20 s for small changes),
-and the relay passes it on.
+target and end, kept current on the phone's lock screen while the app is closed): the board sends
+the relay a small record, at most every 5 s (20 s for small changes), naming the phones that want
+the run's card. That record is not encrypted: the relay reads it to update the cards.
 
 ## Board firmware updates
 

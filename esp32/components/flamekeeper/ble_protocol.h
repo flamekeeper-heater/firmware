@@ -29,7 +29,7 @@ void uuid_bytes(uint16_t short_id, uint8_t out[16]);
 enum Board : uint8_t { BOARD_FLAMEKEEPER_REV_A2 = 2 };  // other codes: other boards
 
 static const size_t INFO_SIZE = 24;
-static const size_t STATE_SIZE = 33;
+static const size_t STATE_SIZE = 39;
 static const size_t TELEMETRY_SIZE = 45;
 // What a result or event record may grow to: one indication at the minimum ATT MTU of 135.
 static const size_t RESULT_MAX = 132;
@@ -85,6 +85,7 @@ static const uint8_t GLOW_HEALTH = 0x7A;
 static const uint8_t GLOW_NEW_PLUG = 0x7B;
 static const uint8_t BURNOFF_START = 0x7C;
 static const uint8_t RUN_UNTIL = 0x7D;  // u32 UTC: the current run stops then (0 = no end)
+static const uint8_t START_AT = 0x7E;   // u32 UTC start (0 = cancel), u16 run minutes
 static const uint8_t SENSOR_SCAN = 0x80;
 static const uint8_t SENSOR_FOUND = 0x81;
 static const uint8_t SENSOR_USE = 0x82;
@@ -97,7 +98,6 @@ static const uint8_t RELAY_STATUS = 0xA0;
 static const uint8_t RELAY_SET = 0xA1;
 static const uint8_t PUSH_PREFS = 0xA2;
 static const uint8_t PUSH_PREFS_GET = 0xA3;
-static const uint8_t LOCAL_ALERTS = 0xA4;
 }  // namespace op
 
 // Capability bit 6 (Info): Home Assistant can be switched from the app.
@@ -110,6 +110,7 @@ static const uint32_t CAP_BOARD_UPDATE = 1u << 8;
 static const uint32_t CAP_RELAY = 1u << 9;
 static const uint32_t CAP_HA_ROOM = 1u << 10;  // a Home Assistant room temperature sensor is set up
 static const uint32_t CAP_HEATER_LOG = 1u << 11;  // the heater keeps a fault log (HEATER_LOG, State byte 32)
+static const uint32_t CAP_START_AT = 1u << 12;    // the board takes START_AT (State bytes 33-38)
 static const size_t HEATER_LOG_ENTRY_SIZE = 14;
 static const size_t HEATER_LOG_PAGE = 8;  // entries in one HEATER_LOG result
 static const size_t PUSH_PREFS_SIZE = 5;

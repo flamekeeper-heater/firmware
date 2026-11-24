@@ -167,14 +167,12 @@ struct PushPrefs {
   uint8_t flags{push::DEFAULT_FLAGS};
 };
 
-// The commands' side (PUSH_PREFS, PUSH_PREFS_GET, LOCAL_ALERTS), on a phone key slot.
+// The commands' side (PUSH_PREFS, PUSH_PREFS_GET), on a phone key slot.
 class PushControl {
  public:
   virtual ~PushControl() = default;
   virtual bool prefs_get(int slot, PushPrefs &out) const = 0;
   virtual Outcome prefs_set(int slot, const PushPrefs &p) = 0;
-  // bit 0: this phone shows alerts itself; bit 1: it watches the live card itself (no LIVE for it).
-  virtual Outcome local_alerts(int slot, uint8_t bits) = 0;
 };
 
 

@@ -267,6 +267,10 @@ size_t automation_command(uint8_t req, uint8_t opcode, const uint8_t *arg, size_
       if (n != 4)
         return bad();
       return outcome(req, opcode, a.run_until(get_u32(arg), source), out, cap);
+    case op::START_AT:
+      if (n != 6)
+        return bad();
+      return outcome(req, opcode, a.start_at(get_u32(arg), get_u16(arg + 4)), out, cap);
     case op::SENSOR_STATUS: {
       if (n != 0)
         return bad();
@@ -310,7 +314,7 @@ size_t encode_info(uint8_t board, uint32_t heater_capabilities, const BoardInfo 
                        ((heater_capabilities & cap::BLUETOOTH_ROOM) ? CAP_BLUETOOTH_ROOM : 0) |
                        (info.can_update ? CAP_BOARD_UPDATE : 0) | (info.has_relay ? CAP_RELAY : 0) |
                        ((heater_capabilities & cap::HA_ROOM) ? CAP_HA_ROOM : 0) |
-                       ((heater_capabilities & cap::FAULT_LOG) ? CAP_HEATER_LOG : 0));
+                       ((heater_capabilities & cap::FAULT_LOG) ? CAP_HEATER_LOG : 0) | CAP_START_AT);
   out[10] = info.bonds;
   out[11] = info.max_bonds;
   out[12] = nibbles(info.app_keys, info.browser_keys);
@@ -350,6 +354,8 @@ size_t encode_state(const Status &s, uint8_t *out) {
   put_u32(out + 24, s.run_end_utc);  // any run's end: its timer's, or RUN_UNTIL's
   put_u32(out + 28, s.run_id);
   out[32] = s.fault_log_seq;  // the heater's fault log: its newest entry (0 none); read it when this changes
+  put_u32(out + 33, s.start_at_utc);  // START_AT's start to come (0 none) and its run's minutes
+  put_u16(out + 37, s.start_at_min);
   return STATE_SIZE;
 }
 
@@ -752,8 +758,7 @@ size_t handle_command(const uint8_t *in, size_t len, Controller &c, Link &link, 
 
     // ---------------------------------------------------------------- push notifications
     case op::PUSH_PREFS:
-    case op::PUSH_PREFS_GET:
-    case op::LOCAL_ALERTS: {
+    case op::PUSH_PREFS_GET: {
       PushControl *pc = board.push();
       if (pc == nullptr)
         return result(req, opcode, Result::NOT_SUPPORTED, "this build sends no push notifications", out, cap);
@@ -766,16 +771,6 @@ size_t handle_command(const uint8_t *in, size_t len, Controller &c, Link &link, 
         p.events = get_u16(arg + 2);
         p.flags = arg[4];
         return outcome(req, opcode, pc->prefs_set(slot, p), out, cap);
-      }
-      if (opcode == op::LOCAL_ALERTS) {
-        if (!need(1))
-          break;
-        if (arg[0] > 3)
-          return result(req, opcode, Result::OUT_OF_RANGE, "bit 0 alerts, bit 1 live card: 0-3", out, cap);
-        if (link.transport() != Transport::BLUETOOTH)
-          return result(req, opcode, Result::BLUETOOTH_ONLY, "alerts shown by the phone itself: over Bluetooth only",
-                        out, cap);
-        return outcome(req, opcode, pc->local_alerts(slot, arg[0]), out, cap);
       }
       if (!need(0))
         break;
@@ -848,7 +843,8 @@ size_t handle_command(const uint8_t *in, size_t len, Controller &c, Link &link, 
     case op::GLOW_HEALTH:
     case op::GLOW_NEW_PLUG:
     case op::BURNOFF_START:
-    case op::RUN_UNTIL: {
+    case op::RUN_UNTIL:
+    case op::START_AT: {
       Automation *a = c.automation();
       if (a == nullptr)
         return result(req, opcode, Result::NOT_SUPPORTED, "not on this board", out, cap);
