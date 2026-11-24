@@ -264,7 +264,7 @@ void FlamekeeperNet::relay_loop_(uint32_t now, bool online) {
   fk::RelayClient *rc = this->hub_->board().relay_client();
   if (rc == nullptr)
     return;
-  std::deque<RelaySocket::Event> events;
+  std::deque<RelaySocket::Event> &events = this->relay_events_;
   this->relay_sock_.poll(events);
   for (RelaySocket::Event &e : events) {
     switch (e.kind) {
@@ -281,6 +281,7 @@ void FlamekeeperNet::relay_loop_(uint32_t now, bool online) {
         break;
     }
   }
+  events.clear();
   rc->loop(now, online);
 }
 
@@ -390,12 +391,13 @@ void FlamekeeperNet::loop() {
 #endif
   }
   this->relay_loop_(now, online);
-  std::deque<Inbox> work;
+  std::deque<Inbox> &work = this->work_;  // empty here; kept, so no pass allocates its own
   work.swap(this->deferred_);
   for (Inbox &in : this->relay_inbox_)
     work.push_back(std::move(in));
   this->relay_inbox_.clear();
   if (this->server_ == nullptr && work.empty()) {
+    work.clear();
     for (Client &c : this->clients_)
       this->update_(c, now);
     this->sweep_relay_();
@@ -424,6 +426,7 @@ void FlamekeeperNet::loop() {
     else
       this->handle_(in, now);
   }
+  work.clear();
   for (Client &c : this->clients_)
     this->update_(c, now);
   this->sweep_relay_();

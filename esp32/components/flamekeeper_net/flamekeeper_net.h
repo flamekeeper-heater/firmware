@@ -98,6 +98,9 @@ class FlamekeeperNet : public Component {
   std::vector<Client> clients_;
   RelaySocket relay_sock_;
   std::deque<Inbox> relay_inbox_;  // frames from relay channels, handled like the server's
+  // The loop's working queues, kept between passes: a std::deque allocates a block when made.
+  std::deque<Inbox> work_;
+  std::deque<RelaySocket::Event> relay_events_;
   uint32_t loop_ms_{0};            // the clock of the loop pass running now
 };
 

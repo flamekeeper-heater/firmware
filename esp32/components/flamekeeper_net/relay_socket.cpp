@@ -25,12 +25,9 @@ namespace {
 
 uint32_t ms() { return uint32_t(esp_timer_get_time() / 1000); }
 
-struct Conn {
-  esp_tls_t *tls{nullptr};
-  std::vector<uint8_t> rx;        // bytes read, not yet a whole frame
-  std::vector<uint8_t> message;   // a fragmented message being put together
-  bool in_message{false};
-};
+// The task's stack and control block, for the board's one relay socket.
+StackType_t task_stack[RelaySocket::STACK_SIZE / sizeof(StackType_t)];
+StaticTask_t task_tcb;
 
 bool write_all(esp_tls_t *tls, const uint8_t *p, size_t n) {
   while (n > 0) {
@@ -56,21 +53,20 @@ void RelaySocket::connect(const char *host, const char *path, const char *subpro
   this->subprotocol_ = subprotocol;
   this->generation_++;
   this->outbox_.clear();
-  bool start = this->task_ == nullptr;
   xSemaphoreGive(this->lock_);
-  // Below the main loop's priority (ESPHome's loop runs at 1), and on the other core where there is
-  // one: the handshake's maths takes about a second and must not stall the heater link or Bluetooth.
+  if (this->task_ == nullptr) {
+    // Below the main loop's priority (ESPHome's loop runs at 1), and on the other core where there
+    // is one: the handshake's maths takes about a second and must not stall the heater link or
+    // Bluetooth.
 #if portNUM_PROCESSORS > 1
-  const BaseType_t core = 0;
+    const BaseType_t core = 0;
 #else
-  const BaseType_t core = tskNO_AFFINITY;
+    const BaseType_t core = tskNO_AFFINITY;
 #endif
-  if (start && xTaskCreatePinnedToCore(task_main_, "fk_relay", STACK_SIZE, this, tskIDLE_PRIORITY + 1, &this->task_,
-                                       core) != pdPASS) {
-    this->task_ = nullptr;
-    ESP_LOGW(TAG, "No memory for the relay task");
-    this->push_({Event::CLOSED, 0, {}});
+    this->task_ = xTaskCreateStaticPinnedToCore(task_main_, "fk_relay", STACK_SIZE, this, tskIDLE_PRIORITY + 1,
+                                                task_stack, &task_tcb, core);
   }
+  xTaskNotifyGive(this->task_);
 }
 
 void RelaySocket::disconnect() {
@@ -85,7 +81,7 @@ bool RelaySocket::send(const uint8_t *data, size_t len) {
   if (len > MESSAGE_MAX)
     return false;
   xSemaphoreTake(this->lock_, portMAX_DELAY);
-  bool ok = this->task_ != nullptr && !this->host_.empty() && this->outbox_.size() < 48;
+  bool ok = !this->host_.empty() && this->outbox_.size() < 48;
   if (ok)
     this->outbox_.emplace_back(data, data + len);
   xSemaphoreGive(this->lock_);
@@ -109,17 +105,21 @@ void RelaySocket::push_(Event &&e) {
 void RelaySocket::task_main_(void *arg) {
   RelaySocket *self = static_cast<RelaySocket *>(arg);
   for (;;) {
+    // Asleep until connect(); one that came while the last attempt ended is already counted.
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     self->run_();
-    // A connect() that came in as the last attempt ended finds this task still here: serve it.
-    xSemaphoreTake(self->lock_, portMAX_DELAY);
-    if (self->host_.empty()) {
-      self->task_ = nullptr;
-      xSemaphoreGive(self->lock_);
-      vTaskDelete(nullptr);
-      return;
-    }
-    xSemaphoreGive(self->lock_);
   }
+}
+
+bool RelaySocket::next_out_(std::vector<uint8_t> &out) {
+  xSemaphoreTake(this->lock_, portMAX_DELAY);
+  const bool any = !this->outbox_.empty();
+  if (any) {
+    out = std::move(this->outbox_.front());
+    this->outbox_.pop_front();
+  }
+  xSemaphoreGive(this->lock_);
+  return any;
 }
 
 bool RelaySocket::write_frame_(void *tlsp, uint8_t opcode, const uint8_t *data, size_t len) {
@@ -138,10 +138,10 @@ bool RelaySocket::write_frame_(void *tlsp, uint8_t opcode, const uint8_t *data, 
   esp_fill_random(mask, 4);
   std::memcpy(h + k, mask, 4);
   k += 4;
-  std::vector<uint8_t> f(h, h + k);
-  f.resize(k + len);
+  std::vector<uint8_t> &f = this->frame_;  // reserved for the largest message: no allocation here
+  f.assign(h, h + k);
   for (size_t i = 0; i < len; i++)
-    f[k + i] = data[i] ^ mask[i & 3];
+    f.push_back(data[i] ^ mask[i & 3]);
   return write_all(static_cast<esp_tls_t *>(tlsp), f.data(), f.size());
 }
 
@@ -250,8 +250,14 @@ void RelaySocket::run_() {
       struct timeval tv = {0, 50 * 1000};
       setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
       this->push_({Event::CONNECTED, 0, {}});
-      Conn c;
-      c.tls = tls;
+      // This connection's buffers, once each: per-frame ones would churn the heap at every message.
+      this->frame_.reserve(MESSAGE_MAX + 14);
+      this->rx_.reserve(MESSAGE_MAX + 4 + 512);
+      this->message_.reserve(MESSAGE_MAX);
+      this->rx_.clear();
+      this->message_.clear();
+      bool in_message = false;
+      std::vector<uint8_t> m;
       uint32_t last_ping = ms();
       int unanswered = 0;
       uint8_t buf[512];
@@ -263,13 +269,9 @@ void RelaySocket::run_() {
           break;
         }
         // Out.
-        std::deque<std::vector<uint8_t>> out;
-        xSemaphoreTake(this->lock_, portMAX_DELAY);
-        out.swap(this->outbox_);
-        xSemaphoreGive(this->lock_);
         bool ok = true;
-        for (auto &m : out)
-          ok = ok && this->write_frame_(tls, 0x2, m.data(), m.size());
+        while (ok && this->next_out_(m))
+          ok = this->write_frame_(tls, 0x2, m.data(), m.size());
         if (!ok)
           break;
         if (ms() - last_ping >= PING_MS) {
@@ -277,7 +279,8 @@ void RelaySocket::run_() {
             ESP_LOGW(TAG, "The relay stopped answering pings");
             break;
           }
-          this->write_frame_(tls, 0x9, nullptr, 0);
+          static const uint8_t PING[4] = {'p', 'i', 'n', 'g'};
+          this->write_frame_(tls, 0x1, PING, sizeof(PING));
           unanswered++;
           last_ping = ms();
         }
@@ -290,20 +293,22 @@ void RelaySocket::run_() {
             continue;
           break;
         }
-        c.rx.insert(c.rx.end(), buf, buf + n);
-        // Whole frames.
+        std::vector<uint8_t> &rx = this->rx_;
+        rx.insert(rx.end(), buf, buf + n);
+        // Whole frames, read in place.
         bool stop = false;
-        while (!stop && c.rx.size() >= 2) {
-          const uint8_t b0 = c.rx[0], b1 = c.rx[1];
+        size_t at = 0;  // the next frame's start in rx
+        while (!stop && rx.size() - at >= 2) {
+          const uint8_t b0 = rx[at], b1 = rx[at + 1];
           if (b1 & 0x80) {  // a server never masks
             stop = true;
             break;
           }
           size_t hl = 2, len = b1 & 0x7F;
           if (len == 126) {
-            if (c.rx.size() < 4)
+            if (rx.size() - at < 4)
               break;
-            len = size_t(c.rx[2]) << 8 | c.rx[3];
+            len = size_t(rx[at + 2]) << 8 | rx[at + 3];
             hl = 4;
           } else if (len == 127) {
             stop = true;  // never this big
@@ -313,52 +318,62 @@ void RelaySocket::run_() {
             stop = true;
             break;
           }
-          if (c.rx.size() < hl + len)
+          if (rx.size() - at < hl + len)
             break;
           const uint8_t opcode = b0 & 0x0F;
           const bool fin = b0 & 0x80;
-          std::vector<uint8_t> payload(c.rx.begin() + hl, c.rx.begin() + hl + len);
-          c.rx.erase(c.rx.begin(), c.rx.begin() + hl + len);
+          const uint8_t *payload = rx.data() + at + hl;
+          at += hl + len;
           switch (opcode) {
             case 0x9:  // ping
-              this->write_frame_(tls, 0xA, payload.data(), payload.size());
+              this->write_frame_(tls, 0xA, payload, len);
               break;
-            case 0xA:  // pong
-              unanswered = 0;
+            case 0xA:  // a pong to a WebSocket ping (the board sends none)
               break;
             case 0x8:  // close
-              close_code = payload.size() >= 2 ? uint16_t(payload[0] << 8 | payload[1]) : 1005;
-              this->write_frame_(tls, 0x8, payload.data(), payload.size() >= 2 ? 2 : 0);
+              close_code = len >= 2 ? uint16_t(payload[0] << 8 | payload[1]) : 1005;
+              this->write_frame_(tls, 0x8, payload, len >= 2 ? 2 : 0);
               stop = true;
               break;
-            case 0x1:  // text: never part of this protocol
+            case 0x1:  // text: only the keepalive's answer
+              if (fin && len == 4 && std::memcmp(payload, "pong", 4) == 0) {
+                unanswered = 0;
+                break;
+              }
               close_code = 0;
               stop = true;
               break;
             case 0x2:
             case 0x0:
               if (opcode == 0x2) {
-                c.message.clear();
-                c.in_message = true;
+                this->message_.clear();
+                in_message = true;
               }
-              if (!c.in_message || c.message.size() + payload.size() > MESSAGE_MAX) {
+              if (!in_message || this->message_.size() + len > MESSAGE_MAX) {
                 stop = true;
                 break;
               }
-              c.message.insert(c.message.end(), payload.begin(), payload.end());
+              this->message_.insert(this->message_.end(), payload, payload + len);
               if (fin) {
-                c.in_message = false;
-                this->push_({Event::MESSAGE, 0, std::move(c.message)});
-                c.message.clear();
+                in_message = false;
+                // A copy, so message_ keeps its room.
+                this->push_({Event::MESSAGE, 0, this->message_});
+                this->message_.clear();
               }
               break;
             default:
               stop = true;
           }
         }
+        rx.erase(rx.begin(), rx.begin() + at);
         if (stop)
           break;
       }
+      // Back to the heap with the TLS buffers.
+      std::vector<uint8_t>().swap(this->frame_);
+      std::vector<uint8_t>().swap(this->rx_);
+      std::vector<uint8_t>().swap(this->message_);
+      std::vector<uint8_t>().swap(m);
     }
     if (tls != nullptr)
       esp_tls_conn_destroy(tls);

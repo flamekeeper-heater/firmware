@@ -1,6 +1,6 @@
 """Bluetooth thermometers as a room temperature source (PROTOCOL.md).
 
-Listens to ESPHome's BLE tracker and passes every advert it can decode (BTHome v2, Xiaomi
+Reads ESPHome's BLE tracker's raw adverts and passes every one it can decode (BTHome v2, Xiaomi
 LYWSD03MMC with custom firmware, Govee, SwitchBot meters: flamekeeper/ble_thermo.*) to the hub's
 thermometer list. The apps search for thermometers, pick one and set the room source to it; nothing
 is paired. Its presence sets capability bit 7.
@@ -20,9 +20,7 @@ DEPENDENCIES = ["esp32", "flamekeeper"]
 AUTO_LOAD = ["esp32_ble_tracker"]
 
 flamekeeper_thermo_ns = cg.esphome_ns.namespace("flamekeeper_thermo")
-ThermoListener = flamekeeper_thermo_ns.class_(
-    "ThermoListener", esp32_ble_tracker.ESPBTDeviceListener, cg.Component
-)
+ThermoListener = flamekeeper_thermo_ns.class_("ThermoListener", cg.Component)
 
 CONFIG_SCHEMA = (
     cv.Schema(
@@ -52,4 +50,5 @@ async def to_code(config):
     normal_ms = scan["window"].total_milliseconds if "window" in scan else 30
     search_ms = min(config[CONF_SEARCH_WINDOW].total_milliseconds, interval_ms)
     cg.add(var.set_windows(int(normal_ms / 0.625), int(max(search_ms, normal_ms) / 0.625)))
-    await esp32_ble_tracker.register_ble_device(var, config)
+    # The tracker's one raw-advert slot (ESPHome's Bluetooth proxy uses it too: not both).
+    cg.add(var.set_tracker(await cg.get_variable(config[esp32_ble_tracker.CONF_ESP32_BLE_ID])))

@@ -70,6 +70,12 @@ bool parse_thermo_manufacturer_data(const uint8_t *data, size_t len, ThermoReadi
 bool parse_switchbot_meter(const uint8_t *service, size_t service_len, const uint8_t *manufacturer,
                            size_t manufacturer_len, ThermoReading &out);
 
+// A whole advert as received (the advertising data, then any scan response), its AD structures read
+// in place: the first supported reading among its service data (16-bit UUIDs), then its
+// manufacturer data, a SwitchBot meter from both. name gets the local name (the complete one over a
+// short one), cut to name_size - 1 characters, "" when there is none.
+bool parse_thermo_advert(const uint8_t *ad, size_t len, ThermoReading &out, char *name, size_t name_size);
+
 // "BTHome", "Xiaomi (custom firmware)", "Govee", "SwitchBot", "RuuviTag", "Qingping", "Xiaomi";
 // "none" for NONE.
 const char *thermo_kind_name(ThermoKind k);

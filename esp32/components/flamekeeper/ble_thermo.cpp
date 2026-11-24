@@ -412,6 +412,59 @@ bool parse_thermo_manufacturer_data(const uint8_t *data, size_t len, ThermoReadi
   return parse_govee(get_u16(data), data, len, out);
 }
 
+bool parse_thermo_advert(const uint8_t *ad, size_t len, ThermoReading &out, char *name, size_t name_size) {
+  if (name_size > 0)
+    name[0] = '\0';
+  if (ad == nullptr)
+    return false;
+  ThermoReading reading;
+  bool ok = false;
+  bool complete_name = false;
+  // SwitchBot: the service data names the model, the manufacturer data may carry the reading.
+  const uint8_t *switchbot = nullptr;
+  size_t switchbot_len = 0;
+  // Two passes, as the decoders rank them: service data first, then manufacturer data.
+  for (int pass = 0; pass < 2; pass++) {
+    for (size_t i = 0; i < len;) {
+      const size_t l = ad[i];
+      if (l == 0 || i + 1 + l > len)
+        break;  // the end (zero padding), or cut short
+      const uint8_t type = ad[i + 1];
+      const uint8_t *d = ad + i + 2;
+      const size_t n = l - 1;
+      i += 1 + l;
+      if (pass == 0 && type == 0x16 && n >= 2) {  // service data, 16-bit UUID
+        const uint16_t uuid = uint16_t(d[0] | d[1] << 8);
+        if (uuid == 0xFD3D || uuid == 0x0D00) {
+          switchbot = d + 2;
+          switchbot_len = n - 2;
+        }
+        if (!ok)
+          ok = parse_thermo_service_data(uuid, d + 2, n - 2, reading);
+      } else if (pass == 0 && (type == 0x09 || (type == 0x08 && !complete_name)) && name_size > 0) {
+        const size_t k = n < name_size - 1 ? n : name_size - 1;
+        std::memcpy(name, d, k);
+        name[k] = '\0';
+        complete_name = complete_name || type == 0x09;
+      } else if (pass == 1 && type == 0xFF && n >= 2) {  // manufacturer data, company id first
+        const uint16_t company = uint16_t(d[0] | d[1] << 8);
+        if (company == 0x0969 && switchbot != nullptr) {
+          ThermoReading s;
+          if (parse_switchbot_meter(switchbot, switchbot_len, d, n, s)) {
+            reading = s;
+            ok = true;
+          }
+        } else if (!ok) {
+          ok = parse_thermo_manufacturer_data(d, n, reading);
+        }
+      }
+    }
+  }
+  if (ok)
+    out = reading;
+  return ok;
+}
+
 const char *thermo_kind_name(ThermoKind k) {
   switch (k) {
     case ThermoKind::BTHOME:

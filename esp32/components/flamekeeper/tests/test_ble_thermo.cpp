@@ -381,6 +381,51 @@ static void test_names() {
   CHECK(strcmp(thermo_kind_name(ThermoKind::NONE), "none") == 0);
 }
 
+// Whole adverts, AD structures as on air (length, type, data), read in place.
+static bool advert(const char *h, ThermoReading &r, char *name, size_t name_size) {
+  std::vector<uint8_t> v = hex(h);
+  return parse_thermo_advert(v.data(), v.size(), r, name, name_size);
+}
+
+static void test_advert() {
+  ThermoReading r;
+  char name[21];
+  // Flags, BTHome service data, then the complete name.
+  EXPECT(advert("020106" "0e16d2fc" "4000840164021f0803141c" "0709" "4c6f756e6765", r, name, sizeof(name)), r,
+         ThermoKind::BTHOME, 20.79, 71.88, 100);
+  CHECK(strcmp(name, "Lounge") == 0);
+  // The name: complete over short, cut to fit.
+  r = {};
+  CHECK(advert("0408" "616263" "0616d2fc" "4057ea" "0709" "4c6f756e6765", r, name, sizeof(name)));
+  CHECK(strcmp(name, "Lounge") == 0);
+  CHECK_NEAR(r.temperature_c, -22.0, 0.01);
+  char small[4];
+  CHECK(advert("0709" "4c6f756e6765" "0616d2fc" "4057ea", r, small, sizeof(small)));
+  CHECK(strcmp(small, "Lou") == 0);
+  // Govee manufacturer data.
+  r = {};
+  EXPECT(advert("020106" "09ff" "88ec00034db26400", r, name, sizeof(name)), r, ThermoKind::GOVEE, 21.6, 49.8, 100);
+  CHECK(name[0] == '\0');
+  // SwitchBot: the service data (here after the manufacturer data) names the meter, the
+  // manufacturer data carries the reading.
+  r = {};
+  EXPECT(advert("0fff" "6909aabbccddeeff8b0305993200" "06163dfd" "770064", r, name, sizeof(name)), r,
+         ThermoKind::SWITCHBOT, 25.5, 50, 100);
+  // Not a thermometer; zero padding ends the data; a structure cut short is not read.
+  r = {};
+  CHECK(!advert("020106" "03ff" "4c00", r, name, sizeof(name)));
+  CHECK(std::isnan(r.temperature_c));
+  CHECK(!advert("020106" "0000" "0616d2fc4057ea", r, name, sizeof(name)));
+  CHECK(!advert("0716d2fc4057ea", r, name, sizeof(name)));
+  CHECK(!parse_thermo_advert(nullptr, 5, r, name, sizeof(name)));
+  // Every cut of a good advert is safe.
+  std::vector<uint8_t> v = hex("0fff6909aabbccddeeff8b0305993200" "06163dfd770064" "0709" "4c6f756e6765");
+  for (size_t n = 0; n <= v.size(); n++) {
+    std::vector<uint8_t> cut(v.begin(), v.begin() + n);
+    parse_thermo_advert(cut.data(), cut.size(), r, name, sizeof(name));
+  }
+}
+
 int main() {
   test_bthome();
   test_xiaomi_custom();
@@ -390,6 +435,7 @@ int main() {
   test_qingping_and_mibeacon();
   test_truncation();
   test_names();
+  test_advert();
   printf("ble_thermo: %d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;
 }
