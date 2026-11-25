@@ -229,6 +229,8 @@ void FlamekeeperBLE::dump_config() {
                 g_start_status == ESP_GATT_OK ? "running" : this->service_settled_ ? "NOT RUNNING" : "starting",
                 this->handles_[A_SERVICE], this->handles_[A_COUNT - 1]);
   ESP_LOGCONFIG(TAG, "  Phones paired: %u of %u", this->bonds_, this->max_bonds_);
+  if (this->stack_started_)
+    this->log_bonds_();
   ESP_LOGCONFIG(TAG, "  Pairing window: %u s, opens on power-up: %s", (unsigned) (this->window_ms_ / 1000),
                 YESNO(this->open_on_power_up_));
 }
@@ -451,7 +453,38 @@ void FlamekeeperBLE::refresh_bonds_() {
   if (!this->stack_started_ && !(esp32_ble::global_ble != nullptr && esp32_ble::global_ble->is_active()))
     return;
   int n = esp_ble_get_bond_device_num();
-  this->bonds_ = n < 0 ? 0 : uint8_t(n > 255 ? 255 : n);
+  const uint8_t bonds = n < 0 ? 0 : uint8_t(n > 255 ? 255 : n);
+  const bool changed = bonds != this->bonds_ || !this->bonds_logged_;
+  this->bonds_ = bonds;
+  if (changed)
+    this->log_bonds_();
+}
+
+// The stored bonds, as the stack keeps them: a phone that reconnects from a private address is
+// recognised only through its identity key (IRK, "PID"), so the log shows whether each bond has one.
+void FlamekeeperBLE::log_bonds_() {
+  this->bonds_logged_ = true;
+  int n = esp_ble_get_bond_device_num();
+  ESP_LOGI(TAG, "Bonds stored: %d", n);
+  if (n <= 0)
+    return;
+  std::vector<esp_ble_bond_dev_t> list(n);
+  if (esp_ble_get_bond_device_list(&n, list.data()) != ESP_OK)
+    return;
+  for (int i = 0; i < n; i++) {
+    const esp_ble_bond_dev_t &d = list[i];
+    const esp_ble_bond_key_info_t &k = d.bond_key;
+    bool irk = false;
+    for (uint8_t b : k.pid_key.irk)
+      irk = irk || b != 0;
+    const uint8_t *a = d.bd_addr, *s = k.pid_key.static_addr;
+    ESP_LOGI(TAG,
+             "  Bond %d: %02X:%02X:%02X:%02X:%02X:%02X type %u, keys 0x%02X (LTK %s, ID %s, IRK %s), identity "
+             "%02X:%02X:%02X:%02X:%02X:%02X type %u",
+             i, a[0], a[1], a[2], a[3], a[4], a[5], unsigned(d.bd_addr_type), unsigned(k.key_mask),
+             YESNO(k.key_mask & ESP_LE_KEY_PENC), YESNO(k.key_mask & ESP_LE_KEY_PID), irk ? "set" : "zero", s[0], s[1],
+             s[2], s[3], s[4], s[5], unsigned(k.pid_key.addr_type));
+  }
 }
 
 void FlamekeeperBLE::forget_all_bonds() {
@@ -537,6 +570,9 @@ void FlamekeeperBLE::gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap
       break;
     case ESP_GAP_BLE_AUTH_CMPL_EVT: {
       const esp_ble_auth_cmpl_t &a = param->ble_security.auth_cmpl;
+      ESP_LOGI(TAG, "Authentication with %02X:%02X:%02X:%02X:%02X:%02X type %u: %s (reason 0x%02X, mode 0x%02X)",
+               a.bd_addr[0], a.bd_addr[1], a.bd_addr[2], a.bd_addr[3], a.bd_addr[4], a.bd_addr[5],
+               unsigned(a.addr_type), a.success ? "ok" : "failed", unsigned(a.fail_reason), unsigned(a.auth_mode));
       if (!a.success) {
         ESP_LOGW(TAG, "Bluetooth authentication failed (reason 0x%02X)", a.fail_reason);
         if (this->window_.is_open(now)) {
@@ -609,7 +645,9 @@ void FlamekeeperBLE::gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if
       memcpy(c.identity, param->connect.remote_bda, sizeof(esp_bd_addr_t));
       c.since_ms = millis();
       this->conns_.push_back(c);
-      ESP_LOGI(TAG, "Phone connected (%u connected)", (unsigned) this->conns_.size());
+      const uint8_t *a = param->connect.remote_bda;
+      ESP_LOGI(TAG, "Phone connected from %02X:%02X:%02X:%02X:%02X:%02X (%u connected)", a[0], a[1], a[2], a[3], a[4],
+               a[5], (unsigned) this->conns_.size());
       break;
     }
     case ESP_GATTS_DISCONNECT_EVT: {

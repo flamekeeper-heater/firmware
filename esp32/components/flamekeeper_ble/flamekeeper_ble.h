@@ -123,6 +123,7 @@ class FlamekeeperBLE : public Component {
   void update_values_(uint32_t now);
   void notify_(uint8_t attr, const uint8_t *data, size_t len, bool Conn::*sub);
   void refresh_bonds_();
+  void log_bonds_();
   void publish_entities_(uint32_t now);
   void set_passkey_(uint32_t pin);
   fk::Outcome forget_me_(Conn &c);
@@ -139,6 +140,7 @@ class FlamekeeperBLE : public Component {
   fk::PairingWindow window_;
   ESPPreferenceObject failures_pref_;
   uint8_t bonds_{0};
+  bool bonds_logged_{false};
   uint8_t bonds_before_pairing_{0};
 
   bool stack_started_{false};
