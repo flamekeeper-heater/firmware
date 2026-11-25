@@ -112,6 +112,8 @@ class FlamekeeperBLE : public Component {
 
   void start_stack_();
   void build_table_();
+  void create_table_(esp_gatt_if_t gatts_if);
+  void poll_table_(uint32_t now);
   Conn *conn_(uint16_t id);
   void on_write_(esp_ble_gatts_cb_param_t *param);
   void queue_result_(Conn &c, const uint8_t *data, size_t len);
@@ -139,9 +141,13 @@ class FlamekeeperBLE : public Component {
   uint8_t bonds_before_pairing_{0};
 
   bool stack_started_{false};
+  uint32_t stack_ms_{0};          // when the stack was started
   esp_gatt_if_t gatts_if_{ESP_GATT_IF_NONE};
+  bool table_asked_{false};       // esp_ble_gatts_create_attr_tab called (once)
+  uint32_t reg_seen_ms_{0};       // registered (seen from the Bluetooth task) but no event yet
   uint16_t handles_[A_COUNT]{};
   bool table_ready_{false};
+  bool service_reported_{false};  // the service's start (or its absence) has been logged
   std::vector<Conn> conns_;
 
   // attribute table storage (the stack keeps pointers to some of it)
