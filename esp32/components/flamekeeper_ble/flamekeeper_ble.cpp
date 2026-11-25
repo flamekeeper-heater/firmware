@@ -2,6 +2,7 @@
 
 #ifdef USE_ESP32
 
+#include <esp_heap_caps.h>
 #include <esp_bt_defs.h>
 #include <esp_gatt_common_api.h>
 #include <esp_system.h>
@@ -646,8 +647,11 @@ void FlamekeeperBLE::gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if
       c.since_ms = millis();
       this->conns_.push_back(c);
       const uint8_t *a = param->connect.remote_bda;
-      ESP_LOGI(TAG, "Phone connected from %02X:%02X:%02X:%02X:%02X:%02X (%u connected)", a[0], a[1], a[2], a[3], a[4],
-               a[5], (unsigned) this->conns_.size());
+      // With the heap as it stands now: what each Bluetooth link costs (2026-11-24, heap budget).
+      ESP_LOGI(TAG, "Phone connected from %02X:%02X:%02X:%02X:%02X:%02X (%u connected; heap %u free, %u block)", a[0],
+               a[1], a[2], a[3], a[4], a[5], (unsigned) this->conns_.size(),
+               (unsigned) heap_caps_get_free_size(MALLOC_CAP_8BIT),
+               (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
       break;
     }
     case ESP_GATTS_DISCONNECT_EVT: {
@@ -655,7 +659,8 @@ void FlamekeeperBLE::gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if
       this->conns_.erase(std::remove_if(this->conns_.begin(), this->conns_.end(),
                                         [id](const Conn &c) { return c.id == id; }),
                          this->conns_.end());
-      ESP_LOGI(TAG, "Phone disconnected");
+      ESP_LOGI(TAG, "Phone disconnected (heap %u free, %u block)", (unsigned) heap_caps_get_free_size(MALLOC_CAP_8BIT),
+               (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
       break;
     }
     case ESP_GATTS_WRITE_EVT:
