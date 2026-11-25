@@ -25,10 +25,12 @@ flamekeeper_net_ns = cg.esphome_ns.namespace("flamekeeper_net")
 FlamekeeperNet = flamekeeper_net_ns.class_("FlamekeeperNet", cg.Component)
 
 CONF_WEB_APP = "web_app"
-# The HTTP server's connections: the local WebSockets (4) and the page's files (a browser loads up
-# to 6 at once; the least recently used connection is closed when all are taken). Keep in step with
-# MAX_OPEN_SOCKETS in flamekeeper_net.cpp.
-HTTP_SOCKETS = 8
+# The local WebSockets at once (the apps on Wi-Fi), and the HTTP server's connections: those
+# WebSockets and the page's files (a browser loads up to 6 at once; the least recently used
+# connection is closed when all are taken). Each connection can hold socket buffers, so a board
+# short of heap sets them lower.
+CONF_MAX_SESSIONS = "max_sessions"
+CONF_HTTP_SOCKETS = "http_sockets"
 WEB_HEADER = "flamekeeper_web_files.h"
 
 CONFIG_SCHEMA = cv.All(
@@ -40,12 +42,20 @@ CONFIG_SCHEMA = cv.All(
             # A browser app's build folder (index.html and its assets), relative to this YAML file.
             # Left out: the board serves a placeholder page. Set but missing: the build stops.
             cv.Optional(CONF_WEB_APP): cv.string_strict,
+            cv.Optional(CONF_MAX_SESSIONS, default=4): cv.int_range(min=1, max=8),
+            cv.Optional(CONF_HTTP_SOCKETS, default=8): cv.int_range(min=3, max=16),
         }
     ).extend(cv.COMPONENT_SCHEMA),
-    socket.consume_sockets(HTTP_SOCKETS + 1, "flamekeeper_net"),  # + the relay
+    lambda config: _limits(config),
     socket.consume_sockets(1, "flamekeeper_net", socket.SocketType.TCP_LISTEN),
     socket.consume_sockets(1, "flamekeeper_net", socket.SocketType.UDP),  # the server's control socket
 )
+
+
+def _limits(config):
+    if config[CONF_HTTP_SOCKETS] < config[CONF_MAX_SESSIONS] + 2:
+        raise cv.Invalid(f"{CONF_HTTP_SOCKETS} must leave 2 for the page beside the {CONF_MAX_SESSIONS}")
+    return socket.consume_sockets(config[CONF_HTTP_SOCKETS] + 1, "flamekeeper_net")(config)  # + the relay
 
 
 def _web_page(config) -> str:
@@ -73,6 +83,7 @@ async def to_code(config):
     await cg.register_component(var, config)
     cg.add(var.set_hub(await cg.get_variable(config[CONF_FLAMEKEEPER_ID])))
     cg.add(var.set_port(config[CONF_PORT]))
+    cg.add(var.set_limits(config[CONF_MAX_SESSIONS], config[CONF_HTTP_SOCKETS]))
     # In src/, beside main.cpp: ESPHome prunes files it did not copy from src/esphome/.
     write_file_if_changed(CORE.relative_src_path(WEB_HEADER), _web_page(config))
     from esphome.components.esp32 import add_idf_sdkconfig_option, include_builtin_idf_component

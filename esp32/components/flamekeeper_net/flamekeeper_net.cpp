@@ -32,11 +32,8 @@ static const uint32_t RELAY_BOOT_HOLD_MS = 20000;
 static const uint32_t TELEMETRY_RUN_MS = 1000;
 static const uint32_t TELEMETRY_IDLE_MS = 10000;
 static const uint32_t PING_MS = 20000;
-static const size_t MAX_CLIENTS = 4;  // local WebSockets; relay channels come on top (3)
-// The server's connections: the WebSockets and the page's files (a browser loads up to 6 at once).
-// HTTP_SOCKETS in __init__.py reserves them in lwIP.
-static const size_t MAX_OPEN_SOCKETS = 8;
-static_assert(MAX_OPEN_SOCKETS >= MAX_CLIENTS + 2, "room for the page beside the WebSockets");
+// The local WebSockets (relay channels come on top) and the server's connections (the WebSockets
+// and the page's files) are the board's settings (max_sessions, http_sockets in __init__.py).
 
 static FlamekeeperNet *g_net = nullptr;  // the HTTP server's handlers reach the component through it
 
@@ -334,7 +331,7 @@ bool FlamekeeperNet::start_server_() {
   httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
   cfg.server_port = this->port_;
   cfg.ctrl_port = 32770;
-  cfg.max_open_sockets = MAX_OPEN_SOCKETS;
+  cfg.max_open_sockets = this->http_sockets_;
   cfg.lru_purge_enable = true;
   cfg.close_fn = close_fn_;
   cfg.uri_match_fn = httpd_uri_match_wildcard;
@@ -553,7 +550,7 @@ void FlamekeeperNet::handle_(Inbox &in, uint32_t now) {
       if (this->client_(in.fd) != nullptr)
         return;
       if (std::count_if(this->clients_.begin(), this->clients_.end(), [](const Client &x) { return x.fd >= 0; }) >=
-          long(MAX_CLIENTS)) {
+          long(this->max_sessions_)) {
         httpd_sess_trigger_close(this->server_, in.fd);
         return;
       }

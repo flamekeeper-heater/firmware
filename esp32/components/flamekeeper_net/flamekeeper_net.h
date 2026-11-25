@@ -35,6 +35,10 @@ class FlamekeeperNet : public Component {
  public:
   void set_hub(fk::FlamekeeperHub *hub) { this->hub_ = hub; }
   void set_port(uint16_t port) { this->port_ = port; }
+  void set_limits(uint8_t max_sessions, uint8_t http_sockets) {
+    this->max_sessions_ = max_sessions;
+    this->http_sockets_ = http_sockets;
+  }
 
   void setup() override;
   void loop() override;
@@ -87,6 +91,8 @@ class FlamekeeperNet : public Component {
 
   fk::FlamekeeperHub *hub_{nullptr};
   uint16_t port_{80};
+  uint8_t max_sessions_{4};  // local WebSockets at once
+  uint8_t http_sockets_{8};  // the HTTP server's connections: the WebSockets and the page's files
   httpd_handle_t server_{nullptr};
   bool mdns_added_{false};
   bool relay_released_{false};  // the boot hold is over (relay_loop_)
