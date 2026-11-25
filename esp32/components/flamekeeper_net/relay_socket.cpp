@@ -217,7 +217,7 @@ void RelaySocket::run_() {
     // Not with the heap short: a failed try backs off and comes again later.
     const uint32_t free8 = heap_caps_get_free_size(MALLOC_CAP_8BIT);
     const uint32_t block = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-    if (free8 < MIN_FREE_TO_CONNECT || block < MIN_BLOCK_TO_CONNECT) {
+    if (free8 < this->min_free_ || block < this->min_block_) {
       ESP_LOGW(TAG, "Not connecting to the relay: %u bytes free (largest block %u)", unsigned(free8), unsigned(block));
       if (current())
         this->push_({Event::CLOSED, 0, {}});

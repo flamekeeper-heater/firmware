@@ -2,6 +2,7 @@
 
 #ifdef USE_ESP32
 
+#include <esp_heap_caps.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -34,6 +35,15 @@ static const uint32_t TELEMETRY_IDLE_MS = 10000;
 static const uint32_t PING_MS = 20000;
 // The local WebSockets (relay channels come on top) and the server's connections (the WebSockets
 // and the page's files) are the board's settings (max_sessions, http_sockets in __init__.py).
+
+// Below the board's heap floor (free or largest block) a new session is refused rather than let the
+// heap run out (an allocation that fails elsewhere then aborts and restarts the board).
+static bool heap_short(const fk::BoardServices &board) {
+  if (board.heap_floor() == 0)
+    return false;
+  return heap_caps_get_free_size(MALLOC_CAP_8BIT) < board.heap_floor() ||
+         heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < board.heap_floor_block();
+}
 
 static FlamekeeperNet *g_net = nullptr;  // the HTTP server's handlers reach the component through it
 
@@ -156,6 +166,15 @@ esp_err_t FlamekeeperNet::ws_pre_handshake_(httpd_req_t *req) {
   }
   if (!origin_ok_(req)) {
     ESP_LOGW(TAG, "WebSocket refused: opened from another site's page");
+    return ESP_FAIL;
+  }
+  if (heap_short(g_net->hub_->board())) {
+    // Busy, not broken: the app says so and tries again later (PROTOCOL.md).
+    ESP_LOGW(TAG, "WebSocket refused: heap below the floor (%u free)",
+             unsigned(heap_caps_get_free_size(MALLOC_CAP_8BIT)));
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    httpd_resp_set_hdr(req, "Retry-After", "30");
+    httpd_resp_sendstr(req, "busy");
     return ESP_FAIL;
   }
   return ESP_OK;
@@ -300,6 +319,11 @@ void FlamekeeperNet::relay_open_(uint8_t channel, uint8_t slot, uint32_t now) {
   const fk::WifiKey *key = this->hub_->board().access().app_key(slot);
   if (key == nullptr) {
     rc->close_channel(channel, fk::relay::CLOSE_KEY_REMOVED);
+    return;
+  }
+  if (heap_short(this->hub_->board())) {
+    ESP_LOGW(TAG, "Relay channel %u refused: heap below the floor", unsigned(channel));
+    rc->close_channel(channel, fk::relay::CLOSE_BUSY);
     return;
   }
   Client c{};

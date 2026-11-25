@@ -47,6 +47,7 @@ static const uint8_t WANT = 0x08;
 static const uint16_t CLOSE_NORMAL = 1000;
 static const uint16_t CLOSE_PROTOCOL = 1008;
 static const uint16_t CLOSE_KEY_REMOVED = 4100;
+static const uint16_t CLOSE_BUSY = 4101;  // the board is short of memory: try again later
 // ...and the relay's that change what the board does next.
 static const uint16_t CLOSE_REPLACED = 4001;
 static const uint16_t CLOSE_AUTH_FAILED = 4002;

@@ -557,6 +557,14 @@ void FlamekeeperBLE::gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap
       // A phone asks to pair. Only inside the window and with room in the bond table.
       this->refresh_bonds_();
       bool accept = this->window_.accept(now, this->bonds_, this->max_bonds_);
+      const fk::BoardServices &board = this->hub_->board();
+      const bool short_heap = board.heap_floor() != 0 &&
+                              (heap_caps_get_free_size(MALLOC_CAP_8BIT) < board.heap_floor() ||
+                               heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < board.heap_floor_block());
+      if (accept && short_heap) {
+        accept = false;  // the phone sees "Pairing Not Supported" (0x05); PROTOCOL.md
+        ESP_LOGW(TAG, "Pairing request refused: heap below the floor");
+      }
       this->bonds_before_pairing_ = this->bonds_;
       esp_ble_gap_security_rsp(param->ble_security.ble_req.bd_addr, accept);
       if (accept)

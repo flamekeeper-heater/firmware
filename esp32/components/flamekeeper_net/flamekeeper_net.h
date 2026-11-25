@@ -35,6 +35,7 @@ class FlamekeeperNet : public Component {
  public:
   void set_hub(fk::FlamekeeperHub *hub) { this->hub_ = hub; }
   void set_port(uint16_t port) { this->port_ = port; }
+  void set_relay_gate(uint32_t min_free, uint32_t min_block) { this->relay_sock_.set_gate(min_free, min_block); }
   void set_limits(uint8_t max_sessions, uint8_t http_sockets) {
     this->max_sessions_ = max_sessions;
     this->http_sockets_ = http_sockets;

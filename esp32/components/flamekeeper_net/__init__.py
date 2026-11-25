@@ -31,6 +31,10 @@ CONF_WEB_APP = "web_app"
 # short of heap sets them lower.
 CONF_MAX_SESSIONS = "max_sessions"
 CONF_HTTP_SOCKETS = "http_sockets"
+# The relay's TLS handshake starts only with this much 8-bit heap free and this big a block: the
+# handshake's peak plus a margin, measured per board.
+CONF_RELAY_MIN_FREE = "relay_min_free"
+CONF_RELAY_MIN_BLOCK = "relay_min_block"
 WEB_HEADER = "flamekeeper_web_files.h"
 
 CONFIG_SCHEMA = cv.All(
@@ -44,6 +48,8 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_WEB_APP): cv.string_strict,
             cv.Optional(CONF_MAX_SESSIONS, default=4): cv.int_range(min=1, max=8),
             cv.Optional(CONF_HTTP_SOCKETS, default=8): cv.int_range(min=3, max=16),
+            cv.Optional(CONF_RELAY_MIN_FREE, default=32768): cv.int_range(min=8192, max=131072),
+            cv.Optional(CONF_RELAY_MIN_BLOCK, default=8192): cv.int_range(min=2048, max=65536),
         }
     ).extend(cv.COMPONENT_SCHEMA),
     lambda config: _limits(config),
@@ -84,6 +90,7 @@ async def to_code(config):
     cg.add(var.set_hub(await cg.get_variable(config[CONF_FLAMEKEEPER_ID])))
     cg.add(var.set_port(config[CONF_PORT]))
     cg.add(var.set_limits(config[CONF_MAX_SESSIONS], config[CONF_HTTP_SOCKETS]))
+    cg.add(var.set_relay_gate(config[CONF_RELAY_MIN_FREE], config[CONF_RELAY_MIN_BLOCK]))
     # In src/, beside main.cpp: ESPHome prunes files it did not copy from src/esphome/.
     write_file_if_changed(CORE.relative_src_path(WEB_HEADER), _web_page(config))
     from esphome.components.esp32 import add_idf_sdkconfig_option, include_builtin_idf_component

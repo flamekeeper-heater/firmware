@@ -35,8 +35,13 @@ class RelaySocket {
   // server's certificates (2.5 KB for relay.flamekeeper.app; a long RSA chain is about 6 KB). It is
   // started only with this much free, and this big a block, so it never leaves the board short; a
   // handshake that still finds no room fails like any other and is tried again later.
+  // Defaults; a board sets its own from its measured handshake peak (set_gate).
   static const uint32_t MIN_FREE_TO_CONNECT = 32768;
   static const uint32_t MIN_BLOCK_TO_CONNECT = 8192;
+  void set_gate(uint32_t min_free, uint32_t min_block) {
+    this->min_free_ = min_free;
+    this->min_block_ = min_block;
+  }
 
   struct Event {
     enum Kind : uint8_t { CONNECTED, MESSAGE, CLOSED } kind;
@@ -71,6 +76,7 @@ class RelaySocket {
   std::deque<std::vector<uint8_t>> outbox_;
   std::deque<Event> events_;
   volatile uint32_t handshake_min_free_{0};
+  uint32_t min_free_{MIN_FREE_TO_CONNECT}, min_block_{MIN_BLOCK_TO_CONNECT};
   // The task's (one per connection, reserved when it comes up; the task alone uses them).
   std::vector<uint8_t> frame_;    // an outbound frame: header and masked payload, one TLS write
   std::vector<uint8_t> rx_;       // bytes read, not yet a whole frame
