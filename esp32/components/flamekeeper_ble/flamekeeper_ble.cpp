@@ -81,6 +81,7 @@ static const uint8_t PROP_INDICATE = ESP_GATT_CHAR_PROP_BIT_INDICATE;
 static const uint8_t PROP_UPDATE = ESP_GATT_CHAR_PROP_BIT_WRITE_NR | ESP_GATT_CHAR_PROP_BIT_WRITE |
                                    ESP_GATT_CHAR_PROP_BIT_NOTIFY;
 static const uint16_t UPDATE_WRITE_MAX = 512;  // the longest attribute value ATT allows
+static const uint16_t LOCAL_MTU = 247;         // the ATT MTU the board offers
 static uint8_t cccd_init[2] = {0, 0};
 
 // Encrypted and authenticated (passkey: MITM protection) on everything but Info.
@@ -113,9 +114,17 @@ void FlamekeeperBLE::build_table_() {
   const uint8_t BY_APP = ESP_GATT_RSP_BY_APP;
   auto u16 = [](const uint16_t &u) { return reinterpret_cast<const uint8_t *>(&u); };
   auto prop = [](const uint8_t &p) { return const_cast<uint8_t *>(&p); };
-  // A stack-answered value's maximum is its size: Bluedroid refuses a characteristic whose value is
-  // longer than its maximum (gatt_db.c, gatts_add_char_desc_value_check), and then the whole table
-  // fails to build and the service never runs.
+  // A stack-answered value's maximum is its size, never a literal: Bluedroid refuses a characteristic
+  // whose value is longer than its maximum (gatt_db.c, gatts_add_char_desc_value_check), and then the
+  // whole table fails to build and no phone sees the service (a 32-byte maximum did that once State
+  // and Telemetry outgrew it). What can still refuse a record that grows is checked here.
+  static_assert(INFO_SIZE <= ESP_GATT_MAX_ATTR_LEN && STATE_SIZE <= ESP_GATT_MAX_ATTR_LEN &&
+                    TELEMETRY_SIZE <= ESP_GATT_MAX_ATTR_LEN && RESULT_MAX <= ESP_GATT_MAX_ATTR_LEN &&
+                    fk::ble::COMMAND_MAX <= ESP_GATT_MAX_ATTR_LEN && UPDATE_WRITE_MAX <= ESP_GATT_MAX_ATTR_LEN,
+                "an attribute longer than the stack's maximum");
+  // Notifications and indications are not split: each record fits one at the MTU the board offers.
+  static_assert(STATE_SIZE <= LOCAL_MTU - 3 && TELEMETRY_SIZE <= LOCAL_MTU - 3 && RESULT_MAX <= LOCAL_MTU - 3,
+                "a notified record longer than one notification");
   esp_gatts_attr_db_t *t = this->table_;
   t[A_SERVICE] = attr(AUTO, ESP_UUID_LEN_16, u16(UUID_PRIMARY), ESP_GATT_PERM_READ, 16, 16, this->uuid_service_);
   t[A_INFO_DECL] = attr(AUTO, ESP_UUID_LEN_16, u16(UUID_CHAR_DECL), ESP_GATT_PERM_READ, 1, 1, prop(PROP_READ));
@@ -238,7 +247,7 @@ void FlamekeeperBLE::start_stack_() {
   esp_ble_gap_set_security_param(ESP_BLE_SM_SET_RSP_KEY, &keys, sizeof(keys));
   esp_ble_gap_set_security_param(ESP_BLE_SM_ONLY_ACCEPT_SPECIFIED_SEC_AUTH, &only_specified, sizeof(only_specified));
   this->set_passkey_(this->hub_->board().pin());
-  esp_ble_gatt_set_local_mtu(247);
+  esp_ble_gatt_set_local_mtu(LOCAL_MTU);
   // Our callback in front of ESPHome's (it forwards every event): see gatts_callback.
   esp_err_t err = esp_ble_gatts_register_callback(gatts_callback);
   if (err != ESP_OK)
