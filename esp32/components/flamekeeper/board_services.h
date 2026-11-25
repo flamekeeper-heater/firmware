@@ -78,6 +78,10 @@ class BoardServices : public BoardSettings {
   void on_pin_change(std::function<void(uint32_t)> &&cb) { this->pin_cbs_.push_back(std::move(cb)); }
   // Bluetooth fills in the pairing fields of Info.
   void set_pairing_info(std::function<void(BoardInfo &)> &&fill) { this->pairing_info_ = std::move(fill); }
+  // Bluetooth's own service has started, or will not: at boot the relay's first connection waits
+  // for it (its TLS handshake takes most of the free heap for a moment).
+  void set_bluetooth_settled() { this->bluetooth_settled_ = true; }
+  bool bluetooth_settled() const { return this->bluetooth_settled_; }
   void info(BoardInfo &out) const;
   // Records for every connected app (event 05); each transport registers one.
   void on_record(std::function<void(const uint8_t *, size_t)> &&cb) { this->record_cbs_.push_back(std::move(cb)); }
@@ -173,6 +177,7 @@ class BoardServices : public BoardSettings {
   std::function<void()> forget_bonds_;
   std::function<void(const uint8_t addr[6])> forget_bond_;
   bool resetting_{false};
+  bool bluetooth_settled_{false};
   std::unique_ptr<RelayClient> relay_;
   ESPPreferenceObject relay_pref_;
   std::unique_ptr<PushEngine> push_;

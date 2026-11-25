@@ -114,6 +114,7 @@ class FlamekeeperBLE : public Component {
   void build_table_();
   void create_table_(esp_gatt_if_t gatts_if);
   void poll_table_(uint32_t now);
+  void settle_();
   Conn *conn_(uint16_t id);
   void on_write_(esp_ble_gatts_cb_param_t *param);
   void queue_result_(Conn &c, const uint8_t *data, size_t len);
@@ -147,7 +148,10 @@ class FlamekeeperBLE : public Component {
   uint32_t reg_seen_ms_{0};       // registered (seen from the Bluetooth task) but no event yet
   uint16_t handles_[A_COUNT]{};
   bool table_ready_{false};
-  bool service_reported_{false};  // the service's start (or its absence) has been logged
+  bool service_settled_{false};   // started, or given up on (settle_)
+  static const uint8_t RETRIES = 3;
+  uint8_t builds_{0}, starts_{0};  // retries made
+  uint32_t retry_ms_{0};           // a retry is due 2 s after this
   std::vector<Conn> conns_;
 
   // attribute table storage (the stack keeps pointers to some of it)

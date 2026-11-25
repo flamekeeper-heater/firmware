@@ -39,7 +39,8 @@ static const uint16_t APP_ID = 0x464B;  // "FK"; ESPHome's own BLE server is app
 // the main loop only reads the result (poll_table_).
 static volatile esp_gatt_if_t g_our_if = ESP_GATT_IF_NONE;
 static uint16_t g_tab_handles[A_COUNT];
-static volatile bool g_tab_copied = false;
+static volatile int g_tab_status = -1;           // the table event's status, -1 until it comes
+static volatile uint16_t g_tab_service = 0;      // a failed table's service handle (deleted before a retry)
 static volatile esp_err_t g_start_err = ESP_OK;  // esp_ble_gatts_start_service's own answer
 static volatile int g_start_status = -1;         // the start event's status, -1 until it comes
 
@@ -47,13 +48,17 @@ static void gatts_callback(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, e
   if (param != nullptr) {
     if (event == ESP_GATTS_REG_EVT && param->reg.app_id == APP_ID && param->reg.status == ESP_GATT_OK) {
       g_our_if = gatts_if;
-    } else if (event == ESP_GATTS_CREAT_ATTR_TAB_EVT && gatts_if == g_our_if && !g_tab_copied &&
-               param->add_attr_tab.status == ESP_GATT_OK && param->add_attr_tab.handles != nullptr &&
-               param->add_attr_tab.num_handle == A_COUNT) {
-      memcpy(g_tab_handles, param->add_attr_tab.handles, sizeof(g_tab_handles));
-      g_tab_copied = true;
-      g_start_err = esp_ble_gatts_start_service(g_tab_handles[A_SERVICE]);
-    } else if (event == ESP_GATTS_START_EVT && gatts_if == g_our_if && g_tab_copied &&
+    } else if (event == ESP_GATTS_CREAT_ATTR_TAB_EVT && gatts_if == g_our_if && g_tab_status < 0) {
+      const auto &t = param->add_attr_tab;
+      if (t.status == ESP_GATT_OK && t.handles != nullptr && t.num_handle == A_COUNT) {
+        memcpy(g_tab_handles, t.handles, sizeof(g_tab_handles));
+        g_start_err = esp_ble_gatts_start_service(g_tab_handles[A_SERVICE]);
+        g_tab_status = ESP_GATT_OK;
+      } else {
+        g_tab_service = t.handles != nullptr && t.num_handle > 0 ? t.handles[0] : 0;
+        g_tab_status = t.status != ESP_GATT_OK ? int(t.status) : int(ESP_GATT_ERROR);
+      }
+    } else if (event == ESP_GATTS_START_EVT && gatts_if == g_our_if && g_tab_status == ESP_GATT_OK &&
                param->start.service_handle == g_tab_handles[A_SERVICE]) {
       g_start_status = param->start.status;
     }
@@ -209,9 +214,7 @@ void FlamekeeperBLE::setup() {
 void FlamekeeperBLE::dump_config() {
   ESP_LOGCONFIG(TAG, "Flamekeeper BLE service (protocol %u.%u)", fk::ble::PROTOCOL_MAJOR, fk::ble::PROTOCOL_MINOR);
   ESP_LOGCONFIG(TAG, "  Service: %s (handles %u-%u)",
-                g_start_status == ESP_GATT_OK ? "running"
-                : (this->stack_started_ && millis() - this->stack_ms_ > 15000) ? "NOT RUNNING"
-                                                                               : "starting",
+                g_start_status == ESP_GATT_OK ? "running" : this->service_settled_ ? "NOT RUNNING" : "starting",
                 this->handles_[A_SERVICE], this->handles_[A_COUNT - 1]);
   ESP_LOGCONFIG(TAG, "  Phones paired: %u of %u", this->bonds_, this->max_bonds_);
   ESP_LOGCONFIG(TAG, "  Pairing window: %u s, opens on power-up: %s", (unsigned) (this->window_ms_ / 1000),
@@ -259,9 +262,12 @@ void FlamekeeperBLE::create_table_(esp_gatt_if_t gatts_if) {
     ESP_LOGE(TAG, "esp_ble_gatts_create_attr_tab failed: %d", err);
 }
 
-// What the Bluetooth task did with the service (gatts_callback), and the steps whose events
-// ESPHome's queue lost.
+// What the Bluetooth task did with the service (gatts_callback): a table that failed to build is
+// deleted and built again, a start that failed is tried again, each a few times, 2 s apart (a
+// failure is most likely a moment short of heap). Settled, started or not, it lets the relay connect.
 void FlamekeeperBLE::poll_table_(uint32_t now) {
+  if (this->service_settled_)
+    return;
   if (this->gatts_if_ == ESP_GATT_IF_NONE && g_our_if != ESP_GATT_IF_NONE) {
     // Registered, but the event has not reached the main loop: lost, after a grace period (made
     // as soon as the event comes, the table keeps its place after Device Information's).
@@ -272,26 +278,63 @@ void FlamekeeperBLE::poll_table_(uint32_t now) {
       this->create_table_(g_our_if);
     }
   }
-  if (!this->table_ready_ && g_tab_copied) {
-    memcpy(this->handles_, g_tab_handles, sizeof(this->handles_));
-    this->table_ready_ = true;
-  }
-  if (this->service_reported_)
+  const int tab = g_tab_status;
+  if (tab > 0) {
+    if (this->builds_ >= RETRIES) {
+      ESP_LOGE(TAG, "Service not started: the attribute table failed to build (status %d); phones cannot see it", tab);
+      this->settle_();
+    } else if (this->retry_ms_ == 0) {
+      ESP_LOGW(TAG, "Attribute table failed to build (status %d); trying again in 2 s", tab);
+      if (g_tab_service != 0)
+        esp_ble_gatts_delete_service(g_tab_service);
+      this->retry_ms_ = now == 0 ? 1 : now;
+    } else if (now - this->retry_ms_ >= 2000) {
+      this->retry_ms_ = 0;
+      this->builds_++;
+      g_tab_service = 0;
+      g_tab_status = -1;
+      this->table_asked_ = false;
+      this->create_table_(this->gatts_if_);
+    }
     return;
-  if (g_tab_copied && g_start_err != ESP_OK) {
-    ESP_LOGE(TAG, "Service not started: esp_ble_gatts_start_service %d; phones cannot see it", g_start_err);
-    this->service_reported_ = true;
-  } else if (g_start_status == ESP_GATT_OK) {
-    ESP_LOGI(TAG, "Service started (handles %u-%u)", this->handles_[A_SERVICE], this->handles_[A_COUNT - 1]);
-    this->service_reported_ = true;
-  } else if (g_start_status > 0) {
-    ESP_LOGE(TAG, "Service not started: status %d; phones cannot see it", g_start_status);
-    this->service_reported_ = true;
-  } else if (now - this->stack_ms_ > 15000) {
-    ESP_LOGE(TAG, "Service not started 15 s after the stack (registered %s, table %s); phones cannot see it",
-             YESNO(g_our_if != ESP_GATT_IF_NONE), YESNO(g_tab_copied));
-    this->service_reported_ = true;
   }
+  if (tab == ESP_GATT_OK) {
+    if (!this->table_ready_) {
+      memcpy(this->handles_, g_tab_handles, sizeof(this->handles_));
+      this->table_ready_ = true;
+    }
+    const int st = g_start_status;
+    if (st == ESP_GATT_OK) {
+      ESP_LOGI(TAG, "Service started (handles %u-%u)", this->handles_[A_SERVICE], this->handles_[A_COUNT - 1]);
+      this->settle_();
+      return;
+    }
+    if (g_start_err != ESP_OK || st > 0) {
+      if (this->starts_ >= RETRIES) {
+        ESP_LOGE(TAG, "Service not started (start %d, status %d); phones cannot see it", g_start_err, st);
+        this->settle_();
+      } else if (this->retry_ms_ == 0) {
+        ESP_LOGW(TAG, "Service did not start (start %d, status %d); trying again in 2 s", g_start_err, st);
+        this->retry_ms_ = now == 0 ? 1 : now;
+      } else if (now - this->retry_ms_ >= 2000) {
+        this->retry_ms_ = 0;
+        this->starts_++;
+        g_start_status = -1;
+        g_start_err = esp_ble_gatts_start_service(this->handles_[A_SERVICE]);
+      }
+      return;
+    }
+  }
+  if (now - this->stack_ms_ > 30000) {
+    ESP_LOGE(TAG, "Service not started 30 s after the stack (registered %s, table %s); phones cannot see it",
+             YESNO(g_our_if != ESP_GATT_IF_NONE), YESNO(tab == ESP_GATT_OK));
+    this->settle_();
+  }
+}
+
+void FlamekeeperBLE::settle_() {
+  this->service_settled_ = true;
+  this->hub_->board().set_bluetooth_settled();
 }
 
 // ---------------------------------------------------------------- loop

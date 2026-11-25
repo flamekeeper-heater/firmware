@@ -27,6 +27,8 @@ namespace flamekeeper_net {
 static const char *const TAG = "flamekeeper_net";
 static const char *const SUBPROTOCOL = "flamekeeper.v1";
 static const uint32_t STATE_MIN_MS = 250;
+// At boot the relay waits this long at most for Bluetooth's service to start (relay_loop_).
+static const uint32_t RELAY_BOOT_HOLD_MS = 20000;
 static const uint32_t TELEMETRY_RUN_MS = 1000;
 static const uint32_t TELEMETRY_IDLE_MS = 10000;
 static const uint32_t PING_MS = 20000;
@@ -264,6 +266,16 @@ void FlamekeeperNet::relay_loop_(uint32_t now, bool online) {
   fk::RelayClient *rc = this->hub_->board().relay_client();
   if (rc == nullptr)
     return;
+  // The relay's TLS handshake takes most of the free heap for a moment; Bluetooth building its
+  // service at the same time could fail, and then no phone sees the board over Bluetooth. So at
+  // boot the relay waits until that service has started (or will not), or RELAY_BOOT_HOLD_MS.
+  if (!this->relay_released_) {
+    const bool settled = this->hub_->board().bluetooth_settled();
+    if (!settled && now < RELAY_BOOT_HOLD_MS)
+      return;
+    this->relay_released_ = true;
+    ESP_LOGI(TAG, "Relay may connect (Bluetooth service %s)", settled ? "settled" : "not settled after 20 s");
+  }
   std::deque<RelaySocket::Event> &events = this->relay_events_;
   this->relay_sock_.poll(events);
   for (RelaySocket::Event &e : events) {

@@ -89,6 +89,7 @@ class FlamekeeperNet : public Component {
   uint16_t port_{80};
   httpd_handle_t server_{nullptr};
   bool mdns_added_{false};
+  bool relay_released_{false};  // the boot hold is over (relay_loop_)
   SemaphoreHandle_t lock_{nullptr};
   // The Host header values the board answers (its mDNS name, its address), kept by the main loop.
   char host_name_[72]{};
