@@ -113,17 +113,20 @@ void FlamekeeperBLE::build_table_() {
   const uint8_t BY_APP = ESP_GATT_RSP_BY_APP;
   auto u16 = [](const uint16_t &u) { return reinterpret_cast<const uint8_t *>(&u); };
   auto prop = [](const uint8_t &p) { return const_cast<uint8_t *>(&p); };
+  // A stack-answered value's maximum is its size: Bluedroid refuses a characteristic whose value is
+  // longer than its maximum (gatt_db.c, gatts_add_char_desc_value_check), and then the whole table
+  // fails to build and the service never runs.
   esp_gatts_attr_db_t *t = this->table_;
   t[A_SERVICE] = attr(AUTO, ESP_UUID_LEN_16, u16(UUID_PRIMARY), ESP_GATT_PERM_READ, 16, 16, this->uuid_service_);
   t[A_INFO_DECL] = attr(AUTO, ESP_UUID_LEN_16, u16(UUID_CHAR_DECL), ESP_GATT_PERM_READ, 1, 1, prop(PROP_READ));
-  t[A_INFO] = attr(AUTO, ESP_UUID_LEN_128, this->uuid_info_, ESP_GATT_PERM_READ, 32, INFO_SIZE, this->info_);
+  t[A_INFO] = attr(AUTO, ESP_UUID_LEN_128, this->uuid_info_, ESP_GATT_PERM_READ, INFO_SIZE, INFO_SIZE, this->info_);
   t[A_STATE_DECL] = attr(AUTO, ESP_UUID_LEN_16, u16(UUID_CHAR_DECL), ESP_GATT_PERM_READ, 1, 1, prop(PROP_READ_NOTIFY));
-  t[A_STATE] = attr(AUTO, ESP_UUID_LEN_128, this->uuid_state_, PERM_SECURE_READ, 32, STATE_SIZE, this->state_);
+  t[A_STATE] = attr(AUTO, ESP_UUID_LEN_128, this->uuid_state_, PERM_SECURE_READ, STATE_SIZE, STATE_SIZE, this->state_);
   t[A_STATE_CCCD] = attr(AUTO, ESP_UUID_LEN_16, u16(UUID_CCCD), PERM_SECURE_RW, 2, 2, cccd_init);
   t[A_TELEMETRY_DECL] =
       attr(AUTO, ESP_UUID_LEN_16, u16(UUID_CHAR_DECL), ESP_GATT_PERM_READ, 1, 1, prop(PROP_READ_NOTIFY));
-  t[A_TELEMETRY] =
-      attr(AUTO, ESP_UUID_LEN_128, this->uuid_telemetry_, PERM_SECURE_READ, 32, TELEMETRY_SIZE, this->telemetry_);
+  t[A_TELEMETRY] = attr(AUTO, ESP_UUID_LEN_128, this->uuid_telemetry_, PERM_SECURE_READ, TELEMETRY_SIZE,
+                        TELEMETRY_SIZE, this->telemetry_);
   t[A_TELEMETRY_CCCD] = attr(AUTO, ESP_UUID_LEN_16, u16(UUID_CCCD), PERM_SECURE_RW, 2, 2, cccd_init);
   t[A_COMMAND_DECL] = attr(AUTO, ESP_UUID_LEN_16, u16(UUID_CHAR_DECL), ESP_GATT_PERM_READ, 1, 1, prop(PROP_WRITE));
   // Answered by us: a write is refused (0xFD) while Result indications are off. The stack does not
