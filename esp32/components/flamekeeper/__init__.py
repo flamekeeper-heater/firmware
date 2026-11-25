@@ -46,9 +46,6 @@ def _pin(value):
         raise cv.Invalid("the PIN has exactly six digits")
     return int(value)
 
-CONF_HEAP_FLOOR = "heap_floor"
-CONF_HEAP_FLOOR_BLOCK = "heap_floor_block"
-
 CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(): cv.declare_id(FlamekeeperHub),
@@ -76,11 +73,6 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Exclusive(CONF_PIN_EFUSE_KEY, "pin"): cv.int_range(min=0, max=5),
         # Home Assistant always on, or off until switched on from the app.
         cv.Optional(CONF_HOME_ASSISTANT, default="always_on"): cv.enum(HA_MODES, lower=True),
-        # The heap floor: below this much free 8-bit heap, or a largest free block below
-        # heap_floor_block, the board refuses a new app session (Wi-Fi, relay) and a new pairing
-        # rather than run short. 0 (the default): no floor.
-        cv.Optional(CONF_HEAP_FLOOR, default=0): cv.int_range(min=0, max=131072),
-        cv.Optional(CONF_HEAP_FLOOR_BLOCK, default=0): cv.int_range(min=0, max=65536),
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -98,7 +90,6 @@ async def to_code(config):
     if CONF_PIN_EFUSE_KEY in config:
         cg.add(board.set_pin_efuse_key(config[CONF_PIN_EFUSE_KEY]))
     cg.add(board.set_ha_mode(config[CONF_HOME_ASSISTANT]))
-    cg.add(board.set_heap_floor(config[CONF_HEAP_FLOOR], config[CONF_HEAP_FLOOR_BLOCK]))
     # The Wi-Fi sign-in (wifi_session.cpp) runs EC J-PAKE, which ESP-IDF's mbedTLS leaves out.
     from esphome.components.esp32 import add_idf_sdkconfig_option
 

@@ -81,13 +81,6 @@ class BoardServices : public BoardSettings {
   // Bluetooth's own service has started, or will not: at boot the relay's first connection waits
   // for it (its TLS handshake takes most of the free heap for a moment).
   void set_bluetooth_settled() { this->bluetooth_settled_ = true; }
-  // The heap floor (a board setting): the transports refuse a new session below it.
-  void set_heap_floor(uint32_t free_bytes, uint32_t block_bytes) {
-    this->heap_floor_ = free_bytes;
-    this->heap_floor_block_ = block_bytes;
-  }
-  uint32_t heap_floor() const { return this->heap_floor_; }
-  uint32_t heap_floor_block() const { return this->heap_floor_block_; }
   bool bluetooth_settled() const { return this->bluetooth_settled_; }
   void info(BoardInfo &out) const;
   // Records for every connected app (event 05); each transport registers one.
@@ -185,7 +178,6 @@ class BoardServices : public BoardSettings {
   std::function<void(const uint8_t addr[6])> forget_bond_;
   bool resetting_{false};
   bool bluetooth_settled_{false};
-  uint32_t heap_floor_{0}, heap_floor_block_{0};
   std::unique_ptr<RelayClient> relay_;
   ESPPreferenceObject relay_pref_;
   std::unique_ptr<PushEngine> push_;
