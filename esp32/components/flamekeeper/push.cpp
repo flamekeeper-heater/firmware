@@ -67,8 +67,7 @@ PushPrefs PushEngine::prefs_(int slot) const {
 bool PushEngine::prefs_get(int slot, PushPrefs &out) const {
   if (slot < 0 || slot >= int(relay::SLOTS) || this->access_.app_key(size_t(slot)) == nullptr)
     return false;
-  out = this->prefs_(slot);
-  out.alerts |= uint16_t(1u << push::CO_BIT);  // the CO alarm is always sent: never shown off
+  out = this->prefs_(slot);  // as stored: the CO alarm is sent whatever its bit says
   return true;
 }
 

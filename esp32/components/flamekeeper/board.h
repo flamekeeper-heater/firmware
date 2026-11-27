@@ -145,7 +145,7 @@ inline bool relay_host_ok(const uint8_t *host, size_t len) {
 // Push notification preferences, per phone key (PROTOCOL.md).
 namespace push {
 static const uint16_t DEFAULT_ALERTS = 0x1FEF;  // every alert but bit 4 (thermometer not heard)
-static const uint16_t DEFAULT_EVENTS = 0;
+static const uint8_t DEFAULT_EVENTS = 0;
 static const uint8_t FLAG_ON = 0x01;           // notifications on (off: nothing but the CO alarm)
 static const uint8_t FLAG_LIVE = 0x02;         // the live card on
 static const uint8_t FLAG_LIVE_BOARD = 0x04;   // ...for the board's own runs (timer, frost, burn-off)
@@ -155,7 +155,7 @@ static const uint8_t DEFAULT_FLAGS = FLAG_ON | FLAG_LIVE | FLAG_LIVE_BOARD;
 }  // namespace push
 struct PushPrefs {
   uint16_t alerts{push::DEFAULT_ALERTS};
-  uint16_t events{push::DEFAULT_EVENTS};
+  uint8_t events{push::DEFAULT_EVENTS};  // bits 0-6 (bit 7 ignored)
   uint8_t flags{push::DEFAULT_FLAGS};
 };
 

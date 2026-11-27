@@ -755,8 +755,8 @@ size_t handle_command(const uint8_t *in, size_t len, Controller &c, Link &link, 
           break;
         PushPrefs p;
         p.alerts = get_u16(arg);
-        p.events = get_u16(arg + 2);
-        p.flags = arg[4];
+        p.events = arg[2];
+        p.flags = arg[3];
         return outcome(req, opcode, pc->prefs_set(slot, p), out, cap);
       }
       if (!need(0))
@@ -766,10 +766,9 @@ size_t handle_command(const uint8_t *in, size_t len, Controller &c, Link &link, 
         return result(req, opcode, Result::KEY_UNKNOWN, "this phone has no Wi-Fi key yet: ask for one first", out, cap);
       size_t k = result(req, opcode, Result::OK, nullptr, out, cap);
       put_u16(out + k, p.alerts);
-      put_u16(out + k + 2, p.events);
-      out[k + 4] = p.flags;
-      out[k + 5] = uint8_t(slot);
-      return k + 6;
+      out[k + 2] = p.events;
+      out[k + 3] = p.flags;
+      return k + 4;
     }
 
     // ---------------------------------------------------------------- board firmware updates

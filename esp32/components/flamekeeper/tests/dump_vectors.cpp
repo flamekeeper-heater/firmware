@@ -933,12 +933,12 @@ static std::string relay_vectors() {
   FakePush fp;
   r.board.psh = &fp;
   r.link.slot = 2;
-  const Bytes prefs_cmd = {0x61, ble::op::PUSH_PREFS, 0xEF, 0x0F, 0x05, 0x00, 0x03};
+  const Bytes prefs_cmd = {0x61, ble::op::PUSH_PREFS, 0xEF, 0x0F, 0x05, 0x03};  // u16 alerts, u8 events, u8 flags
   const Bytes prefs_res = r.run(prefs_cmd);
   CHECK(prefs_res.size() == 3 && prefs_res[2] == 0);
   const Bytes get_cmd = {0x62, ble::op::PUSH_PREFS_GET};
   const Bytes get_res = r.run(get_cmd);
-  CHECK(get_res.size() == 9 && get_res[8] == 2);
+  CHECK(get_res.size() == 7 && get_res[3] == 0xEF && get_res[4] == 0x0F && get_res[5] == 0x05 && get_res[6] == 0x03);
 
   // The live card (LIVE): a run a phone in slot 2 started, heating by temperature, ending at 21:45.
   fk::PushEngine::LiveContent lc;

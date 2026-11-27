@@ -187,10 +187,10 @@ static void test_prefs_and_filters() {
   const uint8_t p2[6] = {3, 3, 3, 3, 3, 3};
   CHECK(r.access.issue_app_key(p2) != nullptr && r.access.app_key(2) != nullptr);
   fk::PushPrefs card;
-  card.alerts = 0x0001;  // only fuel low: GET still shows the CO alarm (bit 10) on
+  card.alerts = 0x0001;  // only fuel low: GET returns it as stored (the CO alarm goes whatever bit 10 says)
   card.flags = 0x0B;
   CHECK(r.push.prefs_set(2, card).accepted());
-  CHECK(r.push.prefs_get(2, got) && got.alerts == 0x0401 && got.flags == 0x0B);
+  CHECK(r.push.prefs_get(2, got) && got.alerts == 0x0001 && got.flags == 0x0B);
   card.flags = 0x10;
   CHECK(r.push.prefs_set(2, card).result == fk::Result::OUT_OF_RANGE);
   CHECK(r.push.prefs_get(2, got) && got.flags == 0x0B);

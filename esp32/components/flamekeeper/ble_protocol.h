@@ -111,7 +111,7 @@ static const uint32_t CAP_HA_ROOM = 1u << 10;  // a Home Assistant room temperat
 static const uint32_t CAP_HEATER_LOG = 1u << 11;  // the heater keeps a fault log (HEATER_LOG, State byte 32)
 static const size_t HEATER_LOG_ENTRY_SIZE = 14;
 static const size_t HEATER_LOG_PAGE = 8;  // entries in one HEATER_LOG result
-static const size_t PUSH_PREFS_SIZE = 5;
+static const size_t PUSH_PREFS_SIZE = 4;  // u16 alerts, u8 events, u8 flags
 // Bluetooth: an Update data write is the ATT MTU less the ATT header (3) and the offset (4).
 static const size_t UPDATE_BLE_OVERHEAD = 7;
 static const size_t TIMER_RECORD_SIZE = 15;

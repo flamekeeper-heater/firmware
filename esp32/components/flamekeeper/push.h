@@ -68,10 +68,10 @@ class PushEngine : public PushControl {
     struct Slot {
       uint8_t key_id[KEY_ID_SIZE];
       uint16_t alerts;
-      uint16_t events;
+      uint8_t events;
       uint8_t flags;
       uint8_t used;
-      uint8_t reserved[2];
+      uint8_t reserved[3];
     } slots[relay::SLOTS];
   };
   // Changed with the record's layout, so a record saved in another is never read as this one.
