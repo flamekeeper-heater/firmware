@@ -55,7 +55,6 @@ enum class ControlStatus : uint8_t {
   PRIMING = 3,
   STOPPING = 4,
   NO_REPLY = 5,
-  UPDATING = 6,
 };
 
 // Heater faults, mapped by the backend from the heater's own code (PROTOCOL.md).

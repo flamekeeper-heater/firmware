@@ -68,7 +68,7 @@ struct Rig {
   std::vector<std::vector<uint8_t>> lives(size_t from = 0) const {
     std::vector<std::vector<uint8_t>> out;
     for (size_t i = from; i < sent.size(); i++)
-      if (sent[i].size() >= 14 && sent[i][0] == 0 && sent[i][1] == rl::op::LIVE)
+      if (sent[i].size() >= 9 && sent[i][0] == 0 && sent[i][1] == rl::op::LIVE)
         out.push_back(sent[i]);
     return out;
   }
@@ -76,15 +76,15 @@ struct Rig {
   static std::vector<int> live_slots(const std::vector<uint8_t> &m) {
     std::vector<int> out;
     for (int i = 0; i < 8; i++)
-      if (m[13] & (1u << i))
+      if (m[8] & (1u << i))
         out.push_back(i);
     return out;
   }
   // A LIVE's plain record, if it is for slot `slot`; empty if not.
   static std::vector<uint8_t> live_record(const std::vector<uint8_t> &m, int slot) {
-    if (m.size() != 14 + 33 || !(m[13] & (1u << slot)))
+    if (m.size() != 9 + 28 || !(m[8] & (1u << slot)))
       return {};
-    return std::vector<uint8_t>(m.begin() + 14, m.end());
+    return std::vector<uint8_t>(m.begin() + 9, m.end());
   }
   // A start from the phone in key slot `slot` (as the command handler does it), the heater following.
   void phone_start(int slot, Mode mode = Mode::HEAT) {
@@ -160,11 +160,11 @@ static void test_alert_reaches_each_phone() {
   auto p0 = r.open(m, 0, r.k0), p1 = r.open(m, 1, r.k1);
   CHECK(!p0.empty() && !p1.empty());
   CHECK(r.open(m, 0, r.k1).empty());  // phone 1's key does not open phone 0's blob
-  // Payload: version 1, the alert's log record, class, alert 10, alerts active.
-  CHECK(p0[0] == 1 && p0[9] == 3 && p0[10] == 0 && p0[11] == 10);
-  CHECK(u32(p0.data() + 1) == r.a.log().newest() || u32(p0.data() + 1) <= r.a.log().newest());
-  CHECK(u16(p0.data() + 13) & (1u << 10));
-  CHECK(p0[35] > 0 && p0.size() == 36u + p0[35]);  // the alert's text
+  // Payload: the alert's log record, class, alert 10, alerts active.
+  CHECK(p0[8] == 3 && p0[9] == 0 && p0[10] == 10);
+  CHECK(u32(p0.data() + 0) <= r.a.log().newest());
+  CHECK(u16(p0.data() + 12) & (1u << 10));
+  CHECK(p0[26] > 0 && p0.size() == 27u + p0[26]);  // the alert's text
   // A relay that changes the class breaks the tag.
   auto forged = m;
   forged[2] = 0;
@@ -229,7 +229,7 @@ static void test_coalescing_and_hold_off() {
   auto ps = r.pushes(mark);
   CHECK(ps.size() == 1);
   auto p = r.open(ps[0], 0, r.k0);
-  CHECK(!p.empty() && p[11] == 11 && (u16(p.data() + 15) & (1u << 2)));
+  CHECK(!p.empty() && p[10] == 11);  // the CO sensor fault leads
   // The burn alert clears and rises again within the hour: held off.
   r.h.st.fault = fk::Fault::NONE;
   r.a.clear_alerts(fk::alert::BURN);
@@ -253,7 +253,7 @@ static void test_co_repeats() {
   CHECK(ps.size() == 2);
   if (ps.size() == 2) {
     auto p = r.open(ps[1], 0, r.k0);
-    CHECK(!p.empty() && p[11] == 10 && ((p[19] >> 1) & 3) == 1);  // repeat 1
+    CHECK(!p.empty() && p[10] == 10 && ((p[14] >> 1) & 3) == 1);  // repeat 1
   }
   // Someone signs in: no third.
   r.push.app_seen();
@@ -275,7 +275,7 @@ static void test_held_while_relay_down() {
   CHECK(ps.size() == 1);
   if (!ps.empty()) {
     auto p = r.open(ps[0], 0, r.k0);
-    CHECK(!p.empty() && p[11] == 2 && (p[19] & 1) && u32(p.data() + 1) <= seq_at);
+    CHECK(!p.empty() && p[10] == 2 && (p[14] & 1) && u32(p.data() + 0) <= seq_at);
   }
   // An alert that cleared while the relay was down is not sent.
   Rig q;
@@ -304,8 +304,8 @@ static void test_events() {
   CHECK(ps.size() == 1);
   if (!ps.empty()) {
     auto pl = r.open(ps[0], 0, r.k0);
-    CHECK(!pl.empty() && pl[9] == 0 && pl[10] == 1 && pl[11] == fk::push::EV_STARTED_BY_OTHER &&
-          pl[12] == uint8_t(Source::HOME_ASSISTANT));
+    CHECK(!pl.empty() && pl[8] == 0 && pl[9] == 1 && pl[10] == fk::push::EV_STARTED_BY_OTHER &&
+          pl[11] == uint8_t(Source::HOME_ASSISTANT));
   }
   // Phone 1 (no events wanted) got nothing.
   CHECK(ps.empty() || ps[0][3] == 1);
@@ -324,12 +324,12 @@ static void test_payload_layout() {
   s.run_end_utc = 0;
   fk::PushEngine::Item lead{0, 0, 0, 77, 1790000000u};
   uint8_t out[100];
-  size_t n = fk::PushEngine::encode_payload(lead, 0x0008, 0x0010, 0x01, s, "fuel low: 12 % left", out, sizeof(out));
-  CHECK(n == 36 + 19);
-  CHECK(out[0] == 1 && u32(out + 1) == 77 && u32(out + 5) == 1790000000u && out[9] == 1 && out[10] == 0 && out[11] == 0);
-  CHECK(u16(out + 13) == 0x0401 && u16(out + 15) == 0x0008 && u16(out + 17) == 0x0010 && out[19] == 1);
-  CHECK(out[20] == 12 && u16(out + 21) == 1234 && u16(out + 25) == 0xFFFF && u16(out + 27) == 48 && u16(out + 29) == 0x8000);
-  CHECK(out[35] == 19 && std::memcmp(out + 36, "fuel low: 12 % left", 19) == 0);
+  size_t n = fk::PushEngine::encode_payload(lead, 0x01, s, "fuel low: 12 % left", out, sizeof(out));
+  CHECK(n == 27 + 19);
+  CHECK(u32(out + 0) == 77 && u32(out + 4) == 1790000000u && out[8] == 1 && out[9] == 0 && out[10] == 0);
+  CHECK(u16(out + 12) == 0x0401 && out[14] == 1);
+  CHECK(out[15] == 12 && u16(out + 16) == 1234 && u16(out + 18) == 48 && u16(out + 20) == 0x8000 && u32(out + 22) == 0);
+  CHECK(out[26] == 19 && std::memcmp(out + 27, "fuel low: 12 % left", 19) == 0);
   // Classes.
   CHECK(fk::push::alert_class(10) == 3 && fk::push::alert_class(11) == 2 && fk::push::alert_class(0) == 1 &&
         fk::push::alert_class(8) == 0 && fk::push::alert_class(4) == 0);
@@ -362,7 +362,7 @@ static void test_fan_retry_not_pushed() {
   if (ps.size() == 1) {
     CHECK_EQ(ps[0][2], 2);  // urgent
     auto p = r.open(ps[0], 0, r.k0);
-    CHECK(!p.empty() && p[10] == 0 && p[11] == 2 && p[23] == 7 && p[24] == 7);
+    CHECK(!p.empty() && p[9] == 0 && p[10] == 2);  // the burn problem (its text says the fan stalled)
   }
 }
 
@@ -391,18 +391,16 @@ static void test_live_card() {
   if (ls.size() != 1)
     return;
   CHECK(ls[0][2] == fk::push::LIVE_START && ls[0][3] == fk::push::LIVE_IMPORTANT);
-  CHECK(u16(ls[0].data() + 4) == 360 && u16(ls[0].data() + 6) == 0 && ls[0][8] == 0);
-  const uint32_t run = u32(ls[0].data() + 9);  // the controller's run id
+  const uint32_t run = u32(ls[0].data() + 4);  // the controller's run id
   CHECK(run != 0 && run == r.c.status().run_id);
   CHECK(Rig::live_slots(ls[0]) == std::vector<int>({0}));
   auto rec = Rig::live_record(ls[0], 0);
-  CHECK_EQ(rec.size(), 33);
-  if (rec.size() == 33) {
-    CHECK(rec[0] == 1 && rec[9] == uint8_t(HeaterState::HEATING) && rec[11] == uint8_t(Source::PHONE));
-    CHECK(rec[10] == 1);  // heat by power (the controller's default)
+  CHECK_EQ(rec.size(), 28);
+  if (rec.size() == 28) {
+    CHECK(rec[4] == uint8_t(HeaterState::HEATING) && rec[6] == uint8_t(Source::PHONE));
+    CHECK(rec[5] == 1);  // heat by power (the controller's default)
   }
   CHECK(Rig::live_record(ls[0], 1).empty());
-  const uint32_t seq0 = rec.size() == 33 ? u32(rec.data() + 1) : 0;
 
   // A power change 1 s after the start goes 5 s after it, not important.
   mark = r.sent.size();
@@ -413,9 +411,9 @@ static void test_live_card() {
   ls = r.lives(mark);
   CHECK_EQ(ls.size(), 1);
   if (ls.size() == 1) {
-    CHECK(ls[0][2] == fk::push::LIVE_UPDATE && ls[0][3] == 0 && u32(ls[0].data() + 9) == run);
+    CHECK(ls[0][2] == fk::push::LIVE_UPDATE && ls[0][3] == 0 && u32(ls[0].data() + 4) == run);
     rec = Rig::live_record(ls[0], 0);
-    CHECK(rec.size() == 33 && rec[19] == 70 && u32(rec.data() + 1) > seq0);
+    CHECK(rec.size() == 28 && rec[14] == 70);
   }
   // A room change waits for the 20 s window.
   mark = r.sent.size();
@@ -427,7 +425,7 @@ static void test_live_card() {
   CHECK_EQ(ls.size(), 1);
   if (ls.size() == 1) {
     rec = Rig::live_record(ls[0], 0);
-    CHECK(rec.size() == 33 && int16_t(u16(rec.data() + 15)) == 180);
+    CHECK(rec.size() == 28 && int16_t(u16(rec.data() + 10)) == 180);
   }
   // Nothing changes: a heartbeat every 120 s.
   mark = r.sent.size();
@@ -435,7 +433,7 @@ static void test_live_card() {
   CHECK(r.lives(mark).empty());
   r.step(10 * SEC);
   CHECK_EQ(r.lives(mark).size(), 1);
-  // The end: at off, 300 s dismissal.
+  // The end: at off, not after a fault.
   r.step(125 * SEC);
   mark = r.sent.size();
   r.heater_off();
@@ -443,10 +441,9 @@ static void test_live_card() {
   ls = r.lives(mark);
   CHECK_EQ(ls.size(), 1);
   if (ls.size() == 1) {
-    CHECK(ls[0][2] == fk::push::LIVE_END && ls[0][3] == fk::push::LIVE_IMPORTANT && u16(ls[0].data() + 6) == 300 &&
-          u32(ls[0].data() + 9) == run);
+    CHECK(ls[0][2] == fk::push::LIVE_END && ls[0][3] == fk::push::LIVE_IMPORTANT && u32(ls[0].data() + 4) == run);
     rec = Rig::live_record(ls[0], 0);
-    CHECK(rec.size() == 33 && rec[9] == uint8_t(HeaterState::OFF) && rec[11] == uint8_t(Source::PHONE));
+    CHECK(rec.size() == 28 && rec[4] == uint8_t(HeaterState::OFF) && rec[6] == uint8_t(Source::PHONE));
   }
   mark = r.sent.size();
   r.step(200 * SEC);
@@ -476,7 +473,7 @@ static void test_live_card_rules() {
   r.h.st.state = HeaterState::STARTING;
   r.step(SEC);
   auto ls = r.lives(mark);
-  CHECK(ls.size() == 1 && Rig::live_slots(ls[0]) == std::vector<int>({0, 1}) && ls[0][8] == 0xFF);
+  CHECK(ls.size() == 1 && Rig::live_slots(ls[0]) == std::vector<int>({0, 1}));
   // Starting to heating: a state change is important, and goes 5 s after the last frame.
   r.step(3 * SEC);
   mark = r.sent.size();
@@ -495,7 +492,7 @@ static void test_live_card_rules() {
   r.step(125 * SEC);
   ls = r.lives(mark);
   CHECK(ls.size() == 1 && Rig::live_slots(ls[0]) == std::vector<int>({0}));
-  // A fault stop: the end carries flags bit 1 and 900 s.
+  // A fault stop: the end carries flags bit 1 (the relay keeps such a card longer).
   r.step(25 * SEC);
   mark = r.sent.size();
   r.h.st.fault = fk::Fault::FLAME_OUT;
@@ -507,7 +504,7 @@ static void test_live_card_rules() {
   for (auto &m : ls)
     if (m[2] == fk::push::LIVE_END) {
       end = true;
-      CHECK(m[3] == (fk::push::LIVE_IMPORTANT | fk::push::LIVE_FAULT_END) && u16(m.data() + 6) == 900);
+      CHECK(m[3] == (fk::push::LIVE_IMPORTANT | fk::push::LIVE_FAULT_END));
     }
   CHECK(end);
   // Priming never gets a card.
@@ -548,13 +545,6 @@ static void test_live_card_relay_down() {
   r.step(SEC);
   ls = r.lives(mark);
   CHECK(ls.size() == 1 && ls[0][2] == fk::push::LIVE_END);
-  // The sequence only grows over a restart: a new engine starts above the saved floor.
-  auto rec = ls.empty() ? std::vector<uint8_t>() : Rig::live_record(ls[0], 0);
-  const uint32_t last = rec.size() == 33 ? u32(rec.data() + 1) : 0;
-  CHECK(last > 0 && r.last_saved.live_floor > last);
-  fk::PushEngine again{r.c, r.a, r.access, r.relay, RNG};
-  again.load(r.last_saved);
-  CHECK(r.last_saved.check == fk::PushEngine::SAVED_CHECK);
 }
 
 int main() {

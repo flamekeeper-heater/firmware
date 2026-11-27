@@ -118,12 +118,11 @@ bool push_key(const uint8_t *secret, size_t len, uint8_t out[PUSH_KEY_SIZE]) {
   return crypto::hkdf_sha256(nullptr, 0, secret, len, "fk1 push", out, PUSH_KEY_SIZE);
 }
 
-size_t auth_signed_bytes(const uint8_t challenge[CHALLENGE_SIZE], const char *host, const char *version, uint8_t *out,
-                         size_t cap) {
+size_t auth_signed_bytes(const uint8_t challenge[CHALLENGE_SIZE], const char *host, uint8_t *out, size_t cap) {
   static const char LABEL[] = "fk1 relay board";
-  const size_t hl = std::strlen(host), vl = std::strlen(version);
-  const size_t n = sizeof(LABEL) - 1 + CHALLENGE_SIZE + 1 + hl + 1 + vl;
-  if (hl > HOST_MAX || vl > VERSION_MAX || n > cap)
+  const size_t hl = std::strlen(host);
+  const size_t n = sizeof(LABEL) - 1 + CHALLENGE_SIZE + 1 + hl;
+  if (hl > HOST_MAX || n > cap)
     return 0;
   size_t k = 0;
   std::memcpy(out + k, LABEL, sizeof(LABEL) - 1);
@@ -132,18 +131,14 @@ size_t auth_signed_bytes(const uint8_t challenge[CHALLENGE_SIZE], const char *ho
   k += CHALLENGE_SIZE;
   out[k++] = uint8_t(hl);
   std::memcpy(out + k, host, hl);
-  k += hl;
-  out[k++] = uint8_t(vl);
-  std::memcpy(out + k, version, vl);
-  return k + vl;
+  return k + hl;
 }
 
-size_t encode_auth(const Identity &who, const uint8_t challenge[CHALLENGE_SIZE], const char *host, const char *version,
+size_t encode_auth(const Identity &who, const uint8_t challenge[CHALLENGE_SIZE], const char *host,
                    const Random &random, uint8_t *out, size_t cap) {
-  uint8_t signed_bytes[15 + CHALLENGE_SIZE + 1 + HOST_MAX + 1 + VERSION_MAX];
-  const size_t n = auth_signed_bytes(challenge, host, version, signed_bytes, sizeof(signed_bytes));
-  const size_t vl = std::strlen(version);
-  const size_t total = 2 + PUBLIC_KEY_SIZE + SIGNATURE_SIZE + 1 + vl;
+  uint8_t signed_bytes[15 + CHALLENGE_SIZE + 1 + HOST_MAX];
+  const size_t n = auth_signed_bytes(challenge, host, signed_bytes, sizeof(signed_bytes));
+  const size_t total = 2 + PUBLIC_KEY_SIZE + SIGNATURE_SIZE;
   if (n == 0 || total > cap || !who.valid())
     return 0;
   out[0] = 0;
@@ -151,8 +146,6 @@ size_t encode_auth(const Identity &who, const uint8_t challenge[CHALLENGE_SIZE],
   std::memcpy(out + 2, who.public_key(), PUBLIC_KEY_SIZE);
   if (!who.sign(signed_bytes, n, random, out + 2 + PUBLIC_KEY_SIZE))
     return 0;
-  out[2 + PUBLIC_KEY_SIZE + SIGNATURE_SIZE] = uint8_t(vl);
-  std::memcpy(out + 3 + PUBLIC_KEY_SIZE + SIGNATURE_SIZE, version, vl);
   return total;
 }
 

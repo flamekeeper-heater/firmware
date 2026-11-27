@@ -186,8 +186,8 @@ void RelayClient::message(const uint8_t *data, size_t len, uint32_t now) {
     return;  // unknown or malformed control: ignored
   switch (c.op) {
     case relay::op::CHALLENGE: {
-      uint8_t m[2 + relay::PUBLIC_KEY_SIZE + relay::SIGNATURE_SIZE + 1 + relay::VERSION_MAX];
-      size_t n = relay::encode_auth(this->id_, c.challenge, this->host(), this->version_, this->random_, m, sizeof(m));
+      uint8_t m[2 + relay::PUBLIC_KEY_SIZE + relay::SIGNATURE_SIZE];
+      size_t n = relay::encode_auth(this->id_, c.challenge, this->host(), this->random_, m, sizeof(m));
       if (n != 0 && this->io_.send && this->io_.send(m, n)) {
         this->authed_ = true;
         this->state_ = RelayState::CONNECTED;

@@ -301,37 +301,27 @@ void uuid_bytes(uint16_t short_id, uint8_t out[16]) {
 }
 
 size_t encode_info(uint8_t board, uint32_t heater_capabilities, const BoardInfo &info, uint8_t *out) {
-  auto nibbles = [](uint8_t low, uint8_t high) {
-    return uint8_t((low > 15 ? 15 : low) | ((high > 15 ? 15 : high) << 4));
-  };
   out[0] = PROTOCOL_MAJOR;
-  out[1] = PROTOCOL_MINOR;
-  out[2] = board;
-  out[3] = (info.window_open ? 0x01 : 0) | (info.bonds_full ? 0x02 : 0);
-  put_u16(out + 4, info.window_left_s);
-  // Bits 0-5 come from the heater; bit 6 from the board.
-  put_u32(out + 6, (heater_capabilities & 0x3Fu) | (info.ha_switchable ? CAP_HA_SWITCH : 0) |
-                       ((heater_capabilities & cap::BLUETOOTH_ROOM) ? CAP_BLUETOOTH_ROOM : 0) |
-                       (info.can_update ? CAP_BOARD_UPDATE : 0) | (info.has_relay ? CAP_RELAY : 0) |
-                       ((heater_capabilities & cap::HA_ROOM) ? CAP_HA_ROOM : 0) |
-                       ((heater_capabilities & cap::FAULT_LOG) ? CAP_HEATER_LOG : 0) | CAP_START_AT);
-  out[10] = info.bonds;
-  out[11] = info.max_bonds;
-  out[12] = nibbles(info.app_keys, info.browser_keys);
-  out[13] = nibbles(info.max_app_keys, info.max_browser_keys);
-  out[14] = uint8_t(info.wifi);
-  out[15] = (info.pin_changed ? 0x01 : 0) | (info.web_password_set ? 0x02 : 0);
-  out[16] = uint8_t(info.ha);
-  out[17] = info.version[0];
-  out[18] = info.version[1];
-  out[19] = info.version[2];
-  put_u32(out + 20, info.build_utc);
+  out[1] = board;
+  out[2] = (info.window_open ? 0x01 : 0) | (info.pin_changed ? 0x02 : 0) | (info.web_password_set ? 0x04 : 0);
+  // Bits 0-3 and 5 come from the heater; the rest from the board.
+  put_u16(out + 3, uint16_t((heater_capabilities & 0x2Fu) | (info.ha_switchable ? CAP_HA_SWITCH : 0) |
+                            ((heater_capabilities & cap::BLUETOOTH_ROOM) ? CAP_BLUETOOTH_ROOM : 0) |
+                            (info.can_update ? CAP_BOARD_UPDATE : 0) | (info.has_relay ? CAP_RELAY : 0) |
+                            ((heater_capabilities & cap::HA_ROOM) ? CAP_HA_ROOM : 0) |
+                            ((heater_capabilities & cap::FAULT_LOG) ? CAP_HEATER_LOG : 0)));
+  out[5] = uint8_t(info.wifi);
+  out[6] = uint8_t(info.ha);
+  out[7] = info.version[0];
+  out[8] = info.version[1];
+  out[9] = info.version[2];
+  put_u32(out + 10, info.build_utc);
   return INFO_SIZE;
 }
 
 size_t encode_state(const Status &s, uint8_t *out) {
   out[0] = (s.answering ? 0x01 : 0) | (s.failsafe_stopped ? 0x02 : 0) | (s.room_fallback ? 0x04 : 0) |
-           (s.update_running ? 0x08 : 0) | (s.board_updating ? 0x10 : 0) | (s.relay_phones != 0 ? 0x20 : 0) |
+           (s.board_updating ? 0x10 : 0) | (s.relay_phones != 0 ? 0x20 : 0) |
            (s.thermo_paused ? 0x40 : 0);
   out[1] = uint8_t(s.mode);
   out[2] = uint8_t(s.heat_mode);
@@ -391,17 +381,17 @@ size_t encode_telemetry(const Status &s, uint8_t *out) {
   return TELEMETRY_SIZE;
 }
 
-size_t encode_event(Event event, Result r, uint16_t id, const char *text, uint8_t *out, size_t cap, uint32_t seq) {
+size_t encode_event(Event event, Result r, uint16_t id, const char *text, uint8_t *out, size_t cap) {
+  if (event == Event::PARAMS_DEFAULTS)
+    return 0;  // the board's own (a factory reset waits for it): not sent to apps
   if (event == Event::PARAM_CHANGED) {
     size_t n = result(0, uint8_t(event), r, nullptr, out, cap);
     put_u16(out + n, id);
     return n + 2;
   }
-  if (event == Event::ALERT) {  // u8 alert bit, u32 the log record's sequence number, then the text
+  if (event == Event::ALERT) {  // u8 alert bit, then the text
     size_t n = result(0, uint8_t(event), r, nullptr, out, cap);
     out[n++] = uint8_t(id);
-    put_u32(out + n, seq);
-    n += 4;
     size_t len = text != nullptr ? strlen(text) : 0;
     if (len > cap - n)
       len = cap - n;
@@ -687,8 +677,7 @@ size_t handle_command(const uint8_t *in, size_t len, Controller &c, Link &link, 
         break;
       size_t k = result(req, opcode, Result::OK, nullptr, out, cap);
       out[k] = uint8_t(board.ha_state());
-      out[k + 1] = board.ha_key_set() ? 1 : 0;
-      return k + 2;
+      return k + 1;
     }
     case op::HA_SET: {
       if (!need(1))

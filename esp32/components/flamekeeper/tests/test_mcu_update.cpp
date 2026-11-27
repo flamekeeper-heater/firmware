@@ -186,7 +186,7 @@ static void test_update() {
   CHECK(r.client.capabilities() & fk::cap::FIRMWARE_UPDATE);
   CHECK(r.client.start_firmware_update().accepted());
   CHECK(r.st().update_running);
-  CHECK(r.st().control == fk::ControlStatus::UPDATING);
+  CHECK(r.st().state == fk::HeaterState::UPDATING);  // heater state 8 says so (no controller status for it)
   CHECK(r.client.start_firmware_update().result == Result::BUSY);  // one at a time
   r.run(300);
   CHECK(r.st().update_running);
@@ -587,7 +587,7 @@ static void test_home_assistant_texts() {
       const fk::Status &s = c.status();
       if (!r.upd.running())
         break;
-      CHECK(s.update_running && s.state == fk::HeaterState::UPDATING && s.control == fk::ControlStatus::UPDATING);
+      CHECK(s.update_running && s.state == fk::HeaterState::UPDATING);
       CHECK(std::isfinite(s.update_progress));
       if (s.update_progress < last)
         rising = false;

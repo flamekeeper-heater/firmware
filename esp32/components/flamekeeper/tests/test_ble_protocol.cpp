@@ -157,46 +157,31 @@ static void test_info() {
   uint8_t out[ble::INFO_SIZE];
   fk::BoardInfo p;
   p.window_open = true;
-  p.bonds_full = false;
-  p.window_left_s = 117;
-  p.bonds = 2;
-  p.max_bonds = 8;
-  p.app_keys = 1;
-  p.max_app_keys = 8;
-  p.browser_keys = 3;
-  p.max_browser_keys = 8;
   p.wifi = fk::WifiState::CONNECTED;
   p.web_password_set = true;
   p.ha = fk::HaState::WAITING;
   p.version[0] = 1, p.version[1] = 2, p.version[2] = 3;
   p.build_utc = 1795000000u;
-  CHECK_EQ(ble::encode_info(ble::BOARD_FLAMEKEEPER_REV_A2, 0xFFFFFFFFu, p, out), 24);
+  CHECK_EQ(ble::encode_info(ble::BOARD_FLAMEKEEPER_REV_A2, 0xFFFFFFFFu, p, out), 14);
   CHECK_EQ(out[0], 1);
-  CHECK_EQ(out[1], 0);  // development
-  CHECK_EQ(out[2], 2);
-  CHECK_EQ(out[3], 0x01);
-  CHECK_EQ(u16(out + 4), 117);
-  // The heater's bits 0-5, bit 7 (Bluetooth thermometers), bit 10 (a Home Assistant room sensor),
-  // bit 11 (the heater's fault log); bit 6 is the board's, and bit 12 (START_AT) every board's.
-  CHECK_EQ(i32(out + 6), 0x1CBF);
-  CHECK_EQ(out[10], 2);
-  CHECK_EQ(out[11], 8);
-  CHECK_EQ(out[12], 0x31);
-  CHECK_EQ(out[13], 0x88);
-  CHECK_EQ(out[14], 2);
-  CHECK_EQ(out[15], 0x02);
-  CHECK_EQ(out[16], 1);
-  CHECK(out[17] == 1 && out[18] == 2 && out[19] == 3);
-  CHECK_EQ(uint32_t(i32(out + 20)), 1795000000u);
+  CHECK_EQ(out[1], 2);
+  CHECK_EQ(out[2], 0x05);  // the window open, a web password set
+  // The heater's bits 0-3 and 5, bit 7 (Bluetooth thermometers), bit 10 (a Home Assistant room
+  // sensor), bit 11 (the heater's fault log); bit 6 is the board's.
+  CHECK_EQ(u16(out + 3), 0x0CAF);
+  CHECK_EQ(out[5], 2);
+  CHECK_EQ(out[6], 1);
+  CHECK(out[7] == 1 && out[8] == 2 && out[9] == 3);
+  CHECK_EQ(uint32_t(i32(out + 10)), 1795000000u);
   p.can_update = true;
   ble::encode_info(ble::BOARD_FLAMEKEEPER_REV_A2, 0, p, out);
-  CHECK_EQ(i32(out + 6), 0x1100);  // bit 8: board firmware updates
+  CHECK_EQ(u16(out + 3), 0x0100);  // bit 8: board firmware updates
   p.can_update = false;
   p.ha_switchable = true;
   p.pin_changed = true;
   ble::encode_info(ble::Board(1), fk::cap::FAN_ONLY, p, out);
-  CHECK_EQ(i32(out + 6), 0x1041);
-  CHECK_EQ(out[15], 0x03);
+  CHECK_EQ(u16(out + 3), 0x0041);
+  CHECK_EQ(out[2], 0x07);
 }
 
 static void test_state_and_telemetry() {
@@ -279,10 +264,10 @@ static void test_state_and_telemetry() {
   s.failsafe_left_s = 600;
   s.run_source = Source::HOME_ASSISTANT;
   ble::encode_state(s, out);
-  CHECK_EQ(out[0], 0x0F);
+  CHECK_EQ(out[0], 0x07);  // bit 3 is no longer set: heater state 8 says the heater is updating
   s.thermo_paused = true;
   ble::encode_state(s, out);
-  CHECK_EQ(out[0], 0x4F);  // bit 6: the thermostat holds the run off
+  CHECK_EQ(out[0], 0x47);  // bit 6: the thermostat holds the run off
   s.thermo_paused = false;
   ble::encode_state(s, out);
   CHECK_EQ(out[1], 1);
@@ -503,7 +488,7 @@ static void test_board_commands() {
   CHECK_EQ(r.board.wifi_offs, 1);
 
   // Home Assistant
-  CHECK_EQ(r.cmd({10, ble::op::HA_STATUS}), 5);
+  CHECK_EQ(r.cmd({10, ble::op::HA_STATUS}), 4);
   CHECK_EQ(r.out[3], 0);
   r.cmd({11, ble::op::HA_SET, 1});
   CHECK(r.res() == Result::OK);
@@ -606,7 +591,7 @@ static void test_relay_commands() {
   p.has_relay = true;
   uint8_t info[ble::INFO_SIZE];
   ble::encode_info(ble::Board(1), 0, p, info);
-  CHECK(i32(info + 6) == 0x1200);
+  CHECK(u16(info + 3) == 0x0200);
   fk::Status s;
   s.relay_phones = 1;
   uint8_t st[ble::STATE_SIZE];

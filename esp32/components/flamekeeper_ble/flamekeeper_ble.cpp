@@ -192,12 +192,7 @@ void FlamekeeperBLE::setup() {
   board.on_forget_bonds([this]() { this->forget_all_bonds(); });
   board.on_forget_bond([this](const uint8_t addr[6]) { this->remove_bond_(addr); });
   board.set_pairing_info([this](fk::BoardInfo &p) {
-    uint32_t now = millis();
-    p.window_open = this->window_.is_open(now);
-    p.window_left_s = this->window_.seconds_left(now);
-    p.bonds = this->bonds_;
-    p.max_bonds = this->max_bonds_;
-    p.bonds_full = this->bonds_ >= this->max_bonds_;
+    p.window_open = this->window_.is_open(millis());
   });
   board.on_record([this](const uint8_t *data, size_t len) {
     for (Conn &c : this->conns_)
@@ -769,7 +764,9 @@ void FlamekeeperBLE::pump_indications_(Conn &c) {
 
 void FlamekeeperBLE::broadcast_event_(fk::Event e, fk::Result r, uint16_t id, const char *text) {
   uint8_t out[fk::ble::RESULT_MAX];
-  size_t n = fk::ble::encode_event(e, r, id, text, out, sizeof(out), this->hub_->controller().event_seq());
+  size_t n = fk::ble::encode_event(e, r, id, text, out, sizeof(out));
+  if (n == 0)
+    return;
   for (Conn &c : this->conns_)
     if (c.result_sub)
       this->queue_result_(c, out, n);

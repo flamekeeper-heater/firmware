@@ -44,7 +44,6 @@ class RelayClient : public RelayControl {
   RelayClient(Access &access, relay::Random random) : access_(access), random_(std::move(random)) {}
   void set_io(Io io) { this->io_ = std::move(io); }
   void set_channels(Channels ch) { this->ch_ = std::move(ch); }
-  void set_version(const char *v) { std::strncpy(this->version_, v, relay::VERSION_MAX); }
 
   // Settings (the glue keeps them in flash). The host "" is the default.
   void configure(bool on, const char *host, const uint8_t *private_key);
@@ -97,7 +96,6 @@ class RelayClient : public RelayControl {
   relay::Identity id_;
   bool on_{false};
   char host_[relay::HOST_MAX + 1]{};
-  char version_[relay::VERSION_MAX + 1]{};
 
   RelayState state_{RelayState::OFF};
   bool linked_{false};     // the socket is up (between connected() and closed())

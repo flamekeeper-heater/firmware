@@ -424,7 +424,6 @@ void LinkClient::read_status(HeaterStatus &out) const {
       case HeaterState::PRIMING: out.control = ControlStatus::PRIMING; break;
       case HeaterState::STOPPING:
       case HeaterState::COOLING: out.control = ControlStatus::STOPPING; break;
-      case HeaterState::UPDATING: out.control = ControlStatus::UPDATING; break;
       default:
         // A start sent but not reported yet: starting, not idle (the heater still says off).
         out.control = this->mode_ != LINK_MODE_OFF && !this->seen_running_ ? ControlStatus::STARTING
@@ -438,7 +437,6 @@ void LinkClient::read_status(HeaterStatus &out) const {
     out.update_running = true;
     out.update_progress = this->mcu_->progress();
     out.state = HeaterState::UPDATING;
-    out.control = ControlStatus::UPDATING;
   }
   if (!out.answering)
     return;

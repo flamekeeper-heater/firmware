@@ -28,7 +28,7 @@ void uuid_bytes(uint16_t short_id, uint8_t out[16]);
 
 enum Board : uint8_t { BOARD_FLAMEKEEPER_REV_A2 = 2 };  // other codes: other boards
 
-static const size_t INFO_SIZE = 24;
+static const size_t INFO_SIZE = 14;
 static const size_t STATE_SIZE = 39;
 static const size_t TELEMETRY_SIZE = 45;
 // What a result or event record may grow to: one indication at the minimum ATT MTU of 135.
@@ -110,7 +110,6 @@ static const uint32_t CAP_BOARD_UPDATE = 1u << 8;
 static const uint32_t CAP_RELAY = 1u << 9;
 static const uint32_t CAP_HA_ROOM = 1u << 10;  // a Home Assistant room temperature sensor is set up
 static const uint32_t CAP_HEATER_LOG = 1u << 11;  // the heater keeps a fault log (HEATER_LOG, State byte 32)
-static const uint32_t CAP_START_AT = 1u << 12;    // the board takes START_AT (State bytes 33-38)
 static const size_t HEATER_LOG_ENTRY_SIZE = 14;
 static const size_t HEATER_LOG_PAGE = 8;  // entries in one HEATER_LOG result
 static const size_t PUSH_PREFS_SIZE = 5;
@@ -133,10 +132,8 @@ size_t encode_telemetry(const Status &s, uint8_t *out);
 size_t handle_command(const uint8_t *in, size_t len, Controller &controller, Link &link, BoardSettings &board,
                       uint8_t *out, size_t out_cap);
 
-// An unsolicited event record (request id 0).
-// seq: for an alert (event 08), the event log record's sequence number.
-size_t encode_event(Event event, Result result, uint16_t id, const char *text, uint8_t *out, size_t out_cap,
-                    uint32_t seq = 0);
+// An unsolicited event record (request id 0); 0 for an event that is not sent to apps.
+size_t encode_event(Event event, Result result, uint16_t id, const char *text, uint8_t *out, size_t out_cap);
 // Event 05: connected (address and SSID), or failed with the reason (the old settings are back).
 size_t encode_wifi_event(const WifiStatus *connected, const char *failure, uint8_t *out, size_t out_cap);
 

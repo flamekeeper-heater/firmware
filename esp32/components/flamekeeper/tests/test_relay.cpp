@@ -102,31 +102,30 @@ static void test_identity_and_auth() {
   rl::Identity c;
   CHECK(c.generate(RNG) && std::memcmp(a.id(), c.id(), 16) != 0);
 
-  // The signed bytes: the plan's vector.
+  // The signed bytes: the spec's vector.
   uint8_t ch[32];
   std::memset(ch, 0x01, 32);
   uint8_t sb[160];
-  size_t n = rl::auth_signed_bytes(ch, "relay.flamekeeper.app", "1.4.0", sb, sizeof(sb));
-  CHECK(n == 75);
-  uint8_t h[32];
-  fk::crypto::sha256({{sb, n}}, h);
-  CHECK(hex(h, 32) == "74fb627cbe5d30589bd59e83f30b9e88c4d78629a0111bd22f2d516259d54600");
+  size_t n = rl::auth_signed_bytes(ch, "relay.flamekeeper.app", sb, sizeof(sb));
+  CHECK(n == 69);
+  CHECK(hex(sb, n) ==
+        "666b312072656c617920626f61726401010101010101010101010101010101010101010101010101010101010101011572656c61792e"
+        "666c616d656b65657065722e617070");
 
-  // AUTH: key, a signature that verifies over those bytes, the version.
+  // AUTH: key and a signature that verifies over those bytes, nothing after it.
   uint8_t m[200];
-  size_t k = rl::encode_auth(a, ch, "relay.flamekeeper.app", "1.4.0", RNG, m, sizeof(m));
-  CHECK(k == 2 + 65 + 64 + 1 + 5);
+  size_t k = rl::encode_auth(a, ch, "relay.flamekeeper.app", RNG, m, sizeof(m));
+  CHECK(k == 131);
   CHECK(m[0] == 0 && m[1] == rl::op::AUTH && std::memcmp(m + 2, a.public_key(), 65) == 0);
   CHECK(verify(m + 2, sb, n, m + 67));
-  CHECK(m[131] == 5 && std::memcmp(m + 132, "1.4.0", 5) == 0);
   // Over another host: does not verify.
   uint8_t sb2[160];
-  size_t n2 = rl::auth_signed_bytes(ch, "relay.example.com", "1.4.0", sb2, sizeof(sb2));
+  size_t n2 = rl::auth_signed_bytes(ch, "relay.example.com", sb2, sizeof(sb2));
   CHECK(!verify(m + 2, sb2, n2, m + 67));
-  // Too long a host or version: nothing.
+  // Too long a host, or no identity: nothing.
   std::string long_host(64, 'a');
-  CHECK(rl::encode_auth(a, ch, long_host.c_str(), "1", RNG, m, sizeof(m)) == 0);
-  CHECK(rl::encode_auth(rl::Identity{}, ch, "h", "1", RNG, m, sizeof(m)) == 0);
+  CHECK(rl::encode_auth(a, ch, long_host.c_str(), RNG, m, sizeof(m)) == 0);
+  CHECK(rl::encode_auth(rl::Identity{}, ch, "h", RNG, m, sizeof(m)) == 0);
 }
 
 static void test_tokens() {
@@ -186,7 +185,6 @@ struct ClientRig {
   std::vector<std::string> events;  // "open 1 0", "close 1 1000", "frame 1 n"
   uint32_t now = 1000;
   ClientRig() {
-    rc.set_version("0.1.0");
     rc.set_io({[this](const char *h, const char *p) { connects.push_back(std::string(h) + p); },
                [this]() { disconnects++; },
                [this](const uint8_t *d, size_t n) {
@@ -233,7 +231,7 @@ static void test_client() {
   uint8_t ch[32];
   std::memset(ch, 1, 32);
   uint8_t sb[160];
-  size_t n = rl::auth_signed_bytes(ch, "relay.flamekeeper.app", "0.1.0", sb, sizeof(sb));
+  size_t n = rl::auth_signed_bytes(ch, "relay.flamekeeper.app", sb, sizeof(sb));
   CHECK(auth[1] == rl::op::AUTH && verify(auth.data() + 2, sb, n, auth.data() + 67));
   const std::vector<uint8_t> &roster = r.sent[1];
   uint8_t t[32], th[32];

@@ -902,11 +902,12 @@ static void test_protocol() {
   CHECK_EQ(ble::encode_state(r.c.status(), st), 39);
   CHECK_EQ(st[21], 40);
   CHECK_EQ(st[20] & fk::automatic::CLOCK_KNOWN, fk::automatic::CLOCK_KNOWN);
-  n = ble::encode_event(fk::Event::ALERT, Result::OK, 2, "heater fault: Overheat", out, sizeof(out), 0x01020304u);
-  CHECK_EQ(n, 3 + 1 + 4 + 22);
+  n = ble::encode_event(fk::Event::ALERT, Result::OK, 2, "heater fault: Overheat", out, sizeof(out));
+  CHECK_EQ(n, 3 + 1 + 22);
   CHECK_EQ(out[1], 8);
   CHECK_EQ(out[3], 2);
-  CHECK(out[4] == 4 && out[5] == 3 && out[6] == 2 && out[7] == 1 && out[8] == 'h');  // the log sequence number
+  CHECK(out[4] == 'h');  // the text follows the alert bit
+  CHECK_EQ(ble::encode_event(fk::Event::PARAMS_DEFAULTS, Result::OK, 0, nullptr, out, sizeof(out)), 0);
 }
 
 

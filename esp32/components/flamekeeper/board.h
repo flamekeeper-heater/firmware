@@ -37,14 +37,6 @@ struct WifiStatus {
 // Everything Info (1001) reports beyond the heater's capabilities.
 struct BoardInfo {
   bool window_open{false};
-  bool bonds_full{false};
-  uint16_t window_left_s{0};
-  uint8_t bonds{0};
-  uint8_t max_bonds{0};
-  uint8_t app_keys{0};
-  uint8_t max_app_keys{0};
-  uint8_t browser_keys{0};
-  uint8_t max_browser_keys{0};
   WifiState wifi{WifiState::OFF};
   bool pin_changed{false};
   bool web_password_set{false};

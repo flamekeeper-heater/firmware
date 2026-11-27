@@ -159,39 +159,29 @@ static void records() {
   {
     struct V {
       const char *name;
-      uint32_t mask;  // the capability bits as Info carries them (bits 6 and 8 are the board's)
-      bool window, full, pin, webpw;
-      uint8_t bonds, max_bonds, app, max_app, browser, max_browser;
+      uint32_t mask;  // the capability bits as Info carries them (bits 6 and 8 are the board's; bit 4 is never set)
+      bool window, pin, webpw;
       fk::WifiState wifi;
       fk::HaState ha;
-      uint16_t left;
       uint8_t ver[3];
       uint32_t build;
     };
-    // Masks 0x2a, 0x4c, 0x70 give bits 1..6 each their own on/off pattern (the binary index of the bit).
+    // Masks 0x2a, 0x4c, 0x60 give bits 1..6 each their own on/off pattern; flags bits 0-2 likewise.
     const V vs[] = {
-        {"info, capabilities 0x17f, pairing bit 0, byte 15 bit 0", 0x17F, true, false, true, false, 4, 8, 5, 3, 6, 7,
-         fk::WifiState::CONNECTED, fk::HaState::WAITING, 117, {1, 2, 3}, 1795000000u},
-        {"info, capabilities 0x2a, pairing bit 1, byte 15 bit 1", 0x2A, false, true, false, true, 1, 6, 8, 7, 4, 5,
-         fk::WifiState::FAILED, fk::HaState::CONNECTED, 3600, {0, 10, 255}, 1},
-        {"info, capabilities 0x14c, both pairing and byte 15 bits", 0x14C, true, true, true, true, 2, 7, 3, 5, 1, 8,
-         fk::WifiState::CONNECTING, fk::HaState::OFF, 59, {255, 0, 7}, 0xFFFFFFFEu},
-        {"info, capabilities 0x70, no pairing or byte 15 bits", 0x70, false, false, false, false, 0, 5, 7, 2, 8, 3,
-         fk::WifiState::OFF, fk::HaState::WAITING, 0, {0, 0, 0}, 0},
-        {"info, capabilities 0x811, the heater's fault log", 0x811, false, false, false, false, 1, 8, 2, 8, 0, 8,
-         fk::WifiState::CONNECTED, fk::HaState::CONNECTED, 0, {0, 2, 0}, 1795000000u},
+        {"info, capabilities 0x16f, flags bits 0 and 1", 0x16F, true, true, false, fk::WifiState::CONNECTED,
+         fk::HaState::WAITING, {1, 2, 3}, 1795000000u},
+        {"info, capabilities 0x2a, flags bit 2", 0x2A, false, false, true, fk::WifiState::FAILED, fk::HaState::CONNECTED,
+         {0, 10, 255}, 1},
+        {"info, capabilities 0x14c, flags bits 0, 1 and 2", 0x14C, true, true, true, fk::WifiState::CONNECTING,
+         fk::HaState::OFF, {255, 0, 7}, 0xFFFFFFFEu},
+        {"info, capabilities 0x60, no flags", 0x60, false, false, false, fk::WifiState::OFF, fk::HaState::WAITING,
+         {0, 0, 0}, 0},
+        {"info, capabilities 0x801, the heater's fault log", 0x801, false, false, false, fk::WifiState::CONNECTED,
+         fk::HaState::CONNECTED, {0, 2, 0}, 1795000000u},
     };
     for (const V &v : vs) {
       fk::BoardInfo p;
       p.window_open = v.window;
-      p.bonds_full = v.full;
-      p.window_left_s = v.left;
-      p.bonds = v.bonds;
-      p.max_bonds = v.max_bonds;
-      p.app_keys = v.app;
-      p.max_app_keys = v.max_app;
-      p.browser_keys = v.browser;
-      p.max_browser_keys = v.max_browser;
       p.wifi = v.wifi;
       p.pin_changed = v.pin;
       p.web_password_set = v.webpw;
@@ -201,22 +191,20 @@ static void records() {
       p.can_update = (v.mask & 0x100) != 0;
       p.version[0] = v.ver[0], p.version[1] = v.ver[1], p.version[2] = v.ver[2];
       p.build_utc = v.build;
+      // The heater also reports bit 4 (parameters): Info leaves it out.
       size_t n = ble::encode_info(ble::BOARD_FLAMEKEEPER_REV_A2,
-                                  (v.mask & 0xBF) | ((v.mask & 0x800) ? fk::cap::FAULT_LOG : 0), p, out);
-      CHECK_EQ(n, 24);
+                                  (v.mask & 0xBF) | 0x10 | ((v.mask & 0x800) ? fk::cap::FAULT_LOG : 0), p, out);
+      CHECK_EQ(n, 14);
       uint32_t caps = v.mask;
       auto bit = [&](int i) { return std::string((caps >> i) & 1 ? "true" : "false"); };
       Obj cp;
       cp.add("fanOnly", bit(0)).add("temperature", bit(1)).add("prime", bit(2)).add("primeStop", bit(3))
-          .add("parameters", bit(4)).add("roomSource", bit(5)).add("haSwitch", bit(6))
+          .add("roomSource", bit(5)).add("haSwitch", bit(6))
           .add("bluetoothRoom", bit(7)).add("boardUpdate", bit(8)).add("heaterLog", bit(11));
       Obj e;
-      e.add("major", num(ble::PROTOCOL_MAJOR)).add("minor", num(ble::PROTOCOL_MINOR))
+      e.add("major", num(ble::PROTOCOL_MAJOR))
           .add("board", num(ble::BOARD_FLAMEKEEPER_REV_A2)).add("pairingOpen", v.window ? "true" : "false")
-          .add("bondTableFull", v.full ? "true" : "false").add("pairingSecondsLeft", num(v.left))
-          .add("capabilities", cp.str()).add("bonds", num(v.bonds)).add("bondsAllowed", num(v.max_bonds))
-          .add("appKeys", num(v.app)).add("appKeysAllowed", num(v.max_app)).add("browserKeys", num(v.browser))
-          .add("browserKeysAllowed", num(v.max_browser)).add("wifi", num(int(v.wifi)))
+          .add("capabilities", cp.str()).add("wifi", num(int(v.wifi)))
           .add("pinChanged", v.pin ? "true" : "false").add("webPasswordSet", v.webpw ? "true" : "false")
           .add("homeAssistant", num(int(v.ha)))
           .add("firmwareVersion", q(num(v.ver[0]) + "." + num(v.ver[1]) + "." + num(v.ver[2])))
@@ -262,7 +250,8 @@ static void records() {
   }
 
   // --- State flags: masks 0x0f, 0x05, 0x0a, 0x03 ---
-  // Each of bits 0-3 has its own pattern over the four records (0: 1101, 1: 1011, 2: 1100, 3: 1010).
+  // Each of bits 0-2 has its own pattern over the four records (0: 1101, 1: 1011, 2: 1100). Bit 3 is
+  // set in the status but no longer sent (heater state 8 says the heater is updating).
   const uint8_t state_masks[4] = {0x0F, 0x05, 0x0A, 0x03};
   for (int i = 0; i < 4; i++) {
     uint8_t m = state_masks[i];
@@ -298,11 +287,11 @@ static void records() {
     s.start_at_min = odd ? 45 : 0;
     uint8_t out[ble::STATE_SIZE];
     size_t n = ble::encode_state(s, out);
-    CHECK_EQ(out[0], m | (odd ? 0x40 : 0));
+    CHECK_EQ(out[0], (m & 0x07) | (odd ? 0x40 : 0));
     auto b = [&](int bit) { return std::string((m >> bit) & 1 ? "true" : "false"); };
     Obj e;
     e.add("heaterAnswering", b(0)).add("failsafeStopped", b(1)).add("roomFallback", b(2))
-        .add("updateRunning", b(3)).add("thermostatPaused", odd ? "true" : "false").add("requestedMode", num(int(s.mode)))
+        .add("thermostatPaused", odd ? "true" : "false").add("requestedMode", num(int(s.mode)))
         .add("heatMode", num(int(s.heat_mode))).add("power", num(s.power)).add("targetC", odd ? "35" : "5")
         .add("roomC", odd ? "-3.2" : "null").add("roomSource", num(int(s.room_source)))
         .add("heaterState", num(int(s.state))).add("controllerStatus", num(int(s.control)))
@@ -619,12 +608,11 @@ static void records() {
     record("result, SENSOR_STATUS", "result", ss.data(), ss.size(), e4);
 
     uint8_t out[ble::RESULT_MAX];
-    size_t n = ble::encode_event(fk::Event::ALERT, fk::Result::OK, 0, "fuel low: about 14 % left", out, sizeof(out),
-                                 0x01020304u);
-    CHECK(n == 3 + 1 + 4 + 25 && out[4] == 0x04 && out[7] == 0x01);
+    size_t n = ble::encode_event(fk::Event::ALERT, fk::Result::OK, 0, "fuel low: about 14 % left", out, sizeof(out));
+    CHECK(n == 3 + 1 + 25 && out[4] == 'f');
     Bytes ev(out, out + n);
     Obj al;
-    al.add("bit", "0").add("seq", num(0x01020304)).add("text", q("fuel low: about 14 % left"));
+    al.add("bit", "0").add("text", q("fuel low: about 14 % left"));
     Obj e5 = result_expect(ev);
     e5.add("alert", al.str());
     record("event 08, alert (fuel low)", "result", out, n, e5);
@@ -909,7 +897,7 @@ static std::string relay_vectors() {
   uint8_t ch[32];
   std::memset(ch, 0x01, 32);
   uint8_t sb[160];
-  size_t sbn = rl::auth_signed_bytes(ch, "relay.flamekeeper.app", "1.4.0", sb, sizeof(sb));
+  size_t sbn = rl::auth_signed_bytes(ch, "relay.flamekeeper.app", sb, sizeof(sb));
   rl::RosterEntry e{2, {}};
   std::memcpy(e.hash, th, 32);
   uint8_t roster[64];
@@ -932,7 +920,7 @@ static std::string relay_vectors() {
   s.run_end_utc = 0;
   fk::PushEngine::Item lead{0, 0, 0, 1234, 1795000000u};
   uint8_t payload[100];
-  size_t pn = fk::PushEngine::encode_payload(lead, 0x0020, 0, 0, s, "fuel low: 12 % left", payload, sizeof(payload));
+  size_t pn = fk::PushEngine::encode_payload(lead, 0, s, "fuel low: 12 % left", payload, sizeof(payload));
   uint8_t nonce[12];
   for (int i = 0; i < 12; i++)
     nonce[i] = uint8_t(0xC0 + i);
@@ -968,29 +956,27 @@ static std::string relay_vectors() {
   lc.started_utc = 1794999600u;
   lc.fuel_left = 37;
   uint8_t live_rec[fk::push::LIVE_RECORD_SIZE];
-  fk::PushEngine::encode_live_record(4097, 1795000000u, lc, live_rec);
+  fk::PushEngine::encode_live_record(1795000000u, lc, live_rec);
   fk::PushEngine::LiveContent lu;  // everything unknown or none
   lu.state = uint8_t(fk::HeaterState::UNKNOWN);
   uint8_t live_unknown[fk::push::LIVE_RECORD_SIZE];
-  fk::PushEngine::encode_live_record(4098, 0, lu, live_unknown);
+  fk::PushEngine::encode_live_record(0, lu, live_unknown);
   // Whole frames: start, update, end, for the phone in slot 2 (run id 42, which it started).
-  auto live_frame = [&](uint8_t event, uint8_t flags, uint16_t dismissal) {
+  auto live_frame = [&](uint8_t event, uint8_t flags) {
     std::vector<uint8_t> m(fk::PushEngine::LIVE_HEADER_SIZE);
-    fk::PushEngine::encode_live_header(event, flags, fk::push::LIVE_STALE_S, dismissal, 2, 42, 0x04, m.data());
+    fk::PushEngine::encode_live_header(event, flags, 42, 0x04, m.data());
     m.insert(m.end(), live_rec, live_rec + sizeof(live_rec));
     return m;
   };
-  const std::vector<uint8_t> live_start = live_frame(fk::push::LIVE_START, fk::push::LIVE_IMPORTANT, 0);
-  const std::vector<uint8_t> live_update = live_frame(fk::push::LIVE_UPDATE, 0, 0);
-  const std::vector<uint8_t> live_end = live_frame(fk::push::LIVE_END, fk::push::LIVE_IMPORTANT | fk::push::LIVE_FAULT_END,
-                                                   fk::push::LIVE_DISMISS_FAULT_S);
-  CHECK(live_start.size() == 14 + 33);
+  const std::vector<uint8_t> live_start = live_frame(fk::push::LIVE_START, fk::push::LIVE_IMPORTANT);
+  const std::vector<uint8_t> live_update = live_frame(fk::push::LIVE_UPDATE, 0);
+  const std::vector<uint8_t> live_end = live_frame(fk::push::LIVE_END, fk::push::LIVE_IMPORTANT | fk::push::LIVE_FAULT_END);
+  CHECK(live_start.size() == 9 + 28);
 
   // Three more pushes to the phone in slot 2, each as payload, nonce and blob.
   struct PV {
     const char *name;
     fk::PushEngine::Item lead;
-    uint16_t other_alerts, other_events;
     uint8_t flags;
     fk::Status s;
     const char *text;
@@ -1030,13 +1016,12 @@ static std::string relay_vectors() {
   for (size_t i = 0; i < pv.size(); i++) {
     const PV &v = pv[i];
     uint8_t pl[100];
-    const size_t pln = fk::PushEngine::encode_payload(v.lead, v.other_alerts, v.other_events, v.flags, v.s, v.text,
-                                                      pl, sizeof(pl));
+    const size_t pln = fk::PushEngine::encode_payload(v.lead, v.flags, v.s, v.text, pl, sizeof(pl));
     CHECK(pln >= fk::push::PAYLOAD_FIXED);
     uint8_t nc[12];
     for (int j = 0; j < 12; j++)
       nc[j] = uint8_t(0xD0 + 0x10 * i + j);
-    const uint8_t cls = pl[9];
+    const uint8_t cls = pl[8];
     uint8_t bl[200];
     const size_t bln = fk::PushEngine::seal_blob(p, nc, g.id(), cls, pl, pln, bl, sizeof(bl));
     CHECK(bln == pln + 28);
@@ -1060,12 +1045,12 @@ static std::string relay_vectors() {
       .add("pushPrefsCommand", q(hex(prefs_cmd))).add("pushPrefsResult", q(hex(prefs_res)))
       .add("pushPrefsGetCommand", q(hex(get_cmd))).add("pushPrefsGetResult", q(hex(get_res)))
       .add("liveRecord", q(hex(live_rec, sizeof(live_rec))))
-      .add("liveRecordFields", "{\"version\": 1, \"sequence\": 4097, \"utc\": 1795000000, \"state\": 3, \"kind\": 0, "
+      .add("liveRecordFields", "{\"utc\": 1795000000, \"state\": 3, \"kind\": 0, "
                                "\"source\": 2, \"fault\": 0, \"alerts\": 1, \"roomC\": 18.4, \"targetC\": 21.5, "
                                "\"power\": 60, \"runEndUtc\": 1795003500, \"burnoffEndUtc\": 0, "
                                "\"startedUtc\": 1794999600, \"fuelLeft\": 37}")
       .add("liveRecordUnknown", q(hex(live_unknown, sizeof(live_unknown))))
-      .add("liveRecordUnknownFields", "{\"version\": 1, \"sequence\": 4098, \"utc\": 0, \"state\": 0, \"kind\": 0, "
+      .add("liveRecordUnknownFields", "{\"utc\": 0, \"state\": 0, \"kind\": 0, "
                                       "\"source\": 0, \"fault\": 0, \"alerts\": 0, \"roomC\": null, \"targetC\": null, "
                                       "\"power\": null, \"runEndUtc\": 0, \"burnoffEndUtc\": 0, \"startedUtc\": 0, "
                                       "\"fuelLeft\": null}")

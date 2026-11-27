@@ -163,15 +163,11 @@ class Controller : public HeaterListener {
   // The board's automation (frost protection, timers, fuel, alerts), for the protocol; may be null.
   void set_automation(Automation *a) { this->automation_ = a; }
   Automation *automation() const { return this->automation_; }
-  // An event to every listener (apps, the log), as the heater's own. seq: the event log record
-  // behind it (alerts, event 08), readable by the listeners as event_seq().
-  void emit_event(Event event, Result result, uint16_t id, const char *text, uint32_t seq = 0) {
-    this->event_seq_ = seq;
+  // An event to every listener (apps, the log), as the heater's own.
+  void emit_event(Event event, Result result, uint16_t id, const char *text) {
     for (auto &cb : this->event_cbs_)
       cb(event, result, id, text);
-    this->event_seq_ = 0;
   }
-  uint32_t event_seq() const { return this->event_seq_; }
 
   // Call often (every loop is fine). ha_connected: the Home Assistant API has a client.
   void tick(uint32_t now, bool ha_connected);
@@ -242,7 +238,6 @@ class Controller : public HeaterListener {
   bool bluetooth_room_{false};
   bool ha_room_{false};
   bool board_updating_{false};
-  uint32_t event_seq_{0};
   std::function<Outcome(Source)> start_check_;
   std::vector<std::function<void(Status &)>> refresh_cbs_;
   Automation *automation_{nullptr};

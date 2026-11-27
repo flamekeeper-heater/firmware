@@ -24,7 +24,6 @@ static const size_t CHALLENGE_SIZE = 32;
 static const size_t TOKEN_SIZE = 32;       // T
 static const size_t PUSH_KEY_SIZE = 16;    // P
 static const size_t HOST_MAX = RELAY_HOST_MAX;
-static const size_t VERSION_MAX = 32;
 static const size_t CHANNELS = 3;          // app channels 1..3
 static const size_t SLOTS = 8;             // phone key slots
 static const size_t MESSAGE_MAX = 2048;    // what the relay passes
@@ -85,11 +84,10 @@ void id_text(const uint8_t id[ID_SIZE], char out[ID_TEXT_SIZE + 1]);
 bool relay_token(const uint8_t *secret, size_t len, uint8_t out[TOKEN_SIZE]);
 bool push_key(const uint8_t *secret, size_t len, uint8_t out[PUSH_KEY_SIZE]);
 
-// "fk1 relay board" || challenge || u8 n || host || u8 n || version: what AUTH signs. Returns its length.
-size_t auth_signed_bytes(const uint8_t challenge[CHALLENGE_SIZE], const char *host, const char *version, uint8_t *out,
-                         size_t cap);
-// The whole AUTH message (channel 0), or 0.
-size_t encode_auth(const Identity &who, const uint8_t challenge[CHALLENGE_SIZE], const char *host, const char *version,
+// "fk1 relay board" || challenge || u8 n || host: what AUTH signs. Returns its length.
+size_t auth_signed_bytes(const uint8_t challenge[CHALLENGE_SIZE], const char *host, uint8_t *out, size_t cap);
+// The whole AUTH message (channel 0): 00 02 || public key || signature, 131 bytes, or 0.
+size_t encode_auth(const Identity &who, const uint8_t challenge[CHALLENGE_SIZE], const char *host,
                    const Random &random, uint8_t *out, size_t cap);
 
 struct RosterEntry {

@@ -282,7 +282,7 @@ void Automation::raise_(uint16_t bit, const char *text) {
   while (index < 15 && !(bit & (1u << index)))
     index++;
   this->log_(LogKind::ALERT, Source::NONE, index, 0);
-  this->c_.emit_event(Event::ALERT, Result::OK, index, text, this->log_book_.newest());
+  this->c_.emit_event(Event::ALERT, Result::OK, index, text);
 }
 
 Outcome Automation::clear_alerts(uint16_t mask) {

@@ -514,7 +514,6 @@ const char *control_status_name(ControlStatus s) {
     case ControlStatus::PRIMING: return "Priming";
     case ControlStatus::STOPPING: return "Stopping";
     case ControlStatus::NO_REPLY: return "No reply from the heater";
-    case ControlStatus::UPDATING: return "Updating heater firmware";
     default: return "Unknown";
   }
 }

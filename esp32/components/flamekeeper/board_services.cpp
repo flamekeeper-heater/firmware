@@ -126,11 +126,6 @@ void BoardServices::setup() {
   // The internet relay (off until an app switches it on).
   this->relay_pref_ = global_preferences->make_preference<RelayPref>(fnv1_hash("flamekeeper_relay"), true);
   this->relay_ = std::make_unique<RelayClient>(this->access_, [](uint8_t *out, size_t n) { esp_fill_random(out, n); });
-#ifdef ESPHOME_PROJECT_VERSION
-  this->relay_->set_version(ESPHOME_PROJECT_VERSION);
-#else
-  this->relay_->set_version("dev");
-#endif
   {
     RelayPref rp{};
     if (this->relay_pref_.load(&rp) && rp.magic == RELAY_MAGIC) {
@@ -426,10 +421,6 @@ void BoardServices::save_access_() {
 void BoardServices::info(BoardInfo &out) const {
   if (this->pairing_info_)
     this->pairing_info_(out);
-  out.app_keys = this->access_.count(KeyKind::APP);
-  out.max_app_keys = Access::APP_KEYS;
-  out.browser_keys = this->access_.count(KeyKind::BROWSER);
-  out.max_browser_keys = Access::BROWSER_KEYS;
   WifiStatus w;
   this->wifi_status(w);
   out.wifi = w.state;

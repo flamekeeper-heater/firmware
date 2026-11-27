@@ -228,8 +228,9 @@ void FlamekeeperNet::setup() {
   fk::Controller &c = this->hub_->controller();
   c.on_event([this](fk::Event e, fk::Result r, uint16_t id, const char *text) {
     uint8_t out[fk::ble::RESULT_MAX];
-    size_t n = fk::ble::encode_event(e, r, id, text, out, sizeof(out), this->hub_->controller().event_seq());
-    this->broadcast_(out, n);
+    size_t n = fk::ble::encode_event(e, r, id, text, out, sizeof(out));
+    if (n != 0)
+      this->broadcast_(out, n);
   });
   this->hub_->board().on_record([this](const uint8_t *data, size_t len) { this->broadcast_(data, len); });
 
@@ -388,9 +389,9 @@ void FlamekeeperNet::loop() {
       return;
 #ifdef USE_MDNS
     if (!this->mdns_added_) {
-      // "major.minor", as Info bytes 0-1.
-      static const char PROTOCOL[] = {char('0' + fk::ble::PROTOCOL_MAJOR), '.', char('0' + fk::ble::PROTOCOL_MINOR), 0};
-      static_assert(fk::ble::PROTOCOL_MAJOR < 10 && fk::ble::PROTOCOL_MINOR < 10, "one digit each");
+      // The protocol major, as Info byte 0.
+      static const char PROTOCOL[] = {char('0' + fk::ble::PROTOCOL_MAJOR), 0};
+      static_assert(fk::ble::PROTOCOL_MAJOR < 10, "one digit");
       static char board[4];  // Info byte 2, in decimal
       snprintf(board, sizeof(board), "%u", unsigned(this->hub_->board().board()));
       mdns_txt_item_t txt[2] = {{"protocol", PROTOCOL}, {"board", board}};
