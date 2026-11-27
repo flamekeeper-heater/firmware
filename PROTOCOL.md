@@ -938,7 +938,9 @@ notifications.
 
 **Burn problem** detection: any fault the heater reports; the heater going to off by itself
 during a run (not asked by anyone); while heating for 5 minutes or more, the heat exchanger 30 °C
-below its highest reading of the last 2 minutes (a flame gone out); and a fading flame (a blocked
+below its highest reading of the last 2 minutes on two readings in a row, 10 s apart (a flame gone
+out; after a pump cut or a fan rise, which cool it too, those 2 minutes start only 2 minutes after
+the change); and a fading flame (a blocked
 exhaust or air intake, fuel running out, coking), which smokes before any fault: the heat exchanger
 10 °C below its highest reading of the last 5 minutes while the pump and the fan have been steady
 for 10 minutes (no pump cut of more than 0.15 Hz, no fan rise of more than 10 %; it needs the

@@ -505,6 +505,8 @@ void Automation::step_burn_(uint32_t now, const Status &s) {
   if (s.state != HeaterState::HEATING || !std::isfinite(s.heat_exchanger_c)) {
     this->heating_since_ms_ = 0;
     this->hx_count_ = 0;
+    this->hx_since_cut_ = 0;
+    this->fast_low_ = 0;
     this->fading_from_c_ = NAN;
     return;
   }
@@ -531,6 +533,8 @@ void Automation::step_burn_(uint32_t now, const Status &s) {
   if (cut) {
     this->steady_since_ms_ = now;
     this->fading_from_c_ = NAN;
+    this->hx_since_cut_ = 0;
+    this->fast_low_ = 0;
   }
 
   if (this->hx_count_ != 0 && uint32_t(now - this->hx_last_ms_) < BURN_SAMPLE_MS)
@@ -544,15 +548,23 @@ void Automation::step_burn_(uint32_t now, const Status &s) {
   }
   const float hx = s.heat_exchanger_c;
   this->hx_window_[this->hx_count_++] = hx;
+  if (this->hx_since_cut_ < N)
+    this->hx_since_cut_++;
   if (uint32_t(now - this->heating_since_ms_) < BURN_SETTLE_MS)
     return;
 
-  // The flame went out: fast, whatever the fuel does.
-  if (this->hx_count_ >= FAST_SAMPLES) {
+  // The flame went out: fast. Less fuel or more air cools the heat exchanger for minutes too, so
+  // after a cut or a rise the window starts only 2 minutes later; then the top is the highest
+  // sample of the last 2 minutes since that start, and two samples in a row 30 C under it (not one
+  // odd reading) raise the alert.
+  const size_t fast =
+      this->hx_since_cut_ > FAST_SAMPLES ? std::min(FAST_SAMPLES, this->hx_since_cut_ - FAST_SAMPLES) : 0;
+  if (fast >= 2) {
     float top = hx;
-    for (size_t i = this->hx_count_ - FAST_SAMPLES; i < this->hx_count_; i++)
+    for (size_t i = this->hx_count_ - fast; i < this->hx_count_; i++)
       top = std::max(top, this->hx_window_[i]);
-    if (!this->burn_warned_ && top - hx >= FAST_FALL_C) {
+    this->fast_low_ = top - hx >= FAST_FALL_C ? uint8_t(this->fast_low_ + 1) : 0;
+    if (!this->burn_warned_ && this->fast_low_ >= 2) {
       this->burn_warned_ = true;
       this->raise_(alert::BURN, "the heat exchanger is cooling while the heater burns: the flame may be failing");
     }

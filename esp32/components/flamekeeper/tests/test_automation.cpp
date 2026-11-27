@@ -1,6 +1,7 @@
 // The board's automation (automation.h): fuel meters and tank, frost protection, timers, automatic
 // starts disarmed on doubt, alerts, the clock, Bluetooth thermometers as a room source, and the 1.3
 // protocol commands that reach them.
+#include <cmath>
 #include "fake_heater.h"
 
 #include "../automation.h"
@@ -686,6 +687,80 @@ static void test_fading_flame() {
     CHECK(r.c.status().mode == Mode::HEAT);
     CHECK(!(r.c.status().alerts & al::AUTO_OFF));
     CHECK(r.count(2) == 1);
+  }
+}
+
+static void test_fast_fall() {
+  // A power drop with a healthy flame: the pump falls from 4.0 to 1.5 Hz and the heat exchanger
+  // settles 70 C lower over minutes (about 40 C in the first 2). No alert.
+  {
+    Rig r;
+    CHECK(r.c.set_mode(Mode::HEAT, Source::PHONE).accepted());
+    r.heater_follows();
+    r.h.st.pump_hz = 4.0f;
+    r.h.st.fan_rpm = 3800.0f;
+    r.h.st.heat_exchanger_c = 200.0f;
+    r.step(30 * MIN);
+    r.h.st.pump_hz = 1.5f;
+    r.h.st.fan_rpm = 2000.0f;
+    for (int i = 1; i <= 60; i++) {
+      r.h.st.heat_exchanger_c = 130.0f + 70.0f * std::exp(-float(i) * 10.0f / 150.0f);
+      r.step(10 * SEC);
+    }
+    CHECK(!(r.c.status().alerts & al::BURN));
+  }
+  // The flame goes out: 4 C every 10 s. The alert comes on the second sample 30 C down, within 2
+  // minutes. (With the pump rate reported and steady, the fading-flame warning, 10 C down, comes
+  // first: here the heater does not report it, so this is the fast fall alone.)
+  {
+    Rig r;
+    CHECK(r.c.set_mode(Mode::HEAT, Source::PHONE).accepted());
+    r.heater_follows();
+    burn_steady(r, 187.0f, 30 * MIN);
+    r.h.st.pump_hz = NAN;
+    int at = -1;
+    for (int i = 1; i <= 18 && at < 0; i++) {
+      r.h.st.heat_exchanger_c -= 4.0f;
+      r.step(10 * SEC);
+      if (r.c.status().alerts & al::BURN)
+        at = i;
+    }
+    CHECK(at >= 9 && at <= 12);
+  }
+  // The flame goes out just as the power drops: caught once the 2 minutes after the cut have passed,
+  // within 4 minutes of it.
+  {
+    Rig r;
+    CHECK(r.c.set_mode(Mode::HEAT, Source::PHONE).accepted());
+    r.heater_follows();
+    r.h.st.pump_hz = 4.0f;
+    r.h.st.fan_rpm = 3800.0f;
+    r.h.st.heat_exchanger_c = 200.0f;
+    r.step(30 * MIN);
+    r.h.st.pump_hz = 1.5f;
+    int at = -1;
+    for (int i = 1; i <= 30 && at < 0; i++) {
+      r.h.st.heat_exchanger_c -= 4.0f;
+      r.step(10 * SEC);
+      if (r.c.status().alerts & al::BURN)
+        at = i;
+    }
+    CHECK(at > 12 && at <= 24);
+  }
+  // One odd reading 40 C low, then back: no fast-fall alert. (The fading-flame warning still takes
+  // one sample 10 C under its top with the pump steady: unchanged for now.)
+  {
+    Rig r;
+    CHECK(r.c.set_mode(Mode::HEAT, Source::PHONE).accepted());
+    r.heater_follows();
+    r.h.st.pump_hz = NAN;
+    r.h.st.heat_exchanger_c = 187.0f;
+    r.step(30 * MIN);
+    r.h.st.heat_exchanger_c = 147.0f;
+    r.step(10 * SEC);
+    r.h.st.heat_exchanger_c = 187.0f;
+    r.step(10 * MIN);
+    CHECK(!(r.c.status().alerts & al::BURN));
   }
 }
 
@@ -1490,6 +1565,7 @@ int main() {
   test_timers();
   test_burn_alerts();
   test_fading_flame();
+  test_fast_fall();
   test_run_until();
   test_start_at();
   test_bluetooth_room();

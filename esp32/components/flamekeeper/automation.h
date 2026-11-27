@@ -274,6 +274,8 @@ class Automation {
   float air_ref_rpm_{NAN};     // the fan speed since the last air rise (it follows falls)
   uint32_t steady_since_ms_{0};  // fuel and air steady since (the last cut, or heating began)
   float fading_from_c_{NAN};   // the level the fading flame was warned from; NAN = not fading
+  size_t hx_since_cut_{0};     // samples since the last fuel cut or air rise (or heating began), up to 30
+  uint8_t fast_low_{0};        // samples in a row 30 C or more under the fast window's top
 
   // battery
   uint32_t battery_low_since_ms_{0};
