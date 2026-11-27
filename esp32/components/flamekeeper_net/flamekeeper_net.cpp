@@ -523,7 +523,6 @@ class WsLink : public fk::Link {
     const fk::WifiKey *key = this->board_.access().find_key(this->key_id_);
     return key != nullptr && key->kind == fk::KeyKind::BROWSER;
   }
-  uint16_t update_chunk_max() const override { return fk::UPDATE_CHUNK_WIFI; }
   fk::Outcome forget_me() override {
     // A phone app's key belongs to its Bluetooth bond: forgetting the board from anywhere frees both.
     const fk::WifiKey *key = this->board_.access().find_key(this->key_id_);
@@ -611,17 +610,8 @@ void FlamekeeperNet::handle_(Inbox &in, uint32_t now) {
         c->state_ms = c->telemetry_ms = 0;
         c->last_telemetry[0] ^= 0xFF;
       }
-      if ((step == fk::WifiSession::Step::COMMAND || step == fk::WifiSession::Step::UPDATE_DATA) &&
-          !this->hub_->board().access().has_key(c->session->key_id())) {
+      if (step == fk::WifiSession::Step::COMMAND && !this->hub_->board().access().has_key(c->session->key_id())) {
         this->close_(*c, "its Wi-Fi key was removed", fk::relay::CLOSE_KEY_REMOVED);
-        return;
-      }
-      if (step == fk::WifiSession::Step::UPDATE_DATA) {
-        // Board firmware data: taken in order, progress back to this app.
-        fk::BoardUpdate *u = this->hub_->board().board_update();
-        uint8_t report[fk::UPDATE_REPORT_SIZE];
-        if (u != nullptr && u->data(cmd, cmd_len, report))
-          this->send_sealed_(*c, fk::wire::UPDATE, report, sizeof(report));
         return;
       }
       if (step == fk::WifiSession::Step::COMMAND) {

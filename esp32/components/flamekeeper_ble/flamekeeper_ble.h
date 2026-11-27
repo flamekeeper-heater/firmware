@@ -60,7 +60,6 @@ enum Attr : uint8_t {
   A_RESULT_CCCD,
   A_UPDATE_DECL,
   A_UPDATE,
-  A_UPDATE_CCCD,
   A_COUNT,
 };
 
@@ -102,7 +101,6 @@ class FlamekeeperBLE : public Component {
     bool state_sub{false};
     bool telemetry_sub{false};
     bool result_sub{false};
-    bool update_sub{false};  // board firmware update progress (1006)
     uint16_t mtu{23};
     bool indicating{false};
     bool forgetting{false};  // FORGET_ME: bond removed and link closed once its result has gone out

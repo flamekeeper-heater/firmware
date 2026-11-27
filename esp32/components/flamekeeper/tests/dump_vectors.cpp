@@ -70,6 +70,7 @@ struct FakeLink : fk::Link {
   int slot = -1;
   fk::Transport transport() const override { return t; }
   int phone_slot() const override { return slot; }
+  uint16_t update_chunk_max() const override { return t == fk::Transport::BLUETOOTH ? 240 : 0; }  // MTU 247
   fk::Outcome forget_me() override { return fk::Outcome::ok(); }
   fk::Outcome issue_wifi_key(uint8_t id[16], uint8_t secret[32]) override {
     if (t != fk::Transport::BLUETOOTH)
@@ -792,9 +793,7 @@ static void records() {
   }
 }
 
-// The Wi-Fi key sign-in and encrypted frames.
-// Board firmware updates (PROTOCOL.md): command results, the progress
-// record, and State's flag bit 4.
+// Board firmware updates (PROTOCOL.md): command results, the data record, and State's flag bit 4.
 static void update_records() {
   Rig r;
   FakeUpdater u;
@@ -814,11 +813,15 @@ static void update_records() {
     record(name, "command", cmd.data(), cmd.size(), e);
   };
   cmd_vec("command UPDATE_BEGIN, 1507316 bytes, SHA-256 a0..bf", begin);
-  // Over Bluetooth at MTU 247 (the fake link keeps the Wi-Fi chunk, 1000; the real one reports MTU - 7).
+  // Over Bluetooth at MTU 247: the chunk is MTU - 7.
   u.resume_at = 0;
-  CHECK(result("result UPDATE_BEGIN, new: offset 0, chunk 1000", begin).size() == 9);
+  CHECK(result("result UPDATE_BEGIN, new: offset 0, chunk 240", begin).size() == 9);
   u.resume_at = 245760;
-  CHECK(result("result UPDATE_BEGIN, resumed at 245760, chunk 1000", begin).size() == 9);
+  CHECK(result("result UPDATE_BEGIN, resumed at 245760, chunk 240", begin).size() == 9);
+  // Over Wi-Fi or the relay: refused before the board looks at the image.
+  r.link.t = fk::Transport::WIFI;
+  result("result UPDATE_BEGIN refused 28, over Wi-Fi", begin);
+  r.link.t = fk::Transport::BLUETOOTH;
   u.begin_result = fk::Outcome::refuse(fk::Result::NOT_OFF, "the heater is not off yet (wait for the cooldown)");
   result("result UPDATE_BEGIN refused 20, heater not off", begin);
   u.begin_result = fk::Outcome::refuse(fk::Result::TOO_BIG, "the image does not fit the board's update slot");
@@ -847,24 +850,11 @@ static void update_records() {
   r.board.upd = nullptr;
   result("result UPDATE_STATUS refused 13, not in this build", {0x38, ble::op::UPDATE_STATUS});
 
-  // Data and progress records (Bluetooth 1006 and WebSocket 06 carry the same bytes).
+  // A data record (Bluetooth 1006, written without response; never answered).
   Bytes data = {0x00, 0xC0, 0x03, 0x00, 0x11, 0x22, 0x33, 0x44};  // 4 image bytes at 245760
   Obj de;
   de.add("offset", "245760").add("bytes", q("11223344"));
   record("update data at 245760, 4 bytes", "updateData", data.data(), data.size(), de);
-  struct P { const char *name; uint32_t next; fk::UpdateState state; fk::UpdateReport why; };
-  const P ps[] = {{"update progress, receiving, next 249856", 249856, fk::UpdateState::RECEIVING, fk::UpdateReport::PROGRESS},
-                  {"update progress, every byte received", 1507316, fk::UpdateState::RECEIVED, fk::UpdateReport::PROGRESS},
-                  {"update progress, a repeat answered, next 249856", 249856, fk::UpdateState::RECEIVING, fk::UpdateReport::REPEAT},
-                  {"update progress, a gap answered, next 249856", 249856, fk::UpdateState::RECEIVING, fk::UpdateReport::GAP},
-                  {"update progress, none (dropped), next 0", 0, fk::UpdateState::NONE, fk::UpdateReport::REFUSED}};
-  for (const P &p : ps) {
-    uint8_t rec[fk::UPDATE_REPORT_SIZE];
-    fk::encode_update_report(p.next, p.state, p.why, rec);
-    Obj e;
-    e.add("next", num(p.next)).add("state", num(int(p.state))).add("reason", num(int(p.why)));
-    record(p.name, "updateProgress", rec, sizeof(rec), e);
-  }
   // State flag bit 4.
   fk::Status s;
   s.answering = true;
@@ -1126,11 +1116,6 @@ static std::string sign_in() {
   CHECK(feed(f2) == fk::WifiSession::Step::COMMAND);
   CHECK(cmd_len == cmd2.size() && std::memcmp(cmd, cmd2.data(), cmd_len) == 0);
   CHECK(rig.run(Bytes(cmd, cmd + cmd_len))[2] == 0);
-  // Board firmware data (frame 06): offset 0, the first 8 bytes of an image.
-  Bytes data3 = {0x00, 0x00, 0x00, 0x00, 0xE9, 0x06, 0x02, 0x20, 0x00, 0x00, 0x08, 0x40};
-  Bytes f3 = app_frame(data3, w::UPDATE);
-  CHECK(feed(f3) == fk::WifiSession::Step::UPDATE_DATA);
-  CHECK(cmd_len == data3.size() && std::memcmp(cmd, data3.data(), cmd_len) == 0);
   rig.h.st.state = fk::HeaterState::HEATING;
   rig.h.st.answering = true;
   rig.c.tick(1000, false);
@@ -1144,11 +1129,6 @@ static std::string sign_in() {
   n = board.seal(w::RESULT, result_rec.data(), result_rec.size(), sealed, sizeof(sealed));
   CHECK_EQ(n, 3 + w::SEAL_OVERHEAD);
   Bytes board_result(sealed, sealed + n);
-  uint8_t progress_rec[fk::UPDATE_REPORT_SIZE];
-  fk::encode_update_report(4096, fk::UpdateState::RECEIVING, fk::UpdateReport::PROGRESS, progress_rec);
-  n = board.seal(w::UPDATE, progress_rec, sizeof(progress_rec), sealed, sizeof(sealed));
-  CHECK_EQ(n, fk::UPDATE_REPORT_SIZE + w::SEAL_OVERHEAD);
-  Bytes board_progress(sealed, sealed + n);
 
   auto frame = [](const char *dir, uint8_t type, const Bytes &rec, const Bytes &f) {
     Obj o;
@@ -1158,10 +1138,7 @@ static std::string sign_in() {
   Bytes st(state_rec, state_rec + sizeof(state_rec));
   std::string frames = frame("fromBoard", w::STATE, st, board_state) + ",\n" +
                        frame("fromBoard", w::RESULT, result_rec, board_result) + ",\n" +
-                       frame("fromBoard", w::UPDATE, Bytes(progress_rec, progress_rec + sizeof(progress_rec)),
-                             board_progress) + ",\n" +
-                       frame("toBoard", w::COMMAND, cmd1, f1) + ",\n" + frame("toBoard", w::COMMAND, cmd2, f2) +
-                       ",\n" + frame("toBoard", w::UPDATE, data3, f3);
+                       frame("toBoard", w::COMMAND, cmd1, f1) + ",\n" + frame("toBoard", w::COMMAND, cmd2, f2);
   Obj o;
   o.add("keyId", q(hex(id))).add("secret", q(hex(secret))).add("boardNonce", q(hex(board_nonce)))
       .add("appNonce", q(hex(app_nonce))).add("helloFrame", q(hex(hello))).add("signInFrame", q(hex(sign)))

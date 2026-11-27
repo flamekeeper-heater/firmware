@@ -79,8 +79,7 @@ static const uint8_t PROP_READ = ESP_GATT_CHAR_PROP_BIT_READ;
 static const uint8_t PROP_READ_NOTIFY = ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_NOTIFY;
 static const uint8_t PROP_WRITE = ESP_GATT_CHAR_PROP_BIT_WRITE;
 static const uint8_t PROP_INDICATE = ESP_GATT_CHAR_PROP_BIT_INDICATE;
-static const uint8_t PROP_UPDATE = ESP_GATT_CHAR_PROP_BIT_WRITE_NR | ESP_GATT_CHAR_PROP_BIT_WRITE |
-                                   ESP_GATT_CHAR_PROP_BIT_NOTIFY;
+static const uint8_t PROP_UPDATE = ESP_GATT_CHAR_PROP_BIT_WRITE_NR;
 static const uint16_t UPDATE_WRITE_MAX = 512;  // the longest attribute value ATT allows
 static const uint16_t LOCAL_MTU = 247;         // the ATT MTU the board offers
 static uint8_t cccd_init[2] = {0, 0};
@@ -146,11 +145,10 @@ void FlamekeeperBLE::build_table_() {
   t[A_RESULT_DECL] = attr(AUTO, ESP_UUID_LEN_16, u16(UUID_CHAR_DECL), ESP_GATT_PERM_READ, 1, 1, prop(PROP_INDICATE));
   t[A_RESULT] = attr(AUTO, ESP_UUID_LEN_128, this->uuid_result_, PERM_SECURE_READ, RESULT_MAX, 0, nullptr);
   t[A_RESULT_CCCD] = attr(AUTO, ESP_UUID_LEN_16, u16(UUID_CCCD), PERM_SECURE_RW, 2, 2, cccd_init);
-  // Board firmware update data (written without response) and its progress (notified).
+  // Board firmware update data, written without response (the app asks UPDATE_STATUS after a block).
   t[A_UPDATE_DECL] = attr(AUTO, ESP_UUID_LEN_16, u16(UUID_CHAR_DECL), ESP_GATT_PERM_READ, 1, 1, prop(PROP_UPDATE));
   t[A_UPDATE] = attr(BY_APP, ESP_UUID_LEN_128, this->uuid_update_, ESP_GATT_PERM_WRITE_ENC_MITM, UPDATE_WRITE_MAX, 0,
                      nullptr);
-  t[A_UPDATE_CCCD] = attr(AUTO, ESP_UUID_LEN_16, u16(UUID_CCCD), PERM_SECURE_RW, 2, 2, cccd_init);
 }
 
 // ---------------------------------------------------------------- setup
@@ -693,21 +691,18 @@ void FlamekeeperBLE::on_write_(esp_ble_gatts_cb_param_t *param) {
     this->hub_->board().push_engine()->app_seen();
   c->authenticated = true;
   uint16_t h = w.handle;
-  if (h == this->handles_[A_STATE_CCCD] || h == this->handles_[A_TELEMETRY_CCCD] || h == this->handles_[A_RESULT_CCCD] ||
-      h == this->handles_[A_UPDATE_CCCD]) {
+  if (h == this->handles_[A_STATE_CCCD] || h == this->handles_[A_TELEMETRY_CCCD] || h == this->handles_[A_RESULT_CCCD]) {
     uint16_t v = w.len >= 2 ? uint16_t(w.value[0] | (w.value[1] << 8)) : 0;
     if (h == this->handles_[A_STATE_CCCD])
       c->state_sub = v & 0x0001;
     else if (h == this->handles_[A_TELEMETRY_CCCD])
       c->telemetry_sub = v & 0x0001;
-    else if (h == this->handles_[A_UPDATE_CCCD])
-      c->update_sub = v & 0x0001;
     else
       c->result_sub = v & 0x0002;
     return;
   }
   if (h == this->handles_[A_UPDATE]) {
-    // Board firmware data: taken in order, progress notified back to this phone.
+    // Board firmware data: taken in order or ignored, never answered.
     if (w.is_prep) {
       if (w.need_rsp)
         esp_ble_gatts_send_response(this->gatts_if_, w.conn_id, w.trans_id, ESP_GATT_REQ_NOT_SUPPORTED, nullptr);
@@ -716,9 +711,8 @@ void FlamekeeperBLE::on_write_(esp_ble_gatts_cb_param_t *param) {
     if (w.need_rsp)
       esp_ble_gatts_send_response(this->gatts_if_, w.conn_id, w.trans_id, ESP_GATT_OK, nullptr);
     fk::BoardUpdate *u = this->hub_->board().board_update();
-    uint8_t report[fk::UPDATE_REPORT_SIZE];
-    if (u != nullptr && u->data(w.value, w.len, report) && c->update_sub)
-      esp_ble_gatts_send_indicate(this->gatts_if_, c->id, this->handles_[A_UPDATE], sizeof(report), report, false);
+    if (u != nullptr)
+      u->data(w.value, w.len);
     return;
   }
   if (h != this->handles_[A_COMMAND])

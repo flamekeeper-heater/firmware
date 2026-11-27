@@ -35,10 +35,6 @@ struct FakeFlash : fk::UpdateFlash {
   void restart() override { restarted = true; }
 };
 
-static uint32_t u32(const uint8_t *p) {
-  return uint32_t(p[0]) | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16) | (uint32_t(p[3]) << 24);
-}
-
 struct Rig {
   FakeHeater h;
   fk::Controller c{&h};
@@ -49,7 +45,6 @@ struct Rig {
   uint8_t sha[32];
   int saves = 0;
   fk::BoardUpdate::Saved saved{};
-  uint8_t report[fk::UPDATE_REPORT_SIZE];
 
   explicit Rig(size_t size = 10000) {
     for (size_t i = 0; i < size; i++)
@@ -69,18 +64,22 @@ struct Rig {
     u.loop(now);
   }
   fk::Outcome begin(uint32_t *off) { return u.update_begin(uint32_t(image.size()), sha, off); }
-  // Sends image[at, at + n) as one data record; true if a report came back.
-  bool send(uint32_t at, size_t n) {
+  // Sends image[at, at + n) as one data record (never answered).
+  void send(uint32_t at, size_t n) {
     std::vector<uint8_t> rec = {uint8_t(at), uint8_t(at >> 8), uint8_t(at >> 16), uint8_t(at >> 24)};
     rec.insert(rec.end(), image.begin() + at, image.begin() + at + n);
-    return u.data(rec.data(), rec.size(), report);
+    u.data(rec.data(), rec.size());
   }
-  // Everything from `from`, in 240-byte chunks; returns the reports.
-  int send_all(uint32_t from) {
-    int reports = 0;
+  // Everything from `from`, in 240-byte chunks.
+  void send_all(uint32_t from) {
     for (uint32_t at = from; at < image.size(); at += 240)
-      reports += send(at, std::min<size_t>(240, image.size() - at)) ? 1 : 0;
-    return reports;
+      send(at, std::min<size_t>(240, image.size() - at));
+  }
+  // What UPDATE_STATUS would answer: the state and the bytes taken.
+  fk::UpdateStatus status() const {
+    fk::UpdateStatus st;
+    u.update_status(st);
+    return st;
   }
 };
 
@@ -92,11 +91,7 @@ static void test_full_update() {
   // Starts are refused for every source while it runs.
   CHECK(r.c.set_mode(Mode::HEAT, fk::Source::HOME_ASSISTANT).result == Result::BUSY);
   CHECK(r.c.set_mode(Mode::FAN, fk::Source::PHONE).result == Result::BUSY);
-  // 10000 bytes: reports at 4096+, 8192+, and the last byte.
-  CHECK_EQ(r.send_all(0), 3);
-  CHECK_EQ(u32(r.report), 10000u);
-  CHECK_EQ(r.report[4], uint8_t(UpdateState::RECEIVED));
-  CHECK_EQ(r.report[5], uint8_t(fk::UpdateReport::PROGRESS));
+  r.send_all(0);
   CHECK(r.flash.written == r.image);
   fk::UpdateStatus st;
   r.u.update_status(st);
@@ -115,36 +110,39 @@ static void test_offsets_and_resume() {
   Rig r;
   uint32_t off;
   CHECK(r.begin(&off).accepted());
-  CHECK(!r.send(0, 240));
-  // A repeat and a gap are ignored, and answered with the board's position and which it was.
-  CHECK(r.send(0, 240));
-  CHECK(u32(r.report) == 240u && r.report[5] == uint8_t(fk::UpdateReport::REPEAT));
-  CHECK(!r.send(0, 240));    // another repeat within 250 ms: no report
-  CHECK(r.send(480, 240));   // but a gap is still answered (its own limit)
-  CHECK(u32(r.report) == 240u && r.report[5] == uint8_t(fk::UpdateReport::GAP));
-  CHECK(!r.send(720, 240));  // the next gap at the same position within 250 ms: no report
-  r.step(300);
-  CHECK(r.send(480, 240));
-  CHECK(u32(r.report) == 240u && r.report[5] == uint8_t(fk::UpdateReport::GAP));
-  // The resend from the reported position is taken and answered at once (not 4096 bytes later).
-  CHECK(r.send(240, 240));
-  CHECK(u32(r.report) == 480u && r.report[5] == uint8_t(fk::UpdateReport::PROGRESS));
-  CHECK(!r.send(480, 240));  // then the usual cadence
-  // A gap at a new position is answered at once, even within 250 ms of the last.
-  CHECK(r.send(1200, 240));
-  CHECK(u32(r.report) == 720u && r.report[5] == uint8_t(fk::UpdateReport::GAP));
-  r.send(720, 240);
-  CHECK(r.flash.written.size() == 960);
-  // Too short, or past the end: ignored.
+  r.send(0, 240);
+  CHECK(r.status().received == 240);
+  // A repeat and a gap are ignored: UPDATE_STATUS still says 240, the app resends from there.
+  r.send(0, 240);
+  r.send(480, 240);
+  CHECK(r.status().received == 240 && r.status().state == UpdateState::RECEIVING);
+  r.send(240, 240);
+  CHECK(r.status().received == 480);
+  // Too short, empty or past the end: ignored.
   uint8_t tiny[3] = {0, 0, 0};
-  r.step(300);
-  CHECK(r.u.data(tiny, 3, r.report) && u32(r.report) == 960 && r.report[5] == uint8_t(fk::UpdateReport::REFUSED));
-  // The link drops: UPDATE_BEGIN again with the same image resumes from 960, from any phone.
-  r.step(20000);
-  CHECK(r.begin(&off).accepted() && off == 960);
-  r.send_all(960);
+  r.u.data(tiny, 3);
+  uint8_t empty[4] = {0xE0, 0x01, 0, 0};  // offset 480, no bytes
+  r.u.data(empty, 4);
+  CHECK(r.status().received == 480);
+  r.send_all(480);
+  CHECK(r.status().received == 10000 && r.status().state == UpdateState::RECEIVED);
+  r.send(9760, 240);  // after the last byte: nothing taken
   CHECK(r.flash.written == r.image);
   CHECK(r.u.update_finish().accepted());
+
+  // The link drops halfway: UPDATE_BEGIN again with the same image resumes, from any phone.
+  Rig q;
+  CHECK(q.begin(&off).accepted());
+  q.send_all(0);
+  q.u.update_abort();
+  CHECK(q.begin(&off).accepted() && off == 0);
+  q.send(0, 240);
+  q.send(240, 240);
+  q.step(20000);
+  CHECK(q.begin(&off).accepted() && off == 480);
+  q.send_all(480);
+  CHECK(q.status().received == 10000);
+  CHECK(q.status().state == UpdateState::RECEIVED);
 }
 
 static void test_heater_rules() {
@@ -181,7 +179,7 @@ static void test_heater_rules() {
   CHECK(r.c.set_mode(Mode::FAN, fk::Source::PHONE).accepted());
 }
 
-static void test_sizes_and_takeover() {
+static void test_sizes_and_kept_image() {
   Rig r;
   uint32_t off;
   r.flash.slot = 5000;
@@ -190,16 +188,16 @@ static void test_sizes_and_takeover() {
   CHECK(r.u.update_begin(0, r.sha, &off).result == Result::OUT_OF_RANGE);
   CHECK(r.begin(&off).accepted());
   r.send(0, 240);
-  // A different image while this one is alive: busy; after 60 s without data: it takes over.
+  // A different image while this one is kept: busy, however long it has been quiet (no takeover).
   uint8_t other[32] = {1};
   CHECK(r.u.update_begin(4000, other, &off).result == Result::BUSY);
   r.step(61000);
-  CHECK(r.u.update_begin(4000, other, &off).accepted() && off == 0);
+  CHECK(r.u.update_begin(4000, other, &off).result == Result::BUSY);
   fk::UpdateStatus st;
   r.u.update_status(st);
-  CHECK(st.size == 4000 && st.received == 0 && st.sha256[0] == 1);
-  // No data for 5 minutes: dropped, starts allowed.
-  r.step(299000);
+  CHECK(st.size == 10000 && st.received == 240);
+  // No data for 5 minutes: dropped, starts allowed, and another image may begin.
+  r.step(299000 - 61000);
   CHECK(r.u.running());
   r.step(2000);
   CHECK(!r.u.running() && !r.c.status().board_updating);
@@ -250,8 +248,8 @@ static void test_finish_checks() {
     uint32_t off;
     CHECK(r.begin(&off).accepted());
     r.flash.fail_write = true;
-    CHECK(r.send(0, 240));
-    CHECK(r.report[4] == uint8_t(UpdateState::NONE) && !r.u.running());
+    r.send(0, 240);
+    CHECK(r.status().state == UpdateState::NONE && r.status().last == UpdateLast::DROPPED && !r.u.running());
   }
 }
 
@@ -313,7 +311,7 @@ int main() {
   test_full_update();
   test_offsets_and_resume();
   test_heater_rules();
-  test_sizes_and_takeover();
+  test_sizes_and_kept_image();
   test_finish_checks();
   test_restart_outcome();
   return report("board_update");

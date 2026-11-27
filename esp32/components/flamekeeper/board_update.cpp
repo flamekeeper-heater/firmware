@@ -85,11 +85,9 @@ Outcome BoardUpdate::update_begin(uint32_t size, const uint8_t sha256[UPDATE_HAS
     return Outcome::refuse(Result::OUT_OF_RANGE, "the image is empty");
   if (size > this->flash_.slot_size())
     return Outcome::refuse(Result::TOO_BIG, "the image does not fit the board's update slot");
-  if (this->state_ != UpdateState::NONE) {
-    if (uint32_t(this->now_ - this->last_data_ms_) < TAKEOVER_MS)
-      return Outcome::refuse(Result::BUSY, "another update is under way");
-    this->drop_(UpdateLast::DROPPED);
-  }
+  // Another image is kept until it is dropped (5 minutes without data), aborted or the board restarts.
+  if (this->state_ != UpdateState::NONE)
+    return Outcome::refuse(Result::BUSY, "another update is under way");
   if (!this->flash_.begin(size))  // refused: the last result stays as it was
     return Outcome::refuse(Result::REFUSED, "the update slot could not be prepared");
   this->state_ = UpdateState::RECEIVING;
@@ -98,69 +96,27 @@ Outcome BoardUpdate::update_begin(uint32_t size, const uint8_t sha256[UPDATE_HAS
   std::memcpy(this->want_, sha256, UPDATE_HASH_SIZE);
   this->sha_.start();
   this->last_data_ms_ = this->now_;
-  this->reported_at_ = 0;
-  std::memset(this->reported_once_, 0, sizeof(this->reported_once_));
-  this->gap_at_ = 0xFFFFFFFFu;
-  this->answer_next_ = false;
   this->c_.set_board_updating(true);
   this->set_last_(UpdateLast::NOTHING, false);
   return Outcome::ok();
 }
 
-void BoardUpdate::report_(uint8_t report[UPDATE_REPORT_SIZE], UpdateReport why) {
-  encode_update_report(this->received_, this->state_, why, report);
-  if (why == UpdateReport::PROGRESS)
-    this->reported_at_ = this->received_;  // the every-4096 cadence counts progress reports only
-}
-
-bool BoardUpdate::data(const uint8_t *in, size_t len, uint8_t report[UPDATE_REPORT_SIZE]) {
-  // Anything not taken gets the board's own position back and why, at most 4 times a second per reason
-  // (so a repeat answered a moment ago never hides a gap).
-  auto ignored = [&](UpdateReport why) {
-    const uint8_t i = uint8_t(why);
-    const bool new_gap = why == UpdateReport::GAP && this->gap_at_ != this->received_;
-    if (!new_gap && this->reported_once_[i] && uint32_t(this->now_ - this->report_ms_[i]) < REPORT_MIN_MS)
-      return false;
-    this->reported_once_[i] = true;
-    this->report_ms_[i] = this->now_;
-    if (why == UpdateReport::GAP)
-      this->gap_at_ = this->received_;
-    if (why == UpdateReport::REPEAT || why == UpdateReport::GAP)
-      this->answer_next_ = true;
-    this->report_(report, why);
-    return true;
-  };
+void BoardUpdate::data(const uint8_t *in, size_t len) {
   if (this->state_ != UpdateState::RECEIVING || len < UPDATE_HEADER_SIZE)
-    return ignored(UpdateReport::REFUSED);
+    return;
   const uint32_t offset = get_u32(in);
   const size_t n = len - UPDATE_HEADER_SIZE;
-  if (offset < this->received_)
-    return ignored(UpdateReport::REPEAT);
-  if (offset > this->received_)
-    return ignored(UpdateReport::GAP);
-  if (n == 0 || n > this->size_ - this->received_)
-    return ignored(UpdateReport::REFUSED);
+  if (offset != this->received_ || n == 0 || n > this->size_ - this->received_)
+    return;  // not the next bytes: ignored (the app resends from UPDATE_STATUS's count)
   if (!this->flash_.write(in + UPDATE_HEADER_SIZE, n)) {
     this->drop_(UpdateLast::DROPPED);
-    this->report_(report, UpdateReport::REFUSED);
-    return true;
+    return;
   }
   this->sha_.add(in + UPDATE_HEADER_SIZE, n);
   this->received_ += uint32_t(n);
   this->last_data_ms_ = this->now_;
-  if (this->received_ == this->size_) {
+  if (this->received_ == this->size_)
     this->state_ = UpdateState::RECEIVED;
-    this->report_(report);
-    return true;
-  }
-  // Every 4096 bytes, and the first chunk taken after a repeat or a gap was answered (the app's
-  // probe, or the resend after a gap, is then confirmed at once).
-  if (this->answer_next_ || this->received_ - this->reported_at_ >= REPORT_EVERY) {
-    this->answer_next_ = false;
-    this->report_(report);
-    return true;
-  }
-  return false;
 }
 
 void BoardUpdate::update_status(UpdateStatus &out) const {

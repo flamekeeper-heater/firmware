@@ -1,5 +1,6 @@
 // A board firmware update from the app (PROTOCOL.md): the image arrives in
-// chunks over Bluetooth or the WebSocket, is written to the other app slot as it comes, and is
+// chunks over Bluetooth (stop and wait: the app asks UPDATE_STATUS after each block), is written to
+// the other app slot as it comes, and is
 // checked (SHA-256 here, then the signature and the image by the slot writer) before the board
 // switches to it. Only with the heater off; every start is refused while it runs.
 //
@@ -37,9 +38,6 @@ class UpdateFlash {
 class BoardUpdate : public BoardUpdater {
  public:
   static const uint32_t IDLE_DROP_MS = 5 * 60 * 1000;  // no data this long: dropped
-  static const uint32_t TAKEOVER_MS = 60 * 1000;       // ...and another image may replace it after this
-  static const uint32_t REPORT_EVERY = 4096;           // progress after this many bytes taken
-  static const uint32_t REPORT_MIN_MS = 250;           // ...and at most this often for ignored chunks
   static const uint32_t RESTART_DELAY_MS = 1000;       // UPDATE_FINISH's result goes out first
   static const uint32_t CONFIRM_MS = 60 * 1000;        // as ESPHome's safe_mode boot_is_good_after
 
@@ -63,9 +61,10 @@ class BoardUpdate : public BoardUpdater {
   // State flag bit 4: from UPDATE_BEGIN until the update ends, is dropped or the board restarts.
   bool running() const { return this->state_ != UpdateState::NONE; }
 
-  // One data record (u32 offset, image bytes). True when a progress report should go back to the
-  // sender, written to report.
-  bool data(const uint8_t *in, size_t len, uint8_t report[UPDATE_REPORT_SIZE]);
+  // One data record (u32 offset, image bytes): taken only while receiving, at exactly the offset
+  // expected next, with at least one byte and not past the size; anything else is ignored. Nothing
+  // is answered: the app asks UPDATE_STATUS after each block.
+  void data(const uint8_t *in, size_t len);
 
   // BoardUpdater
   Outcome update_begin(uint32_t size, const uint8_t sha256[UPDATE_HASH_SIZE], uint32_t *offset) override;
@@ -77,7 +76,6 @@ class BoardUpdate : public BoardUpdater {
   Outcome heater_check_() const;
   void drop_(UpdateLast last);
   void set_last_(UpdateLast last, bool pending);
-  void report_(uint8_t report[UPDATE_REPORT_SIZE], UpdateReport why = UpdateReport::PROGRESS);
 
   Controller &c_;
   UpdateFlash &flash_;
@@ -89,11 +87,6 @@ class BoardUpdate : public BoardUpdater {
   uint8_t want_[UPDATE_HASH_SIZE]{};
   uint32_t now_{0};
   uint32_t last_data_ms_{0};
-  uint32_t reported_at_{0};    // bytes received at the last report
-  uint32_t report_ms_[4]{};    // ...and when a report for an ignored chunk last went out, per reason
-  bool reported_once_[4]{};
-  uint32_t gap_at_{0xFFFFFFFFu};  // the position the last gap report gave: a gap at a new one is always answered
-  bool answer_next_{false};       // a repeat or gap was answered: the next chunk taken is answered too
   bool restart_due_{false};
   uint32_t restart_at_ms_{0};
   bool booted_{false};

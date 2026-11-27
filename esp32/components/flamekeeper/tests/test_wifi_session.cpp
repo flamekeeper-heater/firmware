@@ -289,11 +289,6 @@ static void test_key_sign_in() {
   n = r.board.seal(w::RESULT, state, 5, out, sizeof(out));
   CHECK(c.open(Bytes(out, out + n), got));
   CHECK(r.feed(c.command(rec)) == fk::WifiSession::Step::COMMAND);
-  // Board firmware data (frame 06): decrypted on the same counter, handed over as update data.
-  Bytes data = {0x00, 0x10, 0, 0, 0xAA, 0xBB};
-  CHECK(r.feed(c.command(data, w::UPDATE)) == fk::WifiSession::Step::UPDATE_DATA);
-  CHECK(r.cmd_len == 6 && r.cmd[4] == 0xAA);
-  CHECK(r.feed(c.command(rec)) == fk::WifiSession::Step::COMMAND);
 }
 
 static void test_key_sign_in_refused() {

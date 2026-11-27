@@ -128,8 +128,8 @@ WifiSession::Step WifiSession::receive(const uint8_t *frame, size_t len, uint32_
         return this->close_("expected the key confirmation");
       return this->confirm_(frame + 1, len - 1, now, send);
     case State::SIGNED_IN: {
-      if (type != wire::COMMAND && type != wire::UPDATE)
-        return this->close_("only commands and update data after signing in");
+      if (type != wire::COMMAND)
+        return this->close_("only commands after signing in");
       if (len < 1 + crypto::GCM_TAG_SIZE || command_cap < len)
         return this->close_("command frame too short or too long");
       uint8_t nonce[crypto::GCM_NONCE_SIZE];
@@ -137,7 +137,7 @@ WifiSession::Step WifiSession::receive(const uint8_t *frame, size_t len, uint32_
       if (!crypto::gcm_open(this->key_in_, nonce, frame, 1, frame + 1, len - 1, command))
         return this->close_("a frame did not verify");
       *command_len = len - 1 - crypto::GCM_TAG_SIZE;
-      return type == wire::UPDATE ? Step::UPDATE_DATA : Step::COMMAND;
+      return Step::COMMAND;
     }
     default:
       return this->close_("frame out of order");

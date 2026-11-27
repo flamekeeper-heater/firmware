@@ -14,6 +14,7 @@ struct FakeLink : fk::Link {
   bool web = false;
   fk::Transport transport() const override { return t; }
   bool browser() const override { return web; }
+  uint16_t update_chunk_max() const override { return 240; }  // a Bluetooth link at ATT MTU 247
   fk::Outcome forget_me() override {
     me++;
     return fk::Outcome::ok();
@@ -530,7 +531,12 @@ static void test_update_commands() {
   CHECK_EQ(r.cmdv(begin), 9);
   CHECK(r.res() == Result::OK && u.size == 1000000 && u.sha[31] == 31);
   CHECK_EQ(uint32_t(i32(r.out + 3)), 8192u);
-  CHECK_EQ(u16(r.out + 7), fk::UPDATE_CHUNK_WIFI);  // FakeLink keeps the default
+  CHECK_EQ(u16(r.out + 7), 240);
+  // Over Wi-Fi or the relay: refused, the update goes over Bluetooth only.
+  r.link.t = fk::Transport::WIFI;
+  r.cmdv(begin);
+  CHECK(r.res() == Result::BLUETOOTH_ONLY && r.text() == "firmware updates go over Bluetooth");
+  r.link.t = fk::Transport::BLUETOOTH;
   begin.pop_back();
   r.cmdv(begin);
   CHECK(r.res() == Result::BAD_LENGTH);

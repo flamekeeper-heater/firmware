@@ -783,6 +783,8 @@ size_t handle_command(const uint8_t *in, size_t len, Controller &c, Link &link, 
       if (opcode == op::UPDATE_BEGIN) {
         if (!need(4 + UPDATE_HASH_SIZE))
           break;
+        if (link.transport() != Transport::BLUETOOTH)
+          return result(req, opcode, Result::BLUETOOTH_ONLY, "firmware updates go over Bluetooth", out, cap);
         uint32_t offset = 0;
         Outcome o = u->update_begin(uint32_t(get_i32(arg)), arg + 4, &offset);
         if (o.result != Result::OK)

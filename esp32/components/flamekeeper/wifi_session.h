@@ -21,7 +21,7 @@ static const uint8_t STATE = 0x02;
 static const uint8_t TELEMETRY = 0x03;
 static const uint8_t COMMAND = 0x04;
 static const uint8_t RESULT = 0x05;
-static const uint8_t UPDATE = 0x06;  // board firmware data (app -> board), progress (board -> app)
+// 0x06 (board firmware data) is no longer taken: firmware updates go over Bluetooth only.
 static const uint8_t HELLO = 0x10;
 static const uint8_t SIGN_IN = 0x11;
 static const uint8_t SIGNED_IN = 0x12;
@@ -45,7 +45,7 @@ inline bool sign_in_expired(uint32_t now, uint32_t opened_ms) {
 class WifiSession {
  public:
   using Send = std::function<void(const uint8_t *, size_t)>;
-  enum class Step : uint8_t { CONTINUE, COMMAND, UPDATE_DATA, CLOSE };
+  enum class Step : uint8_t { CONTINUE, COMMAND, CLOSE };
 
   explicit WifiSession(Access &access);
   ~WifiSession();
@@ -59,7 +59,7 @@ class WifiSession {
   void start_relay(const uint8_t key_id[KEY_ID_SIZE], const Send &send);
   bool relay() const { return this->relay_; }
   // One binary frame from the app. COMMAND: the decrypted Command record is in command
-  // (command_cap >= the frame's length); UPDATE_DATA: the same, a board firmware data record. CLOSE: close the connection (close_reason() says why).
+  // (command_cap >= the frame's length). CLOSE: close the connection (close_reason() says why).
   Step receive(const uint8_t *frame, size_t len, uint32_t now, const Send &send, uint8_t *command,
                size_t *command_len, size_t command_cap);
 

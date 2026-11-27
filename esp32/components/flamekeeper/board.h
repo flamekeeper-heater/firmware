@@ -53,25 +53,6 @@ enum class UpdateState : uint8_t { NONE = 0, RECEIVING = 1, RECEIVED = 2, INSTAL
 enum class UpdateLast : uint8_t { NOTHING = 0, INSTALLED = 1, ROLLED_BACK = 2, DROPPED = 3 };
 static const size_t UPDATE_HASH_SIZE = 32;
 static const size_t UPDATE_HEADER_SIZE = 4;   // a data chunk: u32 offset, then the bytes
-static const size_t UPDATE_REPORT_SIZE = 6;   // progress: u32 next offset, u8 state, u8 reason
-// Wi-Fi: a WebSocket frame is at most 1024 bytes (wifi_session.h), less the type, tag and offset.
-static const uint16_t UPDATE_CHUNK_WIFI = 1000;
-
-// Why a progress record went out.
-enum class UpdateReport : uint8_t {
-  PROGRESS = 0,  // bytes taken (every 4096, and the last byte)
-  REPEAT = 1,    // a chunk below the expected offset: already taken, nothing lost
-  GAP = 2,       // a chunk beyond the expected offset: something was lost, send from `next`
-  REFUSED = 3,   // not taken for another reason: no update receiving (see the state), malformed, too long
-};
-
-// The progress record (board -> app): u32 the offset expected next, u8 the state, u8 the reason.
-inline void encode_update_report(uint32_t next, UpdateState state, UpdateReport why, uint8_t out[UPDATE_REPORT_SIZE]) {
-  put_u32(out, next);
-  out[4] = uint8_t(state);
-  out[5] = uint8_t(why);
-}
-
 struct UpdateStatus {
   UpdateState state{UpdateState::NONE};
   uint32_t size{0};
@@ -103,8 +84,9 @@ class Link {
     (void) secret;
     return Outcome::refuse(Result::BLUETOOTH_ONLY, "only a phone paired over Bluetooth can get a Wi-Fi key");
   }
-  // The largest board firmware chunk this connection takes (bytes after the offset).
-  virtual uint16_t update_chunk_max() const { return UPDATE_CHUNK_WIFI; }
+  // The largest board firmware chunk this connection takes (bytes after the offset); 0: none
+  // (updates go over Bluetooth only).
+  virtual uint16_t update_chunk_max() const { return 0; }
   // The phone key slot of this app (the key it signed in with, or the one issued to this bonded
   // phone), -1 if it has none.
   virtual int phone_slot() const { return -1; }
