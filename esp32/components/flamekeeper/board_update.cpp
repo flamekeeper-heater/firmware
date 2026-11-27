@@ -7,13 +7,12 @@ namespace esphome {
 namespace flamekeeper {
 
 
-void BoardUpdate::load(const Saved *saved, uint32_t running_build) {
-  this->running_build_ = running_build;
+void BoardUpdate::load(const Saved *saved, uint32_t running_slot) {
   if (saved == nullptr || saved->check != SAVED_CHECK)
     return;
   this->saved_ = *saved;
-  // Installed by the build that is running again: the new one did not come up (rollback).
-  if (this->saved_.pending && running_build == this->saved_.old_build)
+  // Not running from the slot the update was written to: the new build did not come up (rollback).
+  if (this->saved_.pending && running_slot != this->saved_.new_slot)
     this->set_last_(UpdateLast::ROLLED_BACK, false);
 }
 
@@ -21,8 +20,6 @@ void BoardUpdate::set_last_(UpdateLast last, bool pending) {
   this->saved_.check = SAVED_CHECK;
   this->saved_.last = uint8_t(last);
   this->saved_.pending = pending ? 1 : 0;
-  if (pending)
-    this->saved_.old_build = this->running_build_;
   if (this->save_cb_)
     this->save_cb_(this->saved_);
 }
@@ -146,6 +143,7 @@ Outcome BoardUpdate::update_finish() {
     return Outcome::refuse(Result::HASH_MISMATCH, "the image received does not match its SHA-256");
   }
   this->state_ = UpdateState::INSTALLING;
+  const uint32_t slot = this->flash_.update_slot();
   const UpdateFlash::End end = this->flash_.end();
   if (end != UpdateFlash::End::OK) {
     this->state_ = UpdateState::NONE;  // the writer has given the slot up
@@ -156,6 +154,7 @@ Outcome BoardUpdate::update_finish() {
       return Outcome::refuse(Result::BAD_IMAGE, "the image is not signed by a key this board trusts, or not valid");
     return Outcome::refuse(Result::REFUSED, "the image could not be installed");
   }
+  this->saved_.new_slot = slot;
   this->set_last_(UpdateLast::NOTHING, true);
   this->restart_due_ = true;
   this->restart_at_ms_ = this->now_ + RESTART_DELAY_MS;

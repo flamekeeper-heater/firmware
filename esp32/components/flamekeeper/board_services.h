@@ -39,6 +39,7 @@ enum class HaMode : uint8_t { HA_ALWAYS_ON, HA_FROM_APP };
 class EspUpdateFlash : public UpdateFlash {
  public:
   uint32_t slot_size() const override;
+  uint32_t update_slot() const override;
   bool begin(uint32_t size) override;
   bool write(const uint8_t *data, size_t len) override;
   End end() override;

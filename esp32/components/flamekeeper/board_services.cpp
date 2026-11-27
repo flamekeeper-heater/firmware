@@ -169,7 +169,8 @@ void BoardServices::setup() {
   this->update_ = std::make_unique<BoardUpdate>(*this->controller_, this->update_flash_);
   BoardUpdate::Saved saved{};
   const bool have = this->update_pref_.load(&saved);
-  this->update_->load(have ? &saved : nullptr, uint32_t(App.get_build_time()));
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  this->update_->load(have ? &saved : nullptr, running != nullptr ? running->address : 0);
   this->update_->on_save([this](const BoardUpdate::Saved &s) {
     BoardUpdate::Saved copy = s;
     this->update_pref_.save(&copy);
@@ -452,6 +453,11 @@ void BoardServices::info(BoardInfo &out) const {
 uint32_t EspUpdateFlash::slot_size() const {
   const esp_partition_t *p = esp_ota_get_next_update_partition(nullptr);
   return p != nullptr ? p->size : 0;
+}
+
+uint32_t EspUpdateFlash::update_slot() const {
+  const esp_partition_t *p = esp_ota_get_next_update_partition(nullptr);
+  return p != nullptr ? p->address : 0;
 }
 
 bool EspUpdateFlash::begin(uint32_t size) {

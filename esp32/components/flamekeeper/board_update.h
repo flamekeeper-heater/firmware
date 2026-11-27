@@ -27,6 +27,8 @@ class UpdateFlash {
   enum class End : uint8_t { OK, BAD_IMAGE, FAILED };
   virtual ~UpdateFlash() = default;
   virtual uint32_t slot_size() const = 0;
+  // Where that slot starts in flash: the board knows the new build ran by running from there.
+  virtual uint32_t update_slot() const = 0;
   virtual bool begin(uint32_t size) = 0;
   virtual bool write(const uint8_t *data, size_t len) = 0;
   // Checks the image (and its signature) and selects it for the next start. Takes seconds.
@@ -47,14 +49,15 @@ class BoardUpdate : public BoardUpdater {
     uint8_t last;       // UpdateLast
     uint8_t pending;    // 1: installed, the restart into it not yet confirmed
     uint8_t reserved[2];
-    uint32_t old_build;  // the build that installed it
+    uint32_t new_slot;  // the app slot it was written to (its flash address)
   };
-  static const uint32_t SAVED_CHECK = 0x46575531UL;  // "FWU1"
+  static const uint32_t SAVED_CHECK = 0x46575532UL;  // "FWU2"
 
   BoardUpdate(Controller &controller, UpdateFlash &flash) : c_(controller), flash_(flash) {}
 
-  // At start-up: what was saved (nullptr: nothing), and when this build was made.
-  void load(const Saved *saved, uint32_t running_build);
+  // At start-up: what was saved (nullptr: nothing), and the app slot this build runs from. Not the
+  // build time: a re-install of the same build, which starts and confirms, is installed too.
+  void load(const Saved *saved, uint32_t running_slot);
   void on_save(std::function<void(const Saved &)> &&cb) { this->save_cb_ = std::move(cb); }
   void loop(uint32_t now);
 
@@ -91,7 +94,6 @@ class BoardUpdate : public BoardUpdater {
   uint32_t restart_at_ms_{0};
   bool booted_{false};
   uint32_t boot_ms_{0};
-  uint32_t running_build_{0};
   Saved saved_{SAVED_CHECK, 0, 0, {0, 0}, 0};
 };
 

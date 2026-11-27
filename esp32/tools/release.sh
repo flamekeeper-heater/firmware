@@ -94,6 +94,11 @@ for board in "${boards[@]}"; do
     echo "== $board $version: building the safety MCU firmware"
     build_safety_mcu || die "$board: the safety MCU firmware did not build"
   fi
+  # A fresh build time for every release: ESPHome keeps the last one while the configuration is
+  # unchanged, and the app offers a build only when it is newer than the running one's.
+  rm -f "$build/build_info.json"
+  prev=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("build", 0))' \
+    "$out/$board/manifest.json" 2>/dev/null || echo 0)
   echo "== $board $version: compiling $(basename "$yaml")"
   (cd "$(dirname "$yaml")" &&
     uv run --quiet --with "esphome==$ESPHOME_VERSION" esphome -q \
@@ -108,6 +113,7 @@ for board in "${boards[@]}"; do
   size=$(stat -f %z "$signed")
   sha=$(shasum -a 256 "$signed" | cut -d' ' -f1)
   built=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["build_time"])' "$build/build_info.json")
+  ((built > prev)) || { rm -f "$signed"; die "$board: build time $built is not later than the previous release's ($prev)"; }
   url="$URL_BASE/$board/$version.bin"
   $public || url="$version.bin"  # never published: next to its manifest
   python3 - "$out/$board/manifest.json" "$board" "$version" "$built" "$size" "$sha" "$url" "$notes" "$public" \

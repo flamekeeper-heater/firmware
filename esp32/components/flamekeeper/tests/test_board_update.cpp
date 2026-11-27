@@ -9,13 +9,18 @@ using fk::Result;
 using fk::UpdateLast;
 using fk::UpdateState;
 
+// Two app slots by their flash address: the board runs from A, an update goes to B.
+static const uint32_t SLOT_A = 0x10000, SLOT_B = 0x1D0000;
+
 struct FakeFlash : fk::UpdateFlash {
   uint32_t slot = 1 << 20;
   std::vector<uint8_t> written;
   bool began = false, aborted = false, restarted = false, fail_write = false;
   End end_result = End::OK;
   int ends = 0;
+  uint32_t next = SLOT_B;  // the slot an update is written to
   uint32_t slot_size() const override { return slot; }
+  uint32_t update_slot() const override { return next; }
   bool begin(uint32_t) override {
     began = true;
     written.clear();
@@ -54,7 +59,7 @@ struct Rig {
       saves++;
       saved = s;
     });
-    u.load(nullptr, 111);
+    u.load(nullptr, SLOT_A);
     step(0);
   }
   void rehash() { fk::crypto::sha256({{image.data(), image.size()}}, sha); }
@@ -98,7 +103,7 @@ static void test_full_update() {
   CHECK(st.state == UpdateState::RECEIVED && st.size == 10000 && st.received == 10000 && st.sha256[0] == r.sha[0]);
   CHECK(r.u.update_finish().accepted());
   CHECK_EQ(r.flash.ends, 1);
-  CHECK(r.saved.pending == 1 && r.saved.old_build == 111);
+  CHECK(r.saved.pending == 1 && r.saved.new_slot == SLOT_B);
   CHECK(r.c.set_mode(Mode::HEAT, fk::Source::PHONE).result == Result::BUSY);  // until the restart
   r.step(500);
   CHECK(!r.flash.restarted);
@@ -254,18 +259,19 @@ static void test_finish_checks() {
 }
 
 static void test_restart_outcome() {
-  // Installed by build 111; build 222 comes up and confirms itself after 60 s.
+  // Written to slot B; the board comes up from slot B and confirms itself after 60 s. The same holds
+  // for a re-install of the very build that was running (same version, same build time).
   {
     Rig r;
     fk::BoardUpdate::Saved s = r.saved;
     s.check = fk::BoardUpdate::SAVED_CHECK;
     s.pending = 1;
-    s.old_build = 111;
+    s.new_slot = SLOT_B;
     FakeFlash f2;
     fk::BoardUpdate after{r.c, f2};
     fk::BoardUpdate::Saved got{};
     after.on_save([&](const fk::BoardUpdate::Saved &x) { got = x; });
-    after.load(&s, 222);
+    after.load(&s, SLOT_B);
     after.loop(5000);
     fk::UpdateStatus st;
     after.update_status(st);
@@ -274,18 +280,18 @@ static void test_restart_outcome() {
     after.update_status(st);
     CHECK(st.last == UpdateLast::INSTALLED && got.pending == 0);
   }
-  // Build 111 is running again: the new one did not come up.
+  // Running from slot A again: the new build did not come up.
   {
     Rig r;
     fk::BoardUpdate::Saved s{};
     s.check = fk::BoardUpdate::SAVED_CHECK;
     s.pending = 1;
-    s.old_build = 111;
+    s.new_slot = SLOT_B;
     FakeFlash f2;
     fk::BoardUpdate after{r.c, f2};
     fk::BoardUpdate::Saved got{};
     after.on_save([&](const fk::BoardUpdate::Saved &x) { got = x; });
-    after.load(&s, 111);
+    after.load(&s, SLOT_A);
     fk::UpdateStatus st;
     after.update_status(st);
     CHECK(st.last == UpdateLast::ROLLED_BACK && got.pending == 0 && got.last == uint8_t(UpdateLast::ROLLED_BACK));
