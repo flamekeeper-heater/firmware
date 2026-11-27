@@ -193,7 +193,7 @@ static void test_parameters() {
   b.run(1 * SEC);
   CHECK(b.s.burn.p.fan_max_rpm == 4500);
   CHECK(b.client.raw_status().flags & LINK_STATUS_PARAMS_STAGED);
-  CHECK(b.client.param_apply(true).accepted());
+  CHECK(b.client.param_apply().accepted());
   b.run(1 * SEC);
   CHECK(b.s.burn.p.fan_max_rpm == 5000);
   CHECK(safety_params_save_pending(&b.s));
@@ -214,7 +214,7 @@ static void test_parameters() {
   CHECK(b.run_until_state(BURN_STATE_STARTING, 2 * SEC));
   b.client.param_set(0x10, 2000);
   b.run(500);
-  b.client.param_apply(false);
+  b.client.param_apply();
   b.run(1 * SEC);
   CHECK(b.s.burn.p.fan_min_rpm == 1800);
   CHECK(b.s.params.staged_mask != 0);
@@ -251,7 +251,6 @@ static void test_co_alarm_stops_and_latches() {
   b.run(2 * MIN);
   CHECK(co_state(b) == CO_WARMING_UP);
   CHECK(safety_co_heater(&b.s));                   // heated from power-up (CO-5)
-  CHECK(b.client.info().capabilities & LINK_CAP_CO);
   b.run(12 * MIN);                                 // warm-up, heater check, learning
   CHECK(co_state(b) == CO_OK);
   CHECK(b.client.raw_detail().co_ppm == 0);        // clean air
@@ -358,7 +357,7 @@ static void test_co_not_fitted() {
   b.run(10 * SEC);
   CHECK(b.client.param_set(0x52, 0).accepted());
   b.run(1 * SEC);
-  CHECK(b.client.param_apply(true).accepted());
+  CHECK(b.client.param_apply().accepted());
   b.run(1 * SEC);
   CHECK(b.s.burn.p.co_fitted == 0);
   CHECK(!safety_co_heater(&b.s));
@@ -374,7 +373,7 @@ static void test_co_not_fitted() {
   CHECK(b.run_until_state(BURN_STATE_OFF, 25 * MIN));
   b.client.param_set(0x52, 1);
   b.run(1 * SEC);
-  b.client.param_apply(true);
+  b.client.param_apply();
   b.run(1 * SEC);
   CHECK(safety_co_heater(&b.s));
   b.run(4 * MIN);

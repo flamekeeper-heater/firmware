@@ -97,8 +97,8 @@ sees counts as already acted on.
 **Dead-man.** If the MCU hears no valid frame for 2 s while the heater runs, it burns off and cools
 down on its own, then stays off until a new start number arrives.
 
-**Versioning.** HELLO carries the link major and minor. A minor only adds what the other side can
-ignore. Either side refuses to run with a major it does not know.
+**Versioning.** HELLO carries the link major. Either side refuses to run with a major it does not
+know.
 
 ## Burn sequence (safety MCU)
 

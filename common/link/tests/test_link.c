@@ -81,19 +81,19 @@ static void test_frames(void) {
 
 static void test_records(void) {
   uint8_t b[LINK_FRAME_MAX];
-  link_info i = {1, 0, LINK_KIND_STM32, {0, 1, 2}, LINK_CAP_FAN_ONLY | LINK_CAP_DEADMAN, 21,
+  link_info i = {1, LINK_KIND_STM32, {0, 1, 2}, LINK_CAP_FAN_ONLY | LINK_CAP_RUN_SWITCH, 21,
                  LINK_RESET_WATCHDOG, LINK_CHECK_OPTION_BYTES, "Flamekeeper safety 0.1.2"};
   size_t n = link_encode_info(&i, b);
-  CHECK_EQ(n, 13 + 24);
-  CHECK_EQ(b[2], 2);
-  CHECK_EQ(b[6], 0x01);
-  CHECK_EQ(b[7], 0x20);
+  CHECK_EQ(n, 12 + 24);
+  CHECK_EQ(b[1], 2);
+  CHECK_EQ(b[5], 0x01);
+  CHECK_EQ(b[6], 0x40);
   link_info i2;
   CHECK(link_decode_info(b, n, &i2));
   CHECK(strcmp(i2.text, "Flamekeeper safety 0.1.2") == 0);
   CHECK_EQ(i2.capabilities, i.capabilities);
   CHECK_EQ(i2.checks, 1);
-  CHECK(!link_decode_info(b, 12, &i2));
+  CHECK(!link_decode_info(b, 11, &i2));
 
   link_desired d = {200, LINK_MODE_FAN, 55, -12, -500, LINK_WANT_UPDATING};
   CHECK_EQ(link_encode_desired(&d, b), 7);
@@ -289,8 +289,8 @@ static void test_server(void) {
   m.param_help = f_help;
   uint8_t r[LINK_FRAME_MAX];
 
-  const uint8_t ver[2] = {1, 0};
-  roundtrip(&m, LINK_OP_HELLO, ver, 2, r);
+  const uint8_t ver[1] = {1};
+  roundtrip(&m, LINK_OP_HELLO, ver, 1, r);
   CHECK_EQ(link_reply_result(r), LINK_OK);
   link_info info;
   CHECK(link_decode_info(link_reply_payload(r), link_reply_payload_len(r), &info));
@@ -463,12 +463,12 @@ static void test_server(void) {
   int polls = fm.polls;
   roundtrip(&m, LINK_OP_POLL, want, 7, r);
   CHECK_EQ(link_reply_result(r), LINK_NOT_SUPPORTED);
-  const uint8_t ver2[2] = {2, 0};
-  roundtrip(&m, LINK_OP_HELLO, ver2, 2, r);
+  const uint8_t ver2[1] = {2};
+  roundtrip(&m, LINK_OP_HELLO, ver2, 1, r);
   roundtrip(&m, LINK_OP_POLL, want, 7, r);
   CHECK_EQ(link_reply_result(r), LINK_NOT_SUPPORTED);
   CHECK_EQ(fm.polls, polls);
-  roundtrip(&m, LINK_OP_HELLO, ver, 2, r);
+  roundtrip(&m, LINK_OP_HELLO, ver, 1, r);
   roundtrip(&m, LINK_OP_POLL, want, 7, r);
   CHECK_EQ(link_reply_result(r), LINK_OK);
   CHECK_EQ(fm.polls, polls + 1);

@@ -237,8 +237,8 @@ static void test_parser(void) {
 
   /* A binary link frame: the link answers, the console says nothing. */
   text_mark = text_len;
-  const uint8_t hello[2] = {LINK_MAJOR, LINK_MINOR};
-  chip.rx_len = link_build_request(9, LINK_OP_HELLO, hello, 2, chip.rx);
+  const uint8_t hello[1] = {LINK_MAJOR};
+  chip.rx_len = link_build_request(9, LINK_OP_HELLO, hello, 1, chip.rx);
   chip.rx_pos = 0;
   sim.link_len = 0;
   run(20);

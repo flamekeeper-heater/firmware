@@ -29,13 +29,13 @@ profile() {
   esac
 }
 
-# The app protocol "major.minor" the firmware speaks (ble_protocol.h), as a JSON pair.
+# The app protocol major the firmware speaks (ble_protocol.h), as the manifest's JSON pair
+# [major, 0] (the app reads the major; the minor is gone).
 protocol_json() {
-  local h="$ROOT/esp32/components/flamekeeper/ble_protocol.h" major minor
+  local h="$ROOT/esp32/components/flamekeeper/ble_protocol.h" major
   major=$(sed -n 's/^static const uint8_t PROTOCOL_MAJOR = \([0-9]*\);.*/\1/p' "$h")
-  minor=$(sed -n 's/^static const uint8_t PROTOCOL_MINOR = \([0-9]*\);.*/\1/p' "$h")
-  [[ -n $major && -n $minor ]] || { echo "common.sh: protocol version not found in $h" >&2; return 1; }
-  echo "[$major, $minor]"
+  [[ -n $major ]] || { echo "common.sh: protocol version not found in $h" >&2; return 1; }
+  echo "[$major, 0]"
 }
 
 # Builds the safety MCU's firmware from this checkout (stm32/build.sh) for a profile with

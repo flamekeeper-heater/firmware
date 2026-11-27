@@ -34,9 +34,8 @@ extern "C" {
   SAFETY_STR(SAFETY_VERSION_MAJOR) "." SAFETY_STR(SAFETY_VERSION_MINOR) "." SAFETY_STR(SAFETY_VERSION_PATCH)
 
 /* What this firmware can do today (link Info capabilities). */
-#define SAFETY_CAPABILITIES                                                                     \
-  (LINK_CAP_FAN_ONLY | LINK_CAP_PRIME | LINK_CAP_PRIME_STOP | LINK_CAP_SUPPLY_PRESENT |        \
-   LINK_CAP_OVERHEAT_LATCH | LINK_CAP_DEADMAN | LINK_CAP_PARAMETERS | LINK_CAP_FAULT_LOG)
+#define SAFETY_CAPABILITIES \
+  (LINK_CAP_FAN_ONLY | LINK_CAP_PRIME | LINK_CAP_PRIME_STOP | LINK_CAP_PARAMETERS | LINK_CAP_FAULT_LOG)
 
 /* Supply present (link Status flag): above this the power stages have a supply, 0.01 V. */
 #define SAFETY_SUPPLY_PRESENT_CV 600u

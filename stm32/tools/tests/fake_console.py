@@ -98,7 +98,7 @@ class FakeBoard:
         if len(f) != n or ft.crc16(f[:-2]) != (f[-2] << 8 | f[-1]) or f[3] != ft.LINK_OP_HELLO or not self.running():
             return
         text = self.k["hello_text"] if self.image == "bringup" else "Flamekeeper safety 0.1.0"
-        payload = bytes([1, 0, ft.LINK_KIND_STM32, 0, 1, 0]) + (0x7FFF).to_bytes(4, "little") + bytes([30, 1, 0])
+        payload = bytes([1, ft.LINK_KIND_STM32, 0, 1, 0]) + (0x7FFF).to_bytes(4, "little") + bytes([30, 1, 0])
         self.out.append((time.monotonic() + 0.005, ft.build_frame(ft.LINK_REPLY, f[2], f[3], payload + text.encode(), 0)))
 
     def _command(self, cmd):

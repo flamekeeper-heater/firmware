@@ -152,8 +152,8 @@ struct SimMcu {
 static void s_info(void *c, link_info *o) {
   SimMcu *m = static_cast<SimMcu *>(c);
   o->kind = LINK_KIND_STM32;
-  o->capabilities = LINK_CAP_FAN_ONLY | LINK_CAP_PRIME | LINK_CAP_PRIME_STOP | LINK_CAP_PARAMETERS | LINK_CAP_GLOW_VI |
-                    LINK_CAP_FAN_V | (m->run_switch ? LINK_CAP_RUN_SWITCH : 0) | (m->has_log ? LINK_CAP_FAULT_LOG : 0);
+  o->capabilities = LINK_CAP_FAN_ONLY | LINK_CAP_PRIME | LINK_CAP_PRIME_STOP | LINK_CAP_PARAMETERS |
+                    (m->run_switch ? LINK_CAP_RUN_SWITCH : 0) | (m->has_log ? LINK_CAP_FAULT_LOG : 0);
   o->param_count = uint8_t(m->params.size());
   strcpy(o->text, "sim 1.0");
 }
@@ -492,7 +492,6 @@ static void test_refusals() {
   r.run(200);
   CHECK(r.client.set_mode(Mode::HEAT).result == Result::BUSY);
   r.mcu.no_starts = false;
-  CHECK(r.client.set_heat_mode(fk::HeatMode::TEMPERATURE).result == Result::NOT_SUPPORTED);
   // An MCU that cannot switch heat <-> fan during a run: off first.
   Rig b;
   b.mcu.run_switch = false;

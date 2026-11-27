@@ -67,7 +67,7 @@ SAFETY_STEPS = {"boot", "info", "options", "watchdog", "clock", "adc", "interloc
 
 LINK_REQUEST, LINK_REPLY = 0x7A, 0x7B
 LINK_OP_HELLO = 0x01
-LINK_MAJOR, LINK_MINOR = 1, 0
+LINK_MAJOR = 1
 LINK_KIND_STM32 = 2
 LINK_FRAME_MAX = 64
 
@@ -93,7 +93,7 @@ def hello_frame():
     """A HELLO request with no CR or LF in it: the console drops a line holding binary bytes, and a
     newline inside the frame could start a new (garbage) line."""
     for seq in range(1, 256):
-        f = build_frame(LINK_REQUEST, seq, LINK_OP_HELLO, bytes([LINK_MAJOR, LINK_MINOR]))
+        f = build_frame(LINK_REQUEST, seq, LINK_OP_HELLO, bytes([LINK_MAJOR]))
         if b"\n" not in f and b"\r" not in f:
             return seq, f
     raise AssertionError("no clean HELLO frame")
@@ -115,12 +115,12 @@ def find_reply(data, seq, op):
 
 
 def decode_info(payload):
-    if len(payload) < 13:
+    if len(payload) < 12:
         return None
-    caps = struct.unpack_from("<I", payload, 6)[0]
-    return {"major": payload[0], "minor": payload[1], "kind": payload[2], "version": "%d.%d.%d" % tuple(payload[3:6]),
-            "capabilities": caps, "param_count": payload[10], "reset_reason": payload[11], "checks": payload[12],
-            "text": payload[13:].decode("ascii", "replace")}
+    caps = struct.unpack_from("<I", payload, 5)[0]
+    return {"major": payload[0], "kind": payload[1], "version": "%d.%d.%d" % tuple(payload[2:5]),
+            "capabilities": caps, "param_count": payload[9], "reset_reason": payload[10], "checks": payload[11],
+            "text": payload[12:].decode("ascii", "replace")}
 
 
 # ---------------------------------------------------------------- configuration and checks

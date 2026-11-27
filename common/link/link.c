@@ -127,29 +127,27 @@ static void get_text(const uint8_t *p, size_t n, char *out, size_t max) {
 
 size_t link_encode_info(const link_info *in, uint8_t *out) {
   out[0] = in->major;
-  out[1] = in->minor;
-  out[2] = in->kind;
-  memcpy(out + 3, in->version, 3);
-  link_put32(out + 6, in->capabilities);
-  out[10] = in->param_count;
-  out[11] = in->reset_reason;
-  out[12] = in->checks;
-  return 13 + put_text(out + 13, in->text, LINK_TEXT_MAX);
+  out[1] = in->kind;
+  memcpy(out + 2, in->version, 3);
+  link_put32(out + 5, in->capabilities);
+  out[9] = in->param_count;
+  out[10] = in->reset_reason;
+  out[11] = in->checks;
+  return 12 + put_text(out + 12, in->text, LINK_TEXT_MAX);
 }
 
 int link_decode_info(const uint8_t *in, size_t len, link_info *out) {
-  if (len < 13)
+  if (len < 12)
     return 0;
   memset(out, 0, sizeof(*out));
   out->major = in[0];
-  out->minor = in[1];
-  out->kind = in[2];
-  memcpy(out->version, in + 3, 3);
-  out->capabilities = link_get32(in + 6);
-  out->param_count = in[10];
-  out->reset_reason = in[11];
-  out->checks = in[12];
-  get_text(in + 13, len - 13, out->text, LINK_TEXT_MAX);
+  out->kind = in[1];
+  memcpy(out->version, in + 2, 3);
+  out->capabilities = link_get32(in + 5);
+  out->param_count = in[9];
+  out->reset_reason = in[10];
+  out->checks = in[11];
+  get_text(in + 12, len - 12, out->text, LINK_TEXT_MAX);
   return 1;
 }
 
@@ -366,13 +364,12 @@ size_t link_server_handle(const link_mcu *m, const uint8_t *req, uint8_t *reply)
 
   switch (op) {
     case LINK_OP_HELLO: {
-      NEED(2);
+      NEED(1); /* the client's link major */
       if (m->client_major != NULL)
         *m->client_major = in[0];
       link_info info;
       memset(&info, 0, sizeof(info));
       info.major = LINK_MAJOR;
-      info.minor = LINK_MINOR;
       if (m->info != NULL)
         m->info(m->ctx, &info);
       len = link_encode_info(&info, out);

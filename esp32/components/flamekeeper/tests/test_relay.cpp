@@ -148,9 +148,9 @@ static void test_messages() {
   std::memset(e[0].hash, 0xAA, 32);
   std::memset(e[1].hash, 0xBB, 32);
   uint8_t m[300];
-  CHECK(rl::encode_roster(e, 2, m, sizeof(m)) == 3 + 66);
-  CHECK(m[0] == 0 && m[1] == 3 && m[2] == 1 && m[3] == 2 && m[4] == 0xAA && m[36] == 5 && m[37] == 0xBB);
-  CHECK(rl::encode_roster(e, 0, m, sizeof(m)) == 3);
+  CHECK(rl::encode_roster(e, 2, m, sizeof(m)) == 2 + 66);
+  CHECK(m[0] == 0 && m[1] == 3 && m[2] == 2 && m[3] == 0xAA && m[35] == 5 && m[36] == 0xBB);
+  CHECK(rl::encode_roster(e, 0, m, sizeof(m)) == 2);
   uint8_t c[5];
   CHECK(rl::encode_close(2, 4001, c) == 5 && c[1] == 5 && c[2] == 2 && c[3] == 0xA1 && c[4] == 0x0F);
 
@@ -236,7 +236,7 @@ static void test_client() {
   uint8_t t[32], th[32];
   rl::relay_token(k->secret, 32, t);
   fk::crypto::sha256({{t, 32}}, th);
-  CHECK(roster.size() == 3 + 33 && roster[1] == rl::op::ROSTER && roster[3] == 0 && std::memcmp(roster.data() + 4, th, 32) == 0);
+  CHECK(roster.size() == 2 + 33 && roster[1] == rl::op::ROSTER && roster[2] == 0 && std::memcmp(roster.data() + 3, th, 32) == 0);
   // A phone on channel 1; its frames both ways.
   r.msg({0, 4, 1, 0});
   CHECK(r.events.back() == "open 1 0" && r.rc.open_channels() == 1);
@@ -252,13 +252,13 @@ static void test_client() {
   const uint8_t phone2[6] = {8, 8, 8, 8, 8, 8};
   r.access.issue_app_key(phone2);
   r.step(10);
-  CHECK(r.sent.size() == before + 1 && r.sent.back().size() == 3 + 66);
+  CHECK(r.sent.size() == before + 1 && r.sent.back().size() == 2 + 66);
   r.step(10);
   CHECK(r.sent.size() == before + 1);  // unchanged: not sent again
   // The first phone forgotten: roster without it, its session closed (4100).
   r.access.revoke(k->id);
   r.step(10);
-  CHECK(r.sent.back().size() == 3 + 33 && r.events.back() == "close 1 4100" && r.rc.open_channels() == 0);
+  CHECK(r.sent.back().size() == 2 + 33 && r.events.back() == "close 1 4100" && r.rc.open_channels() == 0);
   // The relay closes a channel.
   r.msg({0, 4, 2, 1});
   r.msg({0, 5, 2, 0xE8, 0x03});

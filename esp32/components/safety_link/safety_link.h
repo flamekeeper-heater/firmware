@@ -73,7 +73,7 @@ class SafetyLink : public Component, public uart::UARTDevice, public fk::BootPor
   }
   float get_setup_priority() const override { return setup_priority::DATA; }
   void dump_config() override {
-    ESP_LOGCONFIG(TAG, "Safety MCU link (protocol %u.%u) on UART", LINK_MAJOR, LINK_MINOR);
+    ESP_LOGCONFIG(TAG, "Safety MCU link (protocol %u) on UART", LINK_MAJOR);
     if (this->up())
       ESP_LOGCONFIG(TAG, "  MCU: %s", this->info().text);
     else

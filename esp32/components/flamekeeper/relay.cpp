@@ -150,15 +150,14 @@ size_t encode_auth(const Identity &who, const uint8_t challenge[CHALLENGE_SIZE],
 }
 
 size_t encode_roster(const RosterEntry *entries, size_t n, uint8_t *out, size_t cap) {
-  const size_t total = 3 + n * 33;
+  const size_t total = 2 + n * 33;
   if (n > SLOTS || total > cap)
     return 0;
   out[0] = 0;
   out[1] = op::ROSTER;
-  out[2] = 1;  // format
   for (size_t i = 0; i < n; i++) {
-    out[3 + i * 33] = entries[i].slot;
-    std::memcpy(out + 4 + i * 33, entries[i].hash, 32);
+    out[2 + i * 33] = entries[i].slot;
+    std::memcpy(out + 3 + i * 33, entries[i].hash, 32);
   }
   return total;
 }

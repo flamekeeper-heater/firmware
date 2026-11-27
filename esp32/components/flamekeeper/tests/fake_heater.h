@@ -50,10 +50,6 @@ class FakeHeater : public fk::Heater {
     st.mode = m;
     return fk::Outcome::ok();
   }
-  fk::Outcome set_heat_mode(fk::HeatMode m) override {
-    st.heat_mode = m;
-    return fk::Outcome::ok();
-  }
   fk::Outcome set_power_demand(uint8_t percent) override {
     st.power = percent;
     return fk::Outcome::ok();

@@ -156,7 +156,7 @@ void check_reply(const uint8_t *req, const uint8_t *reply, size_t n) {
 bool refused_by_shape(const uint8_t *req) {
   size_t n = link_request_payload_len(req);
   switch (link_frame_op(req)) {
-    case LINK_OP_HELLO: return n != 2;
+    case LINK_OP_HELLO: return n != 1;
     case LINK_OP_POLL: return n < LINK_DESIRED_SIZE;
     case LINK_OP_DETAIL: return n != 0;
     case LINK_OP_PARAM_DESCRIBE: return n != 1;
@@ -183,8 +183,8 @@ size_t make_request(In &in, uint8_t *frame) {
   uint8_t op = pick_op(in), seq = in.u8();
   size_t len;
   switch (op) {  // mostly the right length for the op
-    case LINK_OP_HELLO: len = 2; break;
     case LINK_OP_POLL: len = LINK_DESIRED_SIZE; break;
+    case LINK_OP_HELLO:
     case LINK_OP_PARAM_DESCRIBE:
     case LINK_OP_PARAM_APPLY:
     case LINK_OP_FAULT_LOG: len = 1; break;
@@ -204,7 +204,7 @@ size_t make_request(In &in, uint8_t *frame) {
     payload[0] = 'D', payload[1] = 'F';
   if (op == LINK_OP_FAULT_LOG_CLEAR && len == 2 && (lb & 1))
     payload[0] = 'C', payload[1] = 'L';
-  if (op == LINK_OP_HELLO && len == 2 && (lb & 1))
+  if (op == LINK_OP_HELLO && len == 1 && (lb & 1))
     payload[0] = LINK_MAJOR;
   return link_build_request(seq, op, payload, len, frame);
 }
@@ -738,7 +738,7 @@ void target_client(In &in) {
       case 0: client.set_mode(Mode(in.u8() % 4)); break;
       case 1: client.set_power_demand(in.u8()); break;
       case 2: client.param_set(uint16_t(in.u8() % 8), int32_t(in.u32())); break;
-      case 3: client.param_apply(in.u8() & 1); break;
+      case 3: in.u8(), client.param_apply(); break;  // the byte stays drawn: the corpus keeps its meaning
       case 4: client.reset_fault(); break;
       case 5: client.glow_plug_fitted(); break;
       case 6: client.param_discard(); break;
@@ -824,7 +824,7 @@ std::vector<std::vector<uint8_t>> make_seeds() {
     if (t == 3000)
       client.set_mode(Mode::FAN);
     if (t == 4000)
-      client.param_set(0x11, 5000), client.param_apply(true);
+      client.param_set(0x11, 5000), client.param_apply();
     if (t == 5000)
       client.set_mode(Mode::OFF);
     if (t == 6000)

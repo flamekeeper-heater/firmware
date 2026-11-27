@@ -196,8 +196,8 @@ static void test_link(void) {
   chip_reset();
   board b;
   board_init(&b, chip.now, LINK_RESET_POWER_ON, 0);
-  const uint8_t hello[2] = {LINK_MAJOR, LINK_MINOR};
-  chip.rx_len = link_build_request(5, LINK_OP_HELLO, hello, 2, chip.rx);
+  const uint8_t hello[1] = {LINK_MAJOR};
+  chip.rx_len = link_build_request(5, LINK_OP_HELLO, hello, 1, chip.rx);
   run(&b, 2);
   CHECK(sim.tx_len > 7);
   CHECK(sim.tx[0] == LINK_REPLY && link_frame_seq(sim.tx) == 5 && link_frame_op(sim.tx) == LINK_OP_HELLO);
@@ -212,8 +212,8 @@ static void esp32_polls(board *bd, uint32_t ms) {
   for (uint32_t t = 0; t < ms; t += 50) {
     chip.rx_len = chip.rx_pos = 0;
     if (bd->s.client_major == 0) {
-      const uint8_t hello[2] = {LINK_MAJOR, LINK_MINOR};
-      chip.rx_len = link_build_request(seq++, LINK_OP_HELLO, hello, 2, chip.rx);
+      const uint8_t hello[1] = {LINK_MAJOR};
+      chip.rx_len = link_build_request(seq++, LINK_OP_HELLO, hello, 1, chip.rx);
     }
     link_desired w = {1, LINK_MODE_HEAT, 50, 0, 0, 0}; /* one start number, never a new one */
     uint8_t p[LINK_DESIRED_SIZE];

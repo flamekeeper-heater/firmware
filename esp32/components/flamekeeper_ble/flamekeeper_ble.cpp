@@ -220,7 +220,7 @@ void FlamekeeperBLE::setup() {
 }
 
 void FlamekeeperBLE::dump_config() {
-  ESP_LOGCONFIG(TAG, "Flamekeeper BLE service (protocol %u.%u)", fk::ble::PROTOCOL_MAJOR, fk::ble::PROTOCOL_MINOR);
+  ESP_LOGCONFIG(TAG, "Flamekeeper BLE service (protocol %u)", fk::ble::PROTOCOL_MAJOR);
   ESP_LOGCONFIG(TAG, "  Service: %s (handles %u-%u)",
                 g_start_status == ESP_GATT_OK ? "running" : this->service_settled_ ? "NOT RUNNING" : "starting",
                 this->handles_[A_SERVICE], this->handles_[A_COUNT - 1]);

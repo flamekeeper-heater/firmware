@@ -17,7 +17,6 @@ namespace flamekeeper {
 namespace ble {
 
 static const uint8_t PROTOCOL_MAJOR = 1;
-static const uint8_t PROTOCOL_MINOR = 0;  // development: 1.0 is what ships with the app
 
 // 81ceXXXX-024c-414c-9ca7-e0972fed52ee
 // 1000 the service; characteristics 1001 Info, 1002 State, 1003 Telemetry, 1004 Command,

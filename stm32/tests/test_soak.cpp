@@ -738,7 +738,7 @@ struct Bench : HeaterBench<Bench> {
         client.param_set(d.id, v);
         break;
       }
-      case U_APPLY: client.param_apply(e.a != 0); break;
+      case U_APPLY: client.param_apply(); break;
       case U_DISCARD: client.param_discard(); break;
       case U_DEFAULTS: client.reset_parameters(); break;
       case U_FAULT_RESET: client.reset_fault(); break;
@@ -793,7 +793,7 @@ struct Bench : HeaterBench<Bench> {
       case F_CO_HEATER: co_heater_dead = e.a != 0; break;
       case U_CO_FITTED:
         client.param_set(0x52, int32_t(e.a));
-        client.param_apply(true);
+        client.param_apply();
         break;
       case F_VDDA: vdda_level = uint16_t(e.a), vdda_until = now + e.b; break;
       case F_TICK: clock_ratio = e.a; break;

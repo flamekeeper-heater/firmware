@@ -275,7 +275,7 @@ void RelayClient::send_roster_() {
     if (relay::relay_token(k->secret, KEY_SECRET_SIZE, t) && crypto::sha256({{t, relay::TOKEN_SIZE}}, e[n].hash))
       n++;
   }
-  uint8_t m[3 + relay::SLOTS * 33];
+  uint8_t m[2 + relay::SLOTS * 33];
   size_t len = relay::encode_roster(e, n, m, sizeof(m));
   if (len != 0 && this->io_.send && this->io_.send(m, len))
     this->roster_sent_ = true;

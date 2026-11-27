@@ -329,8 +329,8 @@ static void test_safety_link(void) {
   safety_init(&s, 0, &in, LINK_RESET_WATCHDOG, 0);
   safety_log_reset(&s);
   uint8_t r[LINK_FRAME_MAX];
-  const uint8_t ver[2] = {LINK_MAJOR, LINK_MINOR};
-  ask(&s, 10, LINK_OP_HELLO, ver, 2, r);
+  const uint8_t ver[1] = {LINK_MAJOR};
+  ask(&s, 10, LINK_OP_HELLO, ver, 1, r);
   link_info info;
   CHECK(link_decode_info(link_reply_payload(r), link_reply_payload_len(r), &info));
   CHECK(info.capabilities & LINK_CAP_FAULT_LOG);

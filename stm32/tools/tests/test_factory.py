@@ -89,7 +89,7 @@ class Link(unittest.TestCase):
         self.assertEqual(f[3], ft.LINK_OP_HELLO)
         self.assertNotIn(b"\n", f)
         self.assertNotIn(b"\r", f)
-        payload = bytes([1, 0, 2, 0, 1, 0, 0, 0, 0, 0, 30, 2, 0]) + b"Flamekeeper bring-up 0.1.0"
+        payload = bytes([1, 2, 0, 1, 0, 0, 0, 0, 0, 30, 2, 0]) + b"Flamekeeper bring-up 0.1.0"
         reply = ft.build_frame(ft.LINK_REPLY, seq, ft.LINK_OP_HELLO, payload, 0)
         got, rest = ft.find_reply(b"ok\r\n" + reply[:1] + b"\x00" + reply + b"* x\r\n", seq, ft.LINK_OP_HELLO)
         self.assertEqual(got, reply)
@@ -101,10 +101,10 @@ class Link(unittest.TestCase):
 
     def test_frame_matches_the_c_layout(self):
         # link_build_request: header, length (without the CRC), seq, op, payload, CRC high byte first.
-        f = ft.build_frame(ft.LINK_REQUEST, 9, ft.LINK_OP_HELLO, bytes([1, 0]))
-        self.assertEqual(f[:6], bytes([0x7A, 6, 9, 1, 1, 0]))
-        c = ft.crc16(f[:6])
-        self.assertEqual(f[6:], bytes([c >> 8, c & 0xFF]))
+        f = ft.build_frame(ft.LINK_REQUEST, 9, ft.LINK_OP_HELLO, bytes([1]))
+        self.assertEqual(f[:5], bytes([0x7A, 5, 9, 1, 1]))
+        c = ft.crc16(f[:5])
+        self.assertEqual(f[5:], bytes([c >> 8, c & 0xFF]))
 
 
 class Config(unittest.TestCase):

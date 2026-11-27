@@ -12,7 +12,7 @@ static void on_info(void *ctx, link_info *out) {
   out->version[0] = SAFETY_VERSION_MAJOR;
   out->version[1] = SAFETY_VERSION_MINOR;
   out->version[2] = SAFETY_VERSION_PATCH;
-  out->capabilities = SAFETY_CAPABILITIES | (s->co.cfg.fitted ? LINK_CAP_CO : 0u);
+  out->capabilities = SAFETY_CAPABILITIES;
   out->param_count = (uint8_t) PARAM_COUNT;
   out->reset_reason = s->reset_reason;
   out->checks = s->checks;

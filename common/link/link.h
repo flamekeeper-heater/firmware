@@ -15,7 +15,6 @@ extern "C" {
 #endif
 
 #define LINK_MAJOR 1
-#define LINK_MINOR 0
 
 /* ---------------------------------------------------------------- frames */
 
@@ -120,15 +119,7 @@ static inline uint32_t link_get32(const uint8_t *p) {
 #define LINK_CAP_PRIME_STOP (1u << 2)
 #define LINK_CAP_PARAMETERS (1u << 3)
 #define LINK_CAP_TRIMS (1u << 4)
-#define LINK_CAP_SUPPLY_PRESENT (1u << 5)
-#define LINK_CAP_CO (1u << 6)
-#define LINK_CAP_GLOW_VI (1u << 7)
-#define LINK_CAP_FAN_V (1u << 8)
-#define LINK_CAP_FAN_I (1u << 9)
-#define LINK_CAP_PUMP_I (1u << 10)
-#define LINK_CAP_TEMPERATURES (1u << 11)
-#define LINK_CAP_OVERHEAT_LATCH (1u << 12)
-#define LINK_CAP_DEADMAN (1u << 13)
+/* Bits 5-13: unused (they were set or tested and never acted on). */
 #define LINK_CAP_RUN_SWITCH (1u << 14) /* heat <-> fan during a run, without a new start */
 #define LINK_CAP_FAULT_LOG (1u << 15)  /* FAULT_LOG and FAULT_LOG_CLEAR; Status log_seq */
 
@@ -148,7 +139,7 @@ enum {
 
 #define LINK_TEXT_MAX 32
 typedef struct {
-  uint8_t major, minor, kind;
+  uint8_t major, kind;
   uint8_t version[3];
   uint32_t capabilities;
   uint8_t param_count;

@@ -337,7 +337,6 @@ class Heater {
   virtual float max_target() const { return 35.0f; }
 
   virtual Outcome set_mode(Mode mode) = 0;  // PRIME starts priming
-  virtual Outcome set_heat_mode(HeatMode mode) = 0;
   virtual Outcome set_power_demand(uint8_t percent) = 0;  // 0..100
   virtual Outcome set_target(float celsius) = 0;
   virtual Outcome stop_prime() { return Outcome::refuse(Result::NOT_SUPPORTED, "stop priming is not supported"); }

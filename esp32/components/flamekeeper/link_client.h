@@ -105,7 +105,6 @@ class LinkClient : public Heater {
   Outcome start_firmware_update() override { return this->start_mcu_job(McuJob::UPDATE); }
   const char *firmware_update_text() const override;
   Outcome set_mode(Mode mode) override;
-  Outcome set_heat_mode(HeatMode mode) override;
   Outcome set_power_demand(uint8_t percent) override;
   Outcome set_target(float celsius) override;
   Outcome stop_prime() override;

@@ -90,8 +90,8 @@ void LinkClient::send_next_(uint32_t now) {
     if (!this->polled_once_ || now - this->last_hello_ms_ >= HELLO_MS) {
       this->polled_once_ = true;
       this->last_hello_ms_ = now;
-      const uint8_t ver[2] = {LINK_MAJOR, LINK_MINOR};
-      this->send_(LINK_OP_HELLO, ver, 2, 0, now);
+      const uint8_t major = LINK_MAJOR;
+      this->send_(LINK_OP_HELLO, &major, 1, 0, now);
     }
     return;
   }
@@ -154,8 +154,8 @@ void LinkClient::send_next_(uint32_t now) {
   // update, a different parameter table).
   if (now - this->last_hello_ms_ >= INFO_REFRESH_MS) {
     this->last_hello_ms_ = now;
-    const uint8_t ver[2] = {LINK_MAJOR, LINK_MINOR};
-    this->send_(LINK_OP_HELLO, ver, 2, 0, now);
+    const uint8_t major = LINK_MAJOR;
+    this->send_(LINK_OP_HELLO, &major, 1, 0, now);
     return;
   }
   if (now - this->last_detail_ms_ >= DETAIL_MS) {
@@ -490,12 +490,6 @@ Outcome LinkClient::set_mode(Mode mode) {
   this->seen_running_ = false;
   this->last_poll_ms_ = this->now_ - POLL_MS;  // ask at once
   return Outcome::ok();
-}
-
-Outcome LinkClient::set_heat_mode(HeatMode mode) {
-  if (mode == HeatMode::POWER)
-    return Outcome::ok();
-  return Outcome::refuse(Result::NOT_SUPPORTED, "temperature mode is not available yet");
 }
 
 Outcome LinkClient::set_power_demand(uint8_t percent) {
