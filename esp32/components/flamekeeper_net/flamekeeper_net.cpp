@@ -392,7 +392,7 @@ void FlamekeeperNet::loop() {
       // The protocol major, as Info byte 0.
       static const char PROTOCOL[] = {char('0' + fk::ble::PROTOCOL_MAJOR), 0};
       static_assert(fk::ble::PROTOCOL_MAJOR < 10, "one digit");
-      static char board[4];  // Info byte 2, in decimal
+      static char board[4];  // Info byte 1, in decimal
       snprintf(board, sizeof(board), "%u", unsigned(this->hub_->board().board()));
       mdns_txt_item_t txt[2] = {{"protocol", PROTOCOL}, {"board", board}};
       if (mdns_service_add(nullptr, "_flamekeeper", "_tcp", this->port_, txt, 2) == ESP_OK)

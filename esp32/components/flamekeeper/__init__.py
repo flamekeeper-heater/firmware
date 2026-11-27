@@ -30,7 +30,7 @@ CONF_PIN = "pin"
 CONF_PIN_EFUSE_KEY = "pin_efuse_key"
 CONF_HOME_ASSISTANT = "home_assistant"
 
-# Info byte 2 (PROTOCOL.md).
+# Info byte 1 (PROTOCOL.md).
 BOARDS = {"flamekeeper_rev_a2": 2}
 
 flamekeeper_ns = cg.esphome_ns.namespace("flamekeeper")
@@ -64,7 +64,7 @@ CONFIG_SCHEMA = cv.Schema(
         # A run started from Home Assistant stops when Home Assistant has been unreachable this
         # long. 0s turns the failsafe off.
         cv.Optional(CONF_FAILSAFE_TIMEOUT, default="15min"): cv.positive_time_period_milliseconds,
-        # Info byte 2, the board the apps are talking to: a name above, or a code for another board.
+        # Info byte 1, the board the apps are talking to: a name above, or a code for another board.
         cv.Required(CONF_BOARD): cv.Any(cv.one_of(*BOARDS, lower=True), cv.int_range(min=1, max=255)),
         # The PIN (Bluetooth passkey, PROTOCOL.md): a fixed one (from
         # secrets.yaml), or derived from the board key in this eFuse key block (the Flamekeeper

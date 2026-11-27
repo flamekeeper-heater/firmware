@@ -237,7 +237,7 @@ static void records() {
     CHECK(s.run_source == fk::Source::PHONE);
     Obj e;
     e.add("heaterAnswering", "true").add("failsafeStopped", "false").add("roomFallback", "false")
-        .add("updateRunning", "false").add("thermostatPaused", "false").add("requestedMode", num(int(fk::Mode::HEAT)))
+        .add("thermostatPaused", "false").add("requestedMode", num(int(fk::Mode::HEAT)))
         .add("heatMode", num(int(fk::HeatMode::POWER))).add("power", "45").add("targetC", "21.5")
         .add("roomC", "19.3").add("roomSource", num(int(fk::RoomSource::PROBE)))
         .add("heaterState", num(int(fk::HeaterState::HEATING)))
@@ -751,7 +751,7 @@ static void records() {
       size_t n = ble::encode_state(st, rec);
       Obj e;
       e.add("heaterAnswering", "true").add("failsafeStopped", "false").add("roomFallback", "false")
-          .add("updateRunning", "false").add("thermostatPaused", "false").add("requestedMode", num(int(st.mode)))
+          .add("thermostatPaused", "false").add("requestedMode", num(int(st.mode)))
           .add("heatMode", num(int(st.heat_mode))).add("power", num(st.power)).add("targetC", "21.5")
           .add("roomC", "null").add("roomSource", num(int(fk::RoomSource::PROBE)))
           .add("heaterState", num(int(fk::HeaterState::HEATING))).add("controllerStatus", num(int(st.control)))

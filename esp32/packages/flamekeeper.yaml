@@ -3,7 +3,7 @@
 # `heater_bus`, board sensors), the hub's board-specific keys (pin / pin_efuse_key, home_assistant)
 # and these substitutions:
 #   board_model   Device Information "Model Number" over BLE, e.g. "Flamekeeper rev A2"
-#   board_id      Info byte 2: flamekeeper_rev_a2, or a board code 1-255
+#   board_id      Info byte 1: flamekeeper_rev_a2, or a board code 1-255
 # and, from the release script (tools/release.sh), firmware_version: the "major.minor.patch" Info
 # reports and the update manifests compare (0.1.0 for builds made by hand). Optional:
 #   room_temperature_entity  a Home Assistant temperature sensor for the "Interior" room reading
