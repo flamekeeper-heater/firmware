@@ -15,6 +15,7 @@ using fk::Result;
 
 // A safety MCU: a small burn state machine behind the link callbacks.
 struct SimMcu {
+  int apply_save = -1;  // PARAM_APPLY's save byte, as last received
   link_start_gate gate;
   link_deadman deadman;
   uint32_t now = 0;
@@ -210,7 +211,8 @@ static int s_set(void *c, uint16_t id, int32_t v) {
     }
   return LINK_OUT_OF_RANGE;
 }
-static int s_apply(void *c, uint8_t) {
+static int s_apply(void *c, uint8_t save) {
+  static_cast<SimMcu *>(c)->apply_save = save;
   for (auto &p : static_cast<SimMcu *>(c)->params)
     if (p.is_staged) {
       p.value = p.staged;
@@ -569,9 +571,10 @@ static void test_params() {
   CHECK_EQ(r.st().params_pending, 1);
   r.run(300);
   CHECK(r.mcu.params[0].is_staged);
-  CHECK(r.client.param_apply(false).accepted());
+  CHECK(r.client.param_apply().accepted());
   r.run(1500);
   CHECK_EQ(r.mcu.params[0].value, 75);
+  CHECK_EQ(r.mcu.apply_save, 1);  // the link's byte: always save
   CHECK_EQ(applied, 1);
   CHECK(r.client.param_get(7, v) && !v.staged && v.value == 75);
   CHECK(changed >= 1);

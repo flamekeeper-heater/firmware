@@ -613,7 +613,7 @@ static void test_unsupported() {
   CHECK_EQ(r.out[3 + 1], fk::Tuning::count());
   r.cmd({1, ble::op::PARAM_DESCRIBE, uint8_t(fk::Tuning::count())});
   CHECK(r.res() == Result::OUT_OF_RANGE);
-  r.cmd({1, ble::op::PARAM_APPLY, 0});
+  r.cmd({1, ble::op::PARAM_APPLY});
   CHECK(r.res() == Result::NOT_SUPPORTED);
 }
 
@@ -725,6 +725,8 @@ static void test_params() {
   r.cmd({8, ble::op::PARAM_GET, 99, 0});
   CHECK(r.res() == Result::OUT_OF_RANGE);
   r.cmd({9, ble::op::PARAM_APPLY, 1});
+  CHECK(r.res() == Result::BAD_LENGTH);  // no argument any more: every Apply saves
+  r.cmd({9, ble::op::PARAM_APPLY});
   CHECK(r.res() == Result::OK);
   CHECK_EQ(r.h.params[0].value.value, 70);
   r.cmd({10, ble::op::PARAM_DISCARD});
@@ -812,7 +814,7 @@ static void test_events() {
   CHECK(std::string((const char *) out + 3, 4) == "gone");
   // Long texts are cut to the record size.
   std::string long_text(200, 'x');
-  n = ble::encode_event(fk::Event::PARAMS_SAVED, Result::REFUSED, 0, long_text.c_str(), out, sizeof(out));
+  n = ble::encode_event(fk::Event::PARAMS_APPLIED, Result::REFUSED, 0, long_text.c_str(), out, sizeof(out));
   CHECK_EQ(n, ble::RESULT_MAX);
 
   fk::WifiStatus w;

@@ -284,7 +284,6 @@ class ParamNumber : public number::Number, public Component, public StatusView {
 enum class ButtonKind : uint8_t {
   PRIME,
   STOP_PRIME,
-  APPLY_SETTINGS,
   SAVE_SETTINGS,
   DISCARD_SETTINGS,
   FIRMWARE_UPDATE,

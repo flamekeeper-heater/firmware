@@ -133,13 +133,13 @@ class FakeHeater : public fk::Heater {
       }
     return fk::Outcome::refuse(fk::Result::OUT_OF_RANGE, "no such parameter");
   }
-  fk::Outcome param_apply(bool save) override {
+  fk::Outcome param_apply() override {
     for (auto &p : params)
       if (p.value.staged) {
         p.value.value = p.value.staged_value;
         p.value.staged = false;
       }
-    emit_(save ? fk::Event::PARAMS_SAVED : fk::Event::PARAMS_APPLIED, fk::Result::OK, 0, "done");
+    emit_(fk::Event::PARAMS_APPLIED, fk::Result::OK, 0, "saved in the heater");
     return fk::Outcome::ok();
   }
   fk::Outcome param_discard() override {

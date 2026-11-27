@@ -595,11 +595,9 @@ size_t handle_command(const uint8_t *in, size_t len, Controller &c, Link &link, 
         break;
       return outcome(req, opcode, c.param_set(get_u16(arg), get_i32(arg + 2), PHONE), out, cap);
     case op::PARAM_APPLY:
-      if (!need(1))
+      if (!need(0))
         break;
-      if (arg[0] > 1)
-        return result(req, opcode, Result::OUT_OF_RANGE, "0 apply, 1 apply and save", out, cap);
-      return outcome(req, opcode, c.param_apply(arg[0] == 1, PHONE), out, cap);
+      return outcome(req, opcode, c.param_apply(PHONE), out, cap);
     case op::PARAM_DISCARD:
       if (!need(0))
         break;

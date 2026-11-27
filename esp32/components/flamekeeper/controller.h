@@ -121,7 +121,8 @@ class Controller : public HeaterListener {
   Outcome stop_prime(Source source);
   Outcome start_firmware_update(Source source);
   Outcome param_set(uint16_t id, int32_t value, Source source);
-  Outcome param_apply(bool save, Source source);
+  // The staged changes applied and saved in the heater (one Apply that always saves).
+  Outcome param_apply(Source source);
   Outcome param_discard(Source source);
   Outcome reset_fault(Source source);
 

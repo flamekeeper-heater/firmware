@@ -283,7 +283,7 @@ static void test_altitude_and_events() {
   c.on_event([&](fk::Event e, Result, uint16_t, const char *) { applied += e == fk::Event::PARAMS_APPLIED; });
   CHECK(c.param_set(1, 70, Source::HOME_ASSISTANT).result == Result::OK);
   CHECK(c.param_set(1, 170, Source::HOME_ASSISTANT).result == Result::OUT_OF_RANGE);
-  CHECK(c.param_apply(false, Source::PHONE).result == Result::OK);
+  CHECK(c.param_apply(Source::PHONE).result == Result::OK);
   CHECK_EQ(applied, 1);
   fk::ParamValue v;
   CHECK(h.param_get(1, v) && v.value == 70 && !v.staged);

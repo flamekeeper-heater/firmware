@@ -307,8 +307,8 @@ struct ParamValue {
 
 // Things a backend reports as they happen.
 enum class Event : uint8_t {
-  PARAMS_APPLIED = 0x01,
-  PARAMS_SAVED = 0x02,
+  PARAMS_APPLIED = 0x01,  // applied and saved in the heater, or refused
+  // 0x02 (saved) is no longer sent: every Apply saves.
   PARAM_CHANGED = 0x03,
   FAILSAFE_STOP = 0x04,
   // 0x05 is the app protocol's Wi-Fi event (ble_protocol.h).
@@ -389,10 +389,8 @@ class Heater {
     (void) value;
     return Outcome::refuse(Result::NOT_SUPPORTED, "this heater has no parameters");
   }
-  virtual Outcome param_apply(bool save) {
-    (void) save;
-    return Outcome::refuse(Result::NOT_SUPPORTED, "this heater has no parameters");
-  }
+  // The staged changes applied and saved in the heater.
+  virtual Outcome param_apply() { return Outcome::refuse(Result::NOT_SUPPORTED, "this heater has no parameters"); }
   virtual Outcome param_discard() { return Outcome::refuse(Result::NOT_SUPPORTED, "this heater has no parameters"); }
   // What the parameter does (PARAM_HELP_MAX bytes at most), "" if not known (yet).
   virtual const char *param_help(uint16_t id) const {

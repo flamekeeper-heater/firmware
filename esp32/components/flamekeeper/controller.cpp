@@ -233,11 +233,10 @@ Outcome Controller::param_set(uint16_t id, int32_t value, Source source) {
   return this->finish_("parameter", source, this->heater_->param_set(id, value));
 }
 
-Outcome Controller::param_apply(bool save, Source source) {
+Outcome Controller::param_apply(Source source) {
   if (!(this->heater_->capabilities() & cap::PARAMETERS))
-    return this->finish_(save ? "save parameters" : "apply parameters", source,
-                         Outcome::refuse(Result::NOT_SUPPORTED, "this heater has no parameters"));
-  return this->finish_(save ? "save parameters" : "apply parameters", source, this->heater_->param_apply(save));
+    return this->finish_("save parameters", source, Outcome::refuse(Result::NOT_SUPPORTED, "this heater has no parameters"));
+  return this->finish_("save parameters", source, this->heater_->param_apply());
 }
 
 Outcome Controller::param_discard(Source source) {

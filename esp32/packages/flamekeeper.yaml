@@ -23,7 +23,7 @@ api:
   reboot_timeout: 0s   # never reboot when HA is away; the hub's failsafe stops HA-started runs instead
   actions:
     # A heater parameter by id (the phone app lists them with names; ids and ranges in the
-    # backend's table). Staged: sent with "Apply settings" / "Save settings to heater". Board
+    # backend's table). Staged: sent with "Save settings to heater". Board
     # settings (thermostat, altitude trim) apply at once.
     - action: set_parameter
       variables:
@@ -99,7 +99,7 @@ switch:
     parameter: 0x140
     icon: mdi:snowflake-thermometer
   # A heater parameter (the safety MCU's, expert level in the app: hidden until enabled). Staged:
-  # sent with "Apply settings"; refused while the CO alarm is on.
+  # sent with "Save settings to heater"; refused while the CO alarm is on.
   - platform: flamekeeper
     type: parameter
     name: CO sensor fitted
@@ -380,9 +380,6 @@ button:
   - platform: flamekeeper
     type: stop_prime
     name: Stop priming
-  - platform: flamekeeper
-    type: apply_settings
-    name: Apply settings
   - platform: flamekeeper
     type: save_settings
     name: Save settings to heater

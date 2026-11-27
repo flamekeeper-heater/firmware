@@ -15,7 +15,6 @@ TYPES = {
     "prime": (ButtonKind.PRIME, "mdi:gas-station", None),
     "stop_prime": (ButtonKind.STOP_PRIME, "mdi:gas-station-off", None),
     # Heater parameters: staged by the app or the set_parameter action, sent on Apply / Save.
-    "apply_settings": (ButtonKind.APPLY_SETTINGS, "mdi:upload", ENTITY_CATEGORY_CONFIG),
     "save_settings": (ButtonKind.SAVE_SETTINGS, "mdi:content-save", ENTITY_CATEGORY_CONFIG),
     "discard_settings": (ButtonKind.DISCARD_SETTINGS, "mdi:undo", ENTITY_CATEGORY_CONFIG),
     # The heater's own firmware (the safety MCU). Refused unless it is off.

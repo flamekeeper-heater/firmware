@@ -115,7 +115,7 @@ class LinkClient : public Heater {
   bool param_get(uint16_t id, ParamValue &out) const override;
   const char *param_help(uint16_t id) const override;
   Outcome param_set(uint16_t id, int32_t value) override;
-  Outcome param_apply(bool save) override;
+  Outcome param_apply() override;
   Outcome param_discard() override;
   const char *param_status_text() const override;
   Outcome reset_parameters() override;

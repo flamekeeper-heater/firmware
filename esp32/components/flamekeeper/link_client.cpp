@@ -345,10 +345,8 @@ void LinkClient::on_reply_(const uint8_t *f) {
     case LINK_OP_PARAM_APPLY:
       // The PARAM_GET sweep picks up the new values.
       if (this->apply_events_ || result != LINK_OK)
-        this->emit_(this->out_id_ == 1 ? Event::PARAMS_SAVED : Event::PARAMS_APPLIED,
-                  result == LINK_OK ? Result::OK : Result::REFUSED,
-                  0, result == LINK_OK ? (this->out_id_ == 1 ? "saved in the heater" : "applied")
-                                       : "the heater refused the changes");
+        this->emit_(Event::PARAMS_APPLIED, result == LINK_OK ? Result::OK : Result::REFUSED, 0,
+                    result == LINK_OK ? "saved in the heater" : "the heater refused the changes");
       break;
     default:
       break;
@@ -678,9 +676,9 @@ Outcome LinkClient::param_set(uint16_t id, int32_t value) {
   return o;
 }
 
-Outcome LinkClient::param_apply(bool save) {
-  uint8_t s = save ? 1 : 0;
-  return this->queue_(LINK_OP_PARAM_APPLY, &s, 1, s);
+Outcome LinkClient::param_apply() {
+  const uint8_t save = 1;  // the link's byte stays for the bench console's apply without saving
+  return this->queue_(LINK_OP_PARAM_APPLY, &save, 1);
 }
 
 Outcome LinkClient::param_discard() {

@@ -477,8 +477,7 @@ void FlamekeeperButton::press_action() {
       else if (c.status().mode == Mode::PRIME)
         c.set_mode(Mode::OFF, src);
       break;
-    case ButtonKind::APPLY_SETTINGS: c.param_apply(false, src); break;
-    case ButtonKind::SAVE_SETTINGS: c.param_apply(true, src); break;
+    case ButtonKind::SAVE_SETTINGS: c.param_apply(src); break;
     case ButtonKind::DISCARD_SETTINGS: c.param_discard(src); break;
     case ButtonKind::FIRMWARE_UPDATE: c.start_firmware_update(src); break;
     case ButtonKind::RESET_FAULT: c.reset_fault(src); break;
