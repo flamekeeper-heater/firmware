@@ -943,12 +943,13 @@ below its highest reading of the last 2 minutes on two readings in a row, 10 s a
 out; after a pump cut or a fan rise, which cool it too, those 2 minutes start only 2 minutes after
 the change); and a fading flame (a blocked
 exhaust or air intake, fuel running out, coking), which smokes before any fault: the heat exchanger
-10 °C below its highest reading of the last 5 minutes while the pump and the fan have been steady
+15 °C below its highest reading of the last 5 minutes while the pump and the fan have been steady
 for 10 minutes (no pump cut of more than 0.15 Hz, no fan rise of more than 10 %; it needs the
 pump rate). If it then falls 25 °C below where the fading began, still on steady fuel, the board
 stops the run (source board), raises the alert again with "the heater was stopped" and turns the
 automatic starts off (bit 3), so frost protection or a timer does not start it into the same
-fault. A recovery to within 5 °C ends the fading without a stop. Like the fast fall, the warning
+fault. A recovery to within 7.5 °C ends the fading without a stop. (A heater burning normally at
+steady fuel dips 5-10 °C every half hour or so: the 15 °C line stays clear of those.) Like the fast fall, the warning
 and the stop each need two readings in a row (10 s apart) past their line, so one odd reading
 neither raises the alert nor stops the heater.
 

@@ -585,7 +585,7 @@ const uint32_t BURN_SETTLE_MS = 5 * 60 * 1000;  // heating this long before eith
 const uint32_t STEADY_MS = 10 * 60 * 1000;
 const float FUEL_CUT_HZ = 0.15f;
 const float AIR_RISE = 0.10f;
-const float FADE_WARN_C = 10.0f;
+const float FADE_WARN_C = 15.0f;
 const float FADE_STOP_C = 25.0f;
 }  // namespace
 

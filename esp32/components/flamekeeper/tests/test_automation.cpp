@@ -623,7 +623,7 @@ static void test_fading_flame() {
       if (stopped == 0 && r.c.status().mode == Mode::OFF)
         stopped = i;
     }
-    CHECK(warned >= 8 && warned <= 10);   // 4-5 minutes after it turned, 10 C down
+    CHECK(warned >= 11 && warned <= 12);  // 5-6 minutes after it turned, 15 C down
     CHECK(stopped > warned && stopped <= 15);  // 25 C down from where it was steady
     CHECK(r.count(2) == 2);                // the warning, then the stop
     CHECK(r.alerts[r.alerts.size() - 2].second.find("stopped") != std::string::npos ||
@@ -765,7 +765,7 @@ static void test_fast_fall() {
 }
 
 static void test_fade_two_readings() {
-  // One reading 17 C low with the fuel steady: no warning.
+  // One reading 17 C low with the fuel steady: no warning (one reading past the 15 C line).
   {
     Rig r;
     CHECK(r.c.set_mode(Mode::HEAT, Source::PHONE).accepted());
@@ -776,7 +776,7 @@ static void test_fade_two_readings() {
     burn_steady(r, 187.0f, 10 * MIN);
     CHECK(!(r.c.status().alerts & al::BURN));
   }
-  // A real fade, 0.5 C every 10 s: the warning comes on the reading after the one 10 C down, the
+  // A real fade, 1 C every 10 s: the warning comes on the reading after the one 15 C down, the
   // stop on the reading after the one 25 C under where the fading began; one reading past the stop
   // line on the way does not stop the heater.
   {
@@ -786,7 +786,7 @@ static void test_fade_two_readings() {
     burn_steady(r, 187.0f, 30 * MIN);
     int warned = -1, stopped = -1, odd_at = -1;
     for (int i = 1; i <= 120 && stopped < 0; i++) {
-      float hx = 187.0f - 0.5f * float(i);
+      float hx = 187.0f - 1.0f * float(i);
       if (warned > 0 && odd_at < 0 && hx < 187.0f - 20.0f) {
         odd_at = i;
         hx = 187.0f - 40.0f;  // one odd reading past the stop line
@@ -798,10 +798,52 @@ static void test_fade_two_readings() {
       if (stopped < 0 && r.c.status().mode == Mode::OFF)
         stopped = i;
     }
-    CHECK(warned == 21);              // 10 C down at reading 20, confirmed by reading 21
+    CHECK(warned == 16);              // 15 C down at reading 15, confirmed by reading 16
     CHECK(odd_at > 0 && stopped > odd_at + 1);
-    CHECK(stopped == 51);             // 25 C under 187 at reading 50, confirmed by reading 51
+    CHECK(stopped == 26);             // 25 C under 187 at reading 25, confirmed by reading 26
     CHECK(r.count(2) == 2);           // the warning, then the stop
+  }
+}
+
+// This heater's own dips at a steady 15 %: the heat exchanger 10 C under its top for 46 s, then back
+// (27 Nov, 11:10-11:22). Nothing is raised. A 15 C dip on two readings warns.
+static void test_fade_dips() {
+  {
+    Rig r;
+    CHECK(r.c.set_mode(Mode::HEAT, Source::PHONE).accepted());
+    r.heater_follows();
+    r.h.st.pump_hz = 1.6f;
+    r.h.st.fan_rpm = 1880.0f;
+    for (int i = 0; i < 180; i++) {  // 30 minutes at 197-198, the pump blipping 0.1 Hz
+      r.h.st.heat_exchanger_c = (i % 3) ? 198.0f : 197.0f;
+      r.h.st.pump_hz = (i % 11 == 0) ? 1.7f : 1.6f;
+      r.step(10 * SEC);
+    }
+    r.h.st.pump_hz = 1.6f;
+    static const struct { uint32_t at_s; float c; } TRACE[] = {
+        {0, 198}, {14, 196}, {24, 195}, {53, 194}, {95, 193}, {106, 190}, {111, 189}, {122, 188},
+        {168, 189}, {241, 190}, {361, 193}, {721, 197}, {900, 198}};
+    uint32_t t = 0;
+    for (const auto &p : TRACE) {
+      if (p.at_s > t)
+        r.step((p.at_s - t) * SEC);
+      t = p.at_s;
+      r.h.st.heat_exchanger_c = p.c;
+    }
+    r.step(10 * MIN);
+    CHECK(!(r.c.status().alerts & al::BURN));
+  }
+  {
+    Rig r;
+    CHECK(r.c.set_mode(Mode::HEAT, Source::PHONE).accepted());
+    r.heater_follows();
+    burn_steady(r, 187.0f, 30 * MIN);
+    r.h.st.heat_exchanger_c = 172.0f;  // 15 C under the top
+    r.step(10 * SEC);
+    CHECK(!(r.c.status().alerts & al::BURN));  // one reading
+    r.step(10 * SEC);
+    CHECK(r.c.status().alerts & al::BURN);     // the second
+    CHECK(r.c.status().mode == Mode::HEAT);
   }
 }
 
@@ -1732,6 +1774,7 @@ int main() {
   test_fading_flame();
   test_fast_fall();
   test_fade_two_readings();
+  test_fade_dips();
   test_run_until();
   test_start_at();
   test_bluetooth_room();
