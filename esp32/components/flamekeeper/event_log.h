@@ -14,7 +14,7 @@ enum class LogKind : uint8_t {
   STOP_ASKED = 2,
   STOPPED_BY_ITSELF = 3,  // a = fault
   FAULT = 4,           // a = fault, b = the heater's own code
-  ALERT = 5,           // a = alert bit
+  ALERT = 5,           // a = alert bit, b = the reason (snap:: in automation.h)
   BOARD_STARTED = 6,   // a = reset reason
   DISARMED = 7,
   REARMED = 8,

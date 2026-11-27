@@ -152,6 +152,7 @@ class FlamekeeperHub : public Component {
   ESPPreferenceObject automation_pref_;
   ESPPreferenceObject meter_pref_;
   ESPPreferenceObject start_at_pref_;
+  ESPPreferenceObject snapshot_pref_[Automation::SNAPSHOTS];
   uint32_t last_rtc_ms_{0};
   uint32_t app_clock_ms_{0};
   std::string alerts_text_;

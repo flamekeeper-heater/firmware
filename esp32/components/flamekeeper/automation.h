@@ -43,6 +43,13 @@ struct TimerSpec {
   bool empty() const { return this->flags == 0 && this->duration_min == 0 && this->mode == 0; }
 };
 
+// Why an alert, a heater fault or "stopped by itself" was logged (LOG_DETAIL, an alert record's b).
+namespace snap {
+static const uint8_t HEATER_FAULT = 1, STOPPED_BY_ITSELF = 2, FAST_FALL = 3, FADE_WARNING = 4, FADE_STOP = 5;
+// 6-17: the other alerts, one rule each: 6 + bit for bits 0-1, 5 + bit for bits 3-12.
+inline uint8_t of_alert(uint8_t bit) { return bit < 2 ? uint8_t(6 + bit) : uint8_t(5 + bit); }
+}  // namespace snap
+
 namespace alert {
 static const uint16_t FUEL_LOW = 1u << 0;
 static const uint16_t FUEL_STOP = 1u << 1;
@@ -160,6 +167,30 @@ class Automation {
   void log_event(LogKind kind, Source source, uint16_t a, uint32_t b) { this->log_(kind, source, a, b); }
   EventLog &log() { return this->log_book_; }
 
+  // --- snapshots (PROTOCOL.md, LOG_DETAIL) ---
+  // The readings when an alert, a heater fault or "stopped by itself" was logged; entries logged in
+  // the same step share one. The last SNAPSHOTS, one flash slot each, read on demand: only each
+  // slot's sequence numbers stay in RAM.
+  struct Snapshot {
+    uint32_t check;
+    uint32_t seq;      // the first log entry it belongs to
+    uint8_t n;         // the entries it covers, from seq on
+    uint8_t reason;    // snap:: reason code (the first entry's)
+    uint8_t burn;      // 1: window holds the burn check's samples (reasons 3-5)
+    uint8_t reserved;
+    uint8_t state[39];      // State, as encoded then
+    uint8_t telemetry[45];  // Telemetry, as encoded then
+    uint8_t window[40];     // LOG_DETAIL part 1
+  };
+  static const uint32_t SNAPSHOT_CHECK = 0x534E5031UL;  // "SNP1"
+  static const size_t SNAPSHOTS = 16;
+  using SnapshotLoad = std::function<bool(size_t slot, Snapshot &out)>;
+  using SnapshotSave = std::function<void(size_t slot, const Snapshot &in)>;
+  // The flash slots: reads each slot's sequence numbers once, then loads one only when asked.
+  void use_snapshots(SnapshotLoad &&load, SnapshotSave &&save);
+  // The snapshot holding log entry `seq`, from flash; false if none is kept.
+  bool snapshot(uint32_t seq, Snapshot &out) const;
+
   // --- Bluetooth thermometers ---
   RoomSensors &sensors() { return this->sensors_; }
   void sensor_use(const uint8_t address[6], ThermoKind kind);
@@ -211,7 +242,8 @@ class Automation {
   // Why a start is refused now (low fuel, low battery, CO), or ok.
   Outcome start_check_() const;
   void set_alert_(uint16_t bit, bool on, const char *text);
-  void raise_(uint16_t bit, const char *text);
+  void raise_(uint16_t bit, const char *text, uint8_t reason = 0);  // 0: the bit's own rule
+  void snapshot_(uint32_t seq, uint8_t reason);
   // Starts a run as asked; false when it was refused (then disarmed, unless it only waits for the
   // cooldown: *wait).
   bool start_(Source source, Mode mode, HeatMode heat_mode, uint8_t power, float target_c, bool *wait);
@@ -295,6 +327,12 @@ class Automation {
   // log
   EventLog log_book_;
   uint32_t log_saved_ms_{0};
+  SnapshotLoad snap_load_;
+  SnapshotSave snap_save_;
+  uint32_t snap_seq_[SNAPSHOTS]{};  // each slot's first entry (0: empty)
+  uint8_t snap_n_[SNAPSHOTS]{};
+  int snap_last_{-1};               // the slot written last, and the step it was written in
+  uint32_t snap_last_ms_{0};
 
   uint32_t meter_saved_ms_{0};
   std::function<void(const Maintenance &)> maint_cb_;

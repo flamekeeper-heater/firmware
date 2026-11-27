@@ -643,6 +643,71 @@ static void records() {
     e.add("log", lo.str());
     record("result, LOG_READ from 2", "result", lg.data(), lg.size(), e);
 
+    // --- a snapshot (LOG_DETAIL): a fast fall, its alert record carrying the reason in b ---
+    {
+      Rig sr;
+      fk::Automation::Snapshot slots[fk::Automation::SNAPSHOTS]{};
+      sr.a.use_snapshots([&](size_t i, fk::Automation::Snapshot &x) { x = slots[i]; return slots[i].check != 0; },
+                        [&](size_t i, const fk::Automation::Snapshot &x) { slots[i] = x; });
+      uint32_t t = 1000;
+      auto tick = [&](uint32_t ms) {
+        for (uint32_t end = t + ms; int32_t(end - t) > 0; t += 500) {
+          sr.c.tick(t, false);
+          sr.a.tick(t);
+        }
+      };
+      CHECK(sr.c.set_mode(fk::Mode::HEAT, fk::Source::PHONE).accepted());
+      sr.h.st.state = fk::HeaterState::HEATING;
+      sr.h.st.pump_hz = NAN;
+      sr.h.st.heat_exchanger_c = 187.0f;
+      tick(30 * 60 * 1000);
+      while (!(sr.c.status().alerts & fk::alert::BURN)) {
+        sr.h.st.heat_exchanger_c -= 4.0f;
+        tick(10000);
+      }
+      const uint32_t seq = sr.a.log().newest();
+      const uint8_t s0 = uint8_t(seq), s1 = uint8_t(seq >> 8), s2 = uint8_t(seq >> 16), s3 = uint8_t(seq >> 24);
+      Bytes alr = sr.run({51, ble::op::LOG_READ, s0, s1, s2, s3});
+      CHECK(alr[2] == 0 && alr.size() == 3 + 5 + 16 && alr[3 + 5 + 8] == uint8_t(fk::LogKind::ALERT));
+      Obj ar;
+      ar.add("seq", num(seq)).add("kind", "5").add("a", "2").add("b", num(fk::snap::FAST_FALL));
+      Obj ea = result_expect(alr);
+      ea.add("record", ar.str());
+      record("result, LOG_READ of a burn alert (b = reason 3, fast fall)", "result", alr.data(), alr.size(), ea);
+
+      Bytes c0 = {52, ble::op::LOG_DETAIL, s0, s1, s2, s3, 0};
+      Obj ce;
+      ce.add("requestId", "52").add("opcode", num(ble::op::LOG_DETAIL)).add("args", q(hex(c0.data() + 2, 5)));
+      record("command LOG_DETAIL, part 0", "command", c0.data(), c0.size(), ce);
+      Bytes p0 = sr.run(c0);
+      CHECK(p0[2] == 0 && p0.size() == 3 + 89);
+      Obj d0;
+      d0.add("seq", num(seq)).add("reason", num(p0[7])).add("state", q(hex(p0.data() + 8, ble::STATE_SIZE)))
+          .add("telemetry", q(hex(p0.data() + 8 + ble::STATE_SIZE, ble::TELEMETRY_SIZE)));
+      Obj e0 = result_expect(p0);
+      e0.add("snapshot", d0.str());
+      record("result, LOG_DETAIL part 0 (the readings)", "result", p0.data(), p0.size(), e0);
+
+      Bytes p1 = sr.run({53, ble::op::LOG_DETAIL, s0, s1, s2, s3, 1});
+      CHECK(p1[2] == 0 && p1.size() == 3 + 40);
+      const uint8_t *w = p1.data() + 3;
+      std::string below = "[";
+      for (int i = 0; i < w[2]; i++)
+        below += (i ? ", " : "") + num(w[3 + i]);
+      below += "]";
+      Obj d1;
+      d1.add("top", num(int16_t(w[0] | (w[1] << 8)))).add("n", num(w[2])).add("below", below)
+          .add("sinceCut", num(w[33])).add("fuelRef", num(w[34])).add("airRef", num(w[35] | (w[36] << 8)))
+          .add("steadyS", num(w[37] | (w[38] << 8)));
+      Obj e1 = result_expect(p1);
+      e1.add("window", d1.str());
+      record("result, LOG_DETAIL part 1 (the burn window)", "result", p1.data(), p1.size(), e1);
+
+      Bytes no = sr.run({54, ble::op::LOG_DETAIL, uint8_t(seq - 1), uint8_t((seq - 1) >> 8), 0, 0, 0});
+      CHECK(no[2] == uint8_t(fk::Result::OUT_OF_RANGE));
+      record("result, LOG_DETAIL refused 12, no readings kept", "result", no.data(), no.size(), result_expect(no));
+    }
+
     fk::Automation::Maintenance m{};
     m.check = fk::Automation::MAINTENANCE_CHECK;
     m.glow_baseline_mohm = 1000;

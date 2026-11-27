@@ -319,6 +319,7 @@ after the previous result:
 | `7C` | BURNOFF_START | u8 minutes, 10-30 | Carbon burn-off button (the length setting), [Carbon burn-off](#carbon-burn-off) |
 | `7D` | RUN_UNTIL | u32 end, UTC Unix seconds (0: no end) | (none), [Run end](#run-end) |
 | `7E` | START_AT | u32 start, UTC Unix seconds (0: cancel), u16 run minutes 1-1440 | (none), [Start at](#start-at) |
+| `7F` | LOG_DETAIL | u32 event log sequence number, u8 part (0 the readings, 1 the burn window) | (none), [Snapshots](#snapshots) |
 | `80` | SENSOR_SCAN | u8 seconds, 5-60 | (none), [Bluetooth thermometers](#bluetooth-thermometers) |
 | `81` | SENSOR_FOUND | u8 index | (none) |
 | `82` | SENSOR_USE | u8[6] address, u8 kind | (none) |
@@ -1079,7 +1080,7 @@ from `first` on (or the oldest kept, if `first` is older). Record, 16 bytes:
 | 2 | stop asked | | |
 | 3 | the heater stopped by itself | fault (0 none) | |
 | 4 | heater fault | fault | the heater's own code |
-| 5 | alert | alert bit | |
+| 5 | alert | alert bit | the reason it was raised ([Snapshots](#snapshots)) |
 | 6 | board started | reset reason (ESP-IDF's code) | |
 | 7 | automatic starts disarmed | | |
 | 8 | automatic starts re-armed | | |
@@ -1091,6 +1092,52 @@ from `first` on (or the oldest kept, if `first` is older). Record, 16 bytes:
 | 14 | relay session | phone key slot | 0 opened, 1 closed |
 
 An app shows unknown kinds as "event n".
+
+### Snapshots
+
+When the board logs an alert (kind 5), a heater fault (kind 4) or "the heater stopped by itself"
+(kind 3), it also keeps a snapshot: why, and the readings at that moment. Entries logged in the same
+step (a heater fault and the alert it raises) share one snapshot. The board keeps the last 16, over
+restarts, written to flash only on those events; a factory reset clears them.
+
+**Reasons** (an alert record's `b`, and a snapshot's reason byte; an app shows an unknown one as
+"reason n"):
+
+| Code | Reason | Code | Reason |
+|---|---|---|---|
+| 1 | a heater fault (alert bit 2) | 10 | timers without the time (bit 5) |
+| 2 | the heater stopped by itself (bit 2) | 11 | frost protection without a room temperature (bit 6) |
+| 3 | the heat exchanger fell fast (bit 2) | 12 | battery low (bit 7) |
+| 4 | the flame is fading: warning (bit 2) | 13 | glow plug drift (bit 8) |
+| 5 | the flame faded: the heater was stopped (bit 2) | 14 | carbon burn-off due (bit 9) |
+| 6 | fuel low (bit 0) | 15 | CO alarm (bit 10) |
+| 7 | fuel too low to run (bit 1) | 16 | CO sensor fault (bit 11) |
+| 8 | automatic starts disarmed (bit 3) | 17 | glow plug type (bit 12) |
+| 9 | the Bluetooth thermometer not heard (bit 4) | | |
+
+`LOG_DETAIL(seq, part)` answers for any log entry a kept snapshot covers; otherwise `12` ("no
+readings were kept for this entry"). Part 0, the readings, 89 bytes:
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | u32 | the first log sequence number the snapshot covers |
+| 4 | u8 | reason, above (the first entry's) |
+| 5 | 39 bytes | [State](#state-1002), as it was then |
+| 44 | 45 bytes | [Telemetry](#telemetry-1003), as it was then |
+
+Part 1, the heat exchanger window the burn check judged, only for reasons 3, 4 and 5 (otherwise
+`12`), 40 bytes:
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | i16 | the window's top, whole °C (`0x8000` none) |
+| 2 | u8 | n, the samples kept (at most 30, 10 s apart, oldest first) |
+| 3 | u8[30] | each sample, whole °C below the top (255: 255 or more); past n, 0 |
+| 33 | u8 | samples since the last fuel cut or air rise (or since heating began), at most 30 |
+| 34 | u8 | the fuel reference, 0.1 Hz (`0xFF` none) |
+| 35 | u16 | the air reference, rpm (`0xFFFF` none) |
+| 37 | u16 | seconds the fuel and air had been steady |
+| 39 | u8 | 0 |
 
 ## Board firmware updates
 

@@ -85,6 +85,7 @@ static const uint8_t GLOW_NEW_PLUG = 0x7B;
 static const uint8_t BURNOFF_START = 0x7C;
 static const uint8_t RUN_UNTIL = 0x7D;  // u32 UTC: the current run stops then (0 = no end)
 static const uint8_t START_AT = 0x7E;   // u32 UTC start (0 = cancel), u16 run minutes
+static const uint8_t LOG_DETAIL = 0x7F; // u32 log sequence number, u8 part: the readings kept with it
 static const uint8_t SENSOR_SCAN = 0x80;
 static const uint8_t SENSOR_FOUND = 0x81;
 static const uint8_t SENSOR_USE = 0x82;

@@ -1379,6 +1379,130 @@ static void test_start_at() {
   CHECK(r.c.status().mode == Mode::OFF);
 }
 
+// The snapshot store, in memory: what the hub keeps in 16 flash slots.
+struct SnapStore {
+  fk::Automation::Snapshot slot[fk::Automation::SNAPSHOTS]{};
+  int saves = 0;
+  void use(fk::Automation &a) {
+    a.use_snapshots([this](size_t i, fk::Automation::Snapshot &s) { s = slot[i]; return slot[i].check != 0; },
+                    [this](size_t i, const fk::Automation::Snapshot &s) { slot[i] = s; saves++; });
+  }
+};
+
+static void test_snapshots() {
+  NoLink link;
+  NoBoard board;
+  uint8_t out[ble::RESULT_MAX];
+  // A fast fall: one snapshot, tied to the alert's log entry, its reason in the record's b, the
+  // readings and the window it judged.
+  {
+    Rig r;
+    SnapStore store;
+    store.use(r.a);
+    auto cmd = [&](std::vector<uint8_t> in) { return ble::handle_command(in.data(), in.size(), r.c, link, board, out, sizeof(out)); };
+    CHECK(r.c.set_mode(Mode::HEAT, Source::PHONE).accepted());
+    r.heater_follows();
+    r.h.st.pump_hz = NAN;
+    r.h.st.heat_exchanger_c = 187.0f;
+    r.step(30 * MIN);
+    CHECK_EQ(store.saves, 0);
+    while (!(r.c.status().alerts & al::BURN)) {
+      r.h.st.heat_exchanger_c -= 4.0f;
+      r.step(10 * SEC);
+    }
+    CHECK_EQ(store.saves, 1);
+    const uint32_t seq = r.a.log().newest();
+    fk::LogRecord rec;
+    CHECK(r.a.log().read(seq, &rec, 1) == 1 && rec.kind == uint8_t(fk::LogKind::ALERT) && rec.a == 2 &&
+          rec.b == fk::snap::FAST_FALL);
+    const uint8_t s0 = uint8_t(seq), s1 = uint8_t(seq >> 8);
+    size_t n = cmd({1, ble::op::LOG_DETAIL, s0, s1, 0, 0, 0});
+    CHECK_EQ(n, 3u + 89);
+    CHECK(out[2] == 0 && out[3] == s0 && out[4] == s1 && out[7] == fk::snap::FAST_FALL);
+    uint8_t st[ble::STATE_SIZE];
+    fk::Status now_st = r.c.status();
+    ble::encode_state(now_st, st);
+    CHECK(out[8] == st[0] && out[8 + 9] == uint8_t(HeaterState::HEATING));  // State: flags, heater state
+    CHECK(((out[8 + 18] | (out[8 + 19] << 8)) & al::BURN) != 0);           // the alert it raised
+    const int hx_now = int16_t(out[8 + 39] | (out[8 + 40] << 8));          // Telemetry byte 0, 0.1 C
+    CHECK(hx_now == int(std::lround(r.h.st.heat_exchanger_c * 10.0f)));
+    n = cmd({2, ble::op::LOG_DETAIL, s0, s1, 0, 0, 1});
+    CHECK_EQ(n, 3u + 40);
+    CHECK(int16_t(out[3] | (out[4] << 8)) == 187 && out[5] == 30);
+    CHECK(out[3 + 3 + 29] >= 30 && out[3 + 3 + 28] >= 30 && out[3 + 3 + 27] < 30);  // the two readings it took
+    CHECK(out[3 + 34] == 0xFF && out[3 + 35] == 0xFF && out[3 + 36] == 0xFF);       // no pump rate, no fan
+    // Refused cleanly: no snapshot for this entry, a part that does not exist.
+    CHECK(cmd({3, ble::op::LOG_DETAIL, uint8_t(seq - 1), uint8_t((seq - 1) >> 8), 0, 0, 0}) &&
+          out[2] == uint8_t(Result::OUT_OF_RANGE));
+    CHECK(cmd({4, ble::op::LOG_DETAIL, s0, s1, 0, 0, 2}) && out[2] == uint8_t(Result::OUT_OF_RANGE));
+    CHECK(cmd({5, ble::op::LOG_DETAIL, s0, s1, 0, 0}) && out[2] == uint8_t(Result::BAD_LENGTH));
+  }
+  // A heater fault and its alert, logged in one step: one snapshot covers both; no window.
+  {
+    Rig r;
+    SnapStore store;
+    store.use(r.a);
+    auto cmd = [&](std::vector<uint8_t> in) { return ble::handle_command(in.data(), in.size(), r.c, link, board, out, sizeof(out)); };
+    CHECK(r.c.set_mode(Mode::HEAT, Source::PHONE).accepted());
+    r.heater_follows();
+    r.step(MIN);
+    const uint32_t mark = r.a.log().newest();
+    r.h.st.fault = fk::Fault::OVERHEAT;
+    r.step(2 * SEC);
+    CHECK_EQ(store.saves, 2);  // written, then the same slot again for the alert
+    CHECK(r.logged(fk::LogKind::FAULT, mark) == 1 && r.logged(fk::LogKind::ALERT, mark) == 1);
+    const uint32_t last = r.a.log().newest();
+    fk::Automation::Snapshot a{}, b{};
+    CHECK(r.a.snapshot(last, a) && r.a.snapshot(last - 1, b) && a.seq == b.seq && a.n == 2);
+    CHECK(a.reason == fk::snap::HEATER_FAULT && a.burn == 0);
+    CHECK(cmd({1, ble::op::LOG_DETAIL, uint8_t(last), uint8_t(last >> 8), 0, 0, 1}) &&
+          out[2] == uint8_t(Result::OUT_OF_RANGE));
+    fk::LogRecord rec;
+    CHECK(r.a.log().read(last, &rec, 1) == 1 && rec.b == fk::snap::HEATER_FAULT);
+  }
+  // The ring keeps the 16 newest, over a restart (a new Automation on the same store).
+  {
+    Rig r;
+    SnapStore store;
+    store.use(r.a);
+    uint32_t first = 0;
+    for (int i = 0; i < 20; i++) {
+      r.a.clear_alerts(al::BURN);
+      r.h.st.fault = (i % 2) ? fk::Fault::OVERHEAT : fk::Fault::FAN;
+      r.step(SEC);
+      if (i == 0)
+        first = r.a.log().newest();
+      r.h.st.fault = fk::Fault::NONE;
+      r.step(SEC);
+    }
+    fk::Automation::Snapshot s;
+    CHECK(!r.a.snapshot(first, s));
+    CHECK(r.a.snapshot(r.a.log().newest(), s));
+    Rig again;
+    store.use(again.a);
+    int kept = 0;
+    for (size_t i = 0; i < fk::Automation::SNAPSHOTS; i++)
+      kept += store.slot[i].check == fk::Automation::SNAPSHOT_CHECK ? 1 : 0;
+    CHECK_EQ(kept, 16);
+    fk::Automation::Snapshot t;
+    CHECK(again.a.snapshot(store.slot[3].seq, t) && t.seq == store.slot[3].seq);
+  }
+  // Other alerts: the reason is the bit's own rule, in the snapshot and the log record.
+  {
+    Rig r;
+    SnapStore store;
+    store.use(r.a);
+    r.set(0x131, 500);  // a 50 L tank
+    r.set(0x132, 20);
+    CHECK(r.a.tank_set(10, Source::PHONE).accepted());
+    r.step(SEC);
+    fk::Automation::Snapshot s;
+    CHECK(r.a.snapshot(r.a.log().newest(), s));
+    CHECK(s.reason == fk::snap::of_alert(0) || s.reason == fk::snap::of_alert(1));
+    CHECK(fk::snap::of_alert(12) == 17 && fk::snap::of_alert(3) == 8 && fk::snap::of_alert(1) == 7);
+  }
+}
+
 static void test_automation_commands() {
   Rig r;
   NoLink link;
@@ -1621,5 +1745,6 @@ int main() {
   test_co_fault_alerts();
   test_event_log();
   test_automation_commands();
+  test_snapshots();
   return report("automation");
 }

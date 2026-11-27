@@ -93,6 +93,16 @@ void FlamekeeperHub::setup() {
   a.on_save([this](const Automation::Saved &s) { this->automation_pref_.save(&s); });
   a.on_meter_save([this](const FuelMeter::Saved &s) { this->meter_pref_.save(&s); });
   a.on_start_at_save([this](const Automation::StartAt &s) { this->start_at_pref_.save(&s); });
+  // Snapshots: one flash slot each, written (and synced) only when an alert or fault is logged.
+  for (size_t i = 0; i < Automation::SNAPSHOTS; i++)
+    this->snapshot_pref_[i] =
+        global_preferences->make_preference<Automation::Snapshot>(Automation::SNAPSHOT_CHECK + uint32_t(i));
+  a.use_snapshots([this](size_t i, Automation::Snapshot &s) { return this->snapshot_pref_[i].load(&s); },
+                  [this](size_t i, const Automation::Snapshot &s) {
+                    Automation::Snapshot copy = s;
+                    this->snapshot_pref_[i].save(&copy);
+                    global_preferences->sync();
+                  });
   a.on_clock_set([](uint32_t utc) {
     struct timeval tv {};
     tv.tv_sec = time_t(utc);

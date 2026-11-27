@@ -241,6 +241,28 @@ size_t automation_command(uint8_t req, uint8_t opcode, const uint8_t *arg, size_
       }
       return k;
     }
+    case op::LOG_DETAIL: {
+      if (n != 5)
+        return bad();
+      Automation::Snapshot s;
+      if (!a.snapshot(get_u32(arg), s))
+        return result(req, opcode, Result::OUT_OF_RANGE, "no readings were kept for this entry", out, cap);
+      size_t k;
+      if (arg[4] == 0) {
+        k = result(req, opcode, Result::OK, nullptr, out, cap);
+        put_u32(out + k, s.seq);
+        out[k + 4] = s.reason;
+        std::memcpy(out + k + 5, s.state, sizeof(s.state));
+        std::memcpy(out + k + 5 + sizeof(s.state), s.telemetry, sizeof(s.telemetry));
+        return k + 5 + sizeof(s.state) + sizeof(s.telemetry);
+      }
+      if (arg[4] != 1 || !s.burn)
+        return result(req, opcode, Result::OUT_OF_RANGE, "no heat exchanger readings were kept for this entry",
+                      out, cap);
+      k = result(req, opcode, Result::OK, nullptr, out, cap);
+      std::memcpy(out + k, s.window, sizeof(s.window));
+      return k + sizeof(s.window);
+    }
     case op::GLOW_HEALTH: {
       if (n != 0)
         return bad();
@@ -828,6 +850,7 @@ size_t handle_command(const uint8_t *in, size_t len, Controller &c, Link &link, 
     case op::SENSOR_USE:
     case op::SENSOR_STATUS:
     case op::LOG_READ:
+    case op::LOG_DETAIL:
     case op::GLOW_HEALTH:
     case op::GLOW_NEW_PLUG:
     case op::BURNOFF_START:

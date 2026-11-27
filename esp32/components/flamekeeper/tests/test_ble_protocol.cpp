@@ -345,7 +345,7 @@ static void test_commands() {
   CHECK_EQ(r.out[1], ble::op::SET_POWER);
   r.cmd({9, ble::op::SET_POWER, 3, 4});
   CHECK(r.res() == Result::BAD_LENGTH);
-  r.cmd({9, 0x7F});
+  r.cmd({9, 0x05});
   CHECK(r.res() == Result::UNKNOWN_OPCODE);
   CHECK(r.h.calls.empty());
 

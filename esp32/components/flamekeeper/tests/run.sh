@@ -73,6 +73,6 @@ $cxx -I"$MBEDTLS_DIR/include" "$here/test_board_update.cpp" "$src/board_update.c
 $cxx -I"$MBEDTLS_DIR/include" "$here/test_relay.cpp" "$src/relay.cpp" "$src/relay_client.cpp" "$src/access.cpp" "$src/crypto.cpp" "$lib" -o "$out/test_relay"
 "$out/test_relay"
 $cxx -I"$MBEDTLS_DIR/include" "$here/test_push.cpp" "$src/push.cpp" "$src/relay.cpp" "$src/relay_client.cpp" \
-  "$src/access.cpp" "$src/crypto.cpp" "$src/automation.cpp" "$src/ble_thermo.cpp" "$src/controller.cpp" \
+  "$src/access.cpp" "$src/crypto.cpp" "$src/automation.cpp" "$src/ble_protocol.cpp" "$src/ble_thermo.cpp" "$src/controller.cpp" \
   "$src/tuning.cpp" "$src/thermostat.cpp" "$lib" -o "$out/test_push"
 "$out/test_push"

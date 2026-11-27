@@ -1,4 +1,6 @@
 #include "automation.h"
+#include "ble_protocol.h"
+#include "bytes.h"
 
 #include <cmath>
 #include <cstdio>
@@ -125,6 +127,92 @@ Outcome Automation::start_check_() const {
 
 void Automation::log_(LogKind kind, Source source, uint16_t a, uint32_t b) {
   this->log_book_.add(kind, uint8_t(source), a, b, this->utc(this->c_.now()));
+  if (kind == LogKind::ALERT)
+    this->snapshot_(this->log_book_.newest(), uint8_t(b));
+  else if (kind == LogKind::FAULT)
+    this->snapshot_(this->log_book_.newest(), snap::HEATER_FAULT);
+  else if (kind == LogKind::STOPPED_BY_ITSELF)
+    this->snapshot_(this->log_book_.newest(), snap::STOPPED_BY_ITSELF);
+}
+
+// ---------------------------------------------------------------- snapshots
+
+static_assert(sizeof(Automation::Snapshot::state) == ble::STATE_SIZE, "State's size");
+static_assert(sizeof(Automation::Snapshot::telemetry) == ble::TELEMETRY_SIZE, "Telemetry's size");
+
+void Automation::use_snapshots(SnapshotLoad &&load, SnapshotSave &&save) {
+  this->snap_load_ = std::move(load);
+  this->snap_save_ = std::move(save);
+  Snapshot s;
+  for (size_t i = 0; i < SNAPSHOTS; i++) {
+    const bool ok = this->snap_load_ && this->snap_load_(i, s) && s.check == SNAPSHOT_CHECK && s.seq != 0;
+    this->snap_seq_[i] = ok ? s.seq : 0;
+    this->snap_n_[i] = ok ? s.n : 0;
+  }
+}
+
+bool Automation::snapshot(uint32_t seq, Snapshot &out) const {
+  if (seq == 0 || !this->snap_load_)
+    return false;
+  for (size_t i = 0; i < SNAPSHOTS; i++)
+    if (this->snap_seq_[i] != 0 && seq >= this->snap_seq_[i] && seq - this->snap_seq_[i] < this->snap_n_[i])
+      return this->snap_load_(i, out) && out.check == SNAPSHOT_CHECK && out.seq == this->snap_seq_[i];
+  return false;
+}
+
+void Automation::snapshot_(uint32_t seq, uint8_t reason) {
+  if (!this->snap_save_)
+    return;
+  const uint32_t now = this->c_.now();
+  Snapshot s{};
+  int slot = this->snap_last_;
+  // Logged in the same step right after the last one: the same snapshot covers it.
+  const bool more = slot >= 0 && now == this->snap_last_ms_ && this->snap_seq_[slot] != 0 &&
+                    seq == this->snap_seq_[slot] + this->snap_n_[slot] && this->snap_n_[slot] < 255 &&
+                    this->snap_load_ && this->snap_load_(size_t(slot), s) && s.seq == this->snap_seq_[slot];
+  if (more) {
+    s.n++;
+  } else {
+    slot = 0;  // an empty slot, else the oldest
+    for (size_t i = 1; i < SNAPSHOTS && this->snap_seq_[slot] != 0; i++)
+      if (this->snap_seq_[i] == 0 || this->snap_seq_[i] < this->snap_seq_[slot])
+        slot = int(i);
+    s = Snapshot{};
+    s.check = SNAPSHOT_CHECK;
+    s.seq = seq;
+    s.n = 1;
+    s.reason = reason;
+    Status st = this->c_.status();
+    st.alerts = this->alerts_;  // the bit just raised, before the next refresh
+    ble::encode_state(st, s.state);
+    ble::encode_telemetry(st, s.telemetry);
+  }
+  if (!s.burn && reason >= snap::FAST_FALL && reason <= snap::FADE_STOP) {
+    // The window the burn check judged: its top, then each sample as whole degrees below it.
+    s.burn = 1;
+    uint8_t *w = s.window;
+    float top = -1000.0f;
+    for (size_t i = 0; i < this->hx_count_; i++)
+      top = std::max(top, this->hx_window_[i]);
+    const long top_c = this->hx_count_ != 0 ? std::lround(top) : 0x8000;
+    put_u16(w, uint16_t(int16_t(top_c)));
+    w[2] = uint8_t(this->hx_count_);
+    for (size_t i = 0; i < this->hx_count_ && i < 30; i++) {
+      const long below = std::lround(top - this->hx_window_[i]);
+      w[3 + i] = uint8_t(below < 0 ? 0 : (below > 255 ? 255 : below));
+    }
+    w[33] = uint8_t(this->hx_since_cut_);
+    w[34] = std::isfinite(this->fuel_ref_hz_) ? uint8_t(std::min(254L, std::lround(this->fuel_ref_hz_ * 10.0f))) : 0xFF;
+    put_u16(w + 35, std::isfinite(this->air_ref_rpm_) ? uint16_t(std::min(65534L, std::lround(this->air_ref_rpm_)))
+                                                       : uint16_t(0xFFFF));
+    const uint32_t steady_s = this->heating_since_ms_ != 0 ? (now - this->steady_since_ms_) / 1000 : 0;
+    put_u16(w + 37, uint16_t(std::min<uint32_t>(steady_s, 65535)));
+  }
+  this->snap_seq_[slot] = s.seq;
+  this->snap_n_[slot] = s.n;
+  this->snap_last_ = slot;
+  this->snap_last_ms_ = now;
+  this->snap_save_(size_t(slot), s);
 }
 
 // ---------------------------------------------------------------- clock
@@ -276,12 +364,12 @@ void Automation::set_alert_(uint16_t bits, bool on, const char *text) {
   this->raise_(bits, text);
 }
 
-void Automation::raise_(uint16_t bit, const char *text) {
+void Automation::raise_(uint16_t bit, const char *text, uint8_t reason) {
   this->alerts_ |= bit;
   uint16_t index = 0;
   while (index < 15 && !(bit & (1u << index)))
     index++;
-  this->log_(LogKind::ALERT, Source::NONE, index, 0);
+  this->log_(LogKind::ALERT, Source::NONE, index, reason != 0 ? reason : snap::of_alert(uint8_t(index)));
   this->c_.emit_event(Event::ALERT, Result::OK, index, text);
 }
 
@@ -404,7 +492,7 @@ void Automation::step_runs_(uint32_t now, const Status &s) {
       this->log_(LogKind::STOPPED_BY_ITSELF, Source::NONE, uint16_t(s.fault), 0);
       // A fault that has raised its own alert already (step_fault_) is not alerted twice.
       if (s.fault == Fault::NONE || !this->fault_alerted_)
-        this->raise_(alert::BURN, text);
+        this->raise_(alert::BURN, text, snap::STOPPED_BY_ITSELF);
       if (this->auto_run_ != Source::NONE)
         this->disarm_("the heater stopped by itself during an automatic run");
     } else if (this->auto_run_ == Source::FROST && this->person_off_ &&
@@ -471,7 +559,7 @@ void Automation::step_fault_(const Status &s) {
                       fault_name(s.fault), why);
       else
         std::snprintf(text, sizeof(text), "heater fault: %s (%s)", fault_name(s.fault), why);
-      this->raise_(alert::BURN, text);
+      this->raise_(alert::BURN, text, snap::HEATER_FAULT);
     }
     // CO_ALARM and CO_SENSOR: step_co_ raises them. NONE: shown only.
     this->fault_alerted_ = route != FaultAlert::NONE;
@@ -566,7 +654,8 @@ void Automation::step_burn_(uint32_t now, const Status &s) {
     this->fast_low_ = top - hx >= FAST_FALL_C ? uint8_t(this->fast_low_ + 1) : 0;
     if (!this->burn_warned_ && this->fast_low_ >= 2) {
       this->burn_warned_ = true;
-      this->raise_(alert::BURN, "the heat exchanger is cooling while the heater burns: the flame may be failing");
+      this->raise_(alert::BURN, "the heat exchanger is cooling while the heater burns: the flame may be failing",
+                   snap::FAST_FALL);
     }
   }
 
@@ -591,7 +680,8 @@ void Automation::step_burn_(uint32_t now, const Status &s) {
       this->burn_warned_ = true;
       this->raise_(alert::BURN,
                    "the heat exchanger is cooling while the fuel is steady: the flame may be failing. Check the "
-                   "exhaust, fuel and air intake");
+                   "exhaust, fuel and air intake",
+                   snap::FADE_WARNING);
     }
     return;
   }
@@ -608,7 +698,8 @@ void Automation::step_burn_(uint32_t now, const Status &s) {
   this->stop_(Source::BOARD, "the flame was failing");
   this->raise_(alert::BURN,
                "the heater was stopped: its flame was failing. Check the exhaust, fuel and air intake before the "
-               "next start");
+               "next start",
+               snap::FADE_STOP);
   this->disarm_("the heater was stopped because its flame was failing");
 }
 
