@@ -56,12 +56,11 @@ class PushEngine : public PushControl {
   static const uint32_t HOLD_BIT4_MS = 6u * 60u * 60u * 1000u;
   static const uint32_t CO_REPEAT_MS = 5u * 60u * 1000u;
   static const uint8_t CO_REPEATS = 2;  // after the first: 3 in all
-  static const uint32_t WANT_WAIT_MS = 5000;
   static const uint32_t LIVE_GAP_MS = 20000;        // at most one LIVE per 20 s (an end never waits)...
   static const uint32_t LIVE_PROMPT_GAP_MS = 5000;  // ...or 5 s for a start, an important change, or a
                                                     // target, power, kind or run end change
   static const uint32_t LIVE_HEARTBEAT_MS = 120000;  // an update at least this often while a card runs
-  static const int LIVE_ROOM_C10 = 5;                // a room change this big is a change  // after sign-in, wait this long for WANT before sending held pushes
+  static const int LIVE_ROOM_C10 = 5;                // a room change this big is a change
 
   // Kept over restarts: the preferences, bound to the key they were set for.
   struct Saved {
@@ -169,8 +168,6 @@ class PushEngine : public PushControl {
   uint8_t co_repeats_{0};
   Item co_item_{};
   bool app_seen_{false};
-  bool relay_was_up_{false};
-  uint32_t relay_up_ms_{0};
   uint32_t sent_{0};
 
   // live card

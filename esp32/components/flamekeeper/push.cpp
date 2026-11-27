@@ -222,7 +222,7 @@ bool PushEngine::send_(const std::vector<Pending> &items, uint8_t flags, uint32_
   uint8_t n = 0;
   for (int slot = 0; slot < int(relay::SLOTS); slot++) {
     const WifiKey *k = this->access_.app_key(size_t(slot));
-    if (k == nullptr || !(this->relay_.push_mask() & (1u << slot)) || !this->wants_(slot, items))
+    if (k == nullptr || !this->wants_(slot, items))
       continue;
     uint8_t key[relay::PUSH_KEY_SIZE];
     uint8_t nonce[push::NONCE_SIZE];
@@ -262,12 +262,8 @@ void PushEngine::loop(uint32_t now) {
   }
   this->read_log_(now);
 
-  // The relay is ready once signed in and its WANT has come (or a few seconds went by without it).
-  const bool up = this->relay_.authed();
-  if (up && !this->relay_was_up_)
-    this->relay_up_ms_ = now;
-  this->relay_was_up_ = up;
-  const bool ready = up && (this->relay_.push_mask() != 0 || uint32_t(now - this->relay_up_ms_) >= WANT_WAIT_MS);
+  // The relay is ready once signed in (it handles nothing before the AUTH, then ROSTER and PUSH in order).
+  const bool ready = this->relay_.authed();
 
   this->live_loop_(now, ready);
 
@@ -410,10 +406,10 @@ bool PushEngine::live_wants_(int slot, uint8_t source) const {
 
 bool PushEngine::live_send_(uint8_t event, uint8_t flags, uint32_t run_id, const LiveContent &c, uint32_t now) {
   // One plain record for every phone it is for (the relay passes it on to their cards unread).
-  const uint8_t masks = uint8_t(this->relay_.live_mask() | this->relay_.startable_mask());
+  // The relay drops the slots without a card token itself.
   uint8_t slots = 0;
   for (int slot = 0; slot < int(relay::SLOTS); slot++)
-    if ((masks & (1u << slot)) && this->access_.app_key(size_t(slot)) != nullptr && this->live_wants_(slot, c.source))
+    if (this->access_.app_key(size_t(slot)) != nullptr && this->live_wants_(slot, c.source))
       slots |= uint8_t(1u << slot);
   if (slots != 0) {
     uint8_t m[LIVE_HEADER_SIZE + push::LIVE_RECORD_SIZE];

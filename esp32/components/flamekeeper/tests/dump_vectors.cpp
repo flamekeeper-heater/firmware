@@ -905,7 +905,6 @@ static std::string relay_vectors() {
   uint8_t close[5];
   rl::encode_close(1, 4001, close);
   const uint8_t open[4] = {0, 4, 1, 2};
-  const uint8_t want[5] = {0, 8, 0x04, 0x04, 0x04};  // push, live card, startable: slot 2
 
   // A push: fuel low (bit 0, class 1), coalesced with "no clock" (bit 5), to the phone in slot 2.
   fk::Status s;
@@ -1039,7 +1038,6 @@ static std::string relay_vectors() {
       .add("boardIdHex", q(hex(g.id(), 16))).add("boardId", q(id))
       .add("authSignedBytes", q(hex(sb, sbn)))
       .add("roster", q(hex(roster, rn))).add("open", q(hex(open, 4))).add("close", q(hex(close, 5)))
-      .add("want", q(hex(want, 5)))
       .add("pushPayload", q(hex(payload, pn))).add("pushNonce", q(hex(nonce, 12)))
       .add("pushClass", "1").add("pushBlob", q(hex(blob, bn))).add("pushMessage", q(hex(push)))
       .add("pushPrefsCommand", q(hex(prefs_cmd))).add("pushPrefsResult", q(hex(prefs_res)))

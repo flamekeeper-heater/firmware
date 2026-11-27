@@ -125,7 +125,6 @@ void RelayClient::connected(uint32_t now) {
   this->authed_ = false;
   this->linked_ms_ = now;
   this->roster_sent_ = false;
-  this->push_mask_ = this->live_mask_ = this->startable_mask_ = 0;
 }
 
 void RelayClient::fail_(uint32_t now, uint32_t wait_ms) {
@@ -145,7 +144,6 @@ void RelayClient::closed(uint16_t code, uint32_t now) {
   const bool was_authed = this->authed_;
   this->close_all_channels_(relay::CLOSE_NORMAL);
   this->linked_ = this->authed_ = this->trying_ = false;
-  this->push_mask_ = this->live_mask_ = this->startable_mask_ = 0;
   if (!this->on_) {
     this->state_ = RelayState::OFF;
     return;
@@ -211,11 +209,6 @@ void RelayClient::message(const uint8_t *data, size_t len, uint32_t now) {
         if (this->ch_.close)
           this->ch_.close(c.channel, c.code);
       }
-      return;
-    case relay::op::WANT:
-      this->push_mask_ = c.push_mask;
-      this->live_mask_ = c.live_mask;
-      this->startable_mask_ = c.startable_mask;
       return;
     default:
       return;

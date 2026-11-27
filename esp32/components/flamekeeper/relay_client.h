@@ -78,9 +78,6 @@ class RelayClient : public RelayControl {
   bool authed() const { return this->authed_; }
   uint32_t seconds_since_connected(uint32_t now) const;
   uint8_t open_channels() const;
-  uint8_t push_mask() const { return this->push_mask_; }
-  uint8_t live_mask() const { return this->live_mask_; }
-  uint8_t startable_mask() const { return this->startable_mask_; }
 
  protected:
   void fail_(uint32_t now, uint32_t wait_ms);
@@ -110,9 +107,6 @@ class RelayClient : public RelayControl {
   uint8_t sent_roster_[relay::SLOTS][KEY_ID_SIZE]{};  // the key ids the last ROSTER described
   bool roster_sent_{false};
   int8_t channel_slot_[relay::CHANNELS + 1]{-1, -1, -1, -1};
-  uint8_t push_mask_{0};
-  uint8_t live_mask_{0};
-  uint8_t startable_mask_{0};
 };
 
 }  // namespace flamekeeper

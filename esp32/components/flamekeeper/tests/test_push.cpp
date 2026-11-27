@@ -56,13 +56,12 @@ struct Rig {
     relay.set(true, nullptr, 0);
     step(0);
   }
-  void relay_up(uint8_t want, uint8_t live = 0, uint8_t startable = 0) {
+  // The relay connects and the board signs in: ready at once.
+  void relay_up() {
     relay.connected(now);
     std::vector<uint8_t> ch = {0, 1};
     ch.resize(34, 9);
     relay.message(ch.data(), ch.size(), now);
-    const uint8_t w[5] = {0, 8, want, live, startable};
-    relay.message(w, 5, now);
   }
   // The LIVE messages sent since index `from`.
   std::vector<std::vector<uint8_t>> lives(size_t from = 0) const {
@@ -144,7 +143,7 @@ static uint32_t u32(const uint8_t *p) { return uint32_t(p[0]) | uint32_t(p[1]) <
 
 static void test_alert_reaches_each_phone() {
   Rig r;
-  r.relay_up(0x03);  // both phones registered
+  r.relay_up();
   r.step(SEC);
   size_t mark = r.sent.size();
   r.h.st.co_state = uint8_t(fk::CoState::ALARM);  // CO alarm: bit 10, class 3
@@ -173,7 +172,7 @@ static void test_alert_reaches_each_phone() {
 
 static void test_prefs_and_filters() {
   Rig r;
-  r.relay_up(0x03);
+  r.relay_up();
   // Phone 1 turns notifications off; phone 0 drops the burn alert (bit 2).
   fk::PushPrefs off;
   off.flags = 0;
@@ -203,12 +202,13 @@ static void test_prefs_and_filters() {
   r.h.st.answering = true;
   r.step(5 * SEC);
   CHECK(r.pushes(mark).empty());  // nobody wants it
-  // The CO alarm still goes to both.
+  // The CO alarm still goes to every phone with a key, all three (the relay drops those without a
+  // device token).
   r.h.st.fault = fk::Fault::NONE;
   r.h.st.co_state = uint8_t(fk::CoState::ALARM);
   r.step(5 * SEC);
   auto ps = r.pushes(mark);
-  CHECK(ps.size() == 1 && ps[0][3] == 2);
+  CHECK(ps.size() == 1 && ps[0][3] == 3);
   // A new key for phone 0 starts from the defaults.
   const uint8_t p0[6] = {1, 1, 1, 1, 1, 1};
   r.access.issue_app_key(p0);
@@ -218,7 +218,7 @@ static void test_prefs_and_filters() {
 
 static void test_coalescing_and_hold_off() {
   Rig r;
-  r.relay_up(0x01);
+  r.relay_up();
   r.step(SEC);
   size_t mark = r.sent.size();
   // Two alerts within 3 s: one push, led by the more urgent.
@@ -242,7 +242,7 @@ static void test_coalescing_and_hold_off() {
 
 static void test_co_repeats() {
   Rig r;
-  r.relay_up(0x01);
+  r.relay_up();
   r.step(SEC);
   size_t mark = r.sent.size();
   r.h.st.co_state = uint8_t(fk::CoState::ALARM);
@@ -269,7 +269,7 @@ static void test_held_while_relay_down() {
   CHECK(r.pushes().empty());
   // Back: the held alert goes out, flagged delayed, with its original record.
   uint32_t seq_at = r.a.log().newest();
-  r.relay_up(0x01);
+  r.relay_up();
   r.step(SEC);
   auto ps = r.pushes();
   CHECK(ps.size() == 1);
@@ -284,14 +284,14 @@ static void test_held_while_relay_down() {
   q.step(10 * SEC);
   q.h.st.co_state = uint8_t(fk::CoState::OK);
   q.step(2 * SEC);
-  q.relay_up(0x01);
+  q.relay_up();
   q.step(SEC);
   CHECK(q.pushes().empty());
 }
 
 static void test_events() {
   Rig r;
-  r.relay_up(0x01);
+  r.relay_up();
   fk::PushPrefs p;
   p.events = (1u << fk::push::EV_STARTED_BY_OTHER) | (1u << fk::push::EV_STOPPED_BY_OTHER);
   CHECK(r.push.prefs_set(0, p).accepted());
@@ -339,7 +339,7 @@ static void test_payload_layout() {
 // urgent burn problem carrying the fault (7) and the reason (7).
 static void test_fan_retry_not_pushed() {
   Rig r;
-  r.relay_up(0x01);
+  r.relay_up();
   r.step(SEC);
   CHECK(r.c.set_mode(Mode::FAN, Source::PHONE).accepted());
   r.h.st.state = HeaterState::FAN_ONLY;
@@ -370,7 +370,7 @@ static void test_fan_retry_not_pushed() {
 // other changes 20 s after, else every 120 s) and its end, to the phones whose preferences take the run, one plain record with the phones it is for.
 static void test_live_card() {
   Rig r;
-  r.relay_up(0x03, 0x00, 0x03);  // both phones can be sent a card's start
+  r.relay_up();
   r.step(6 * SEC);
   // A run from Home Assistant: others' runs are off by default, so no card.
   size_t mark = r.sent.size();
@@ -465,7 +465,7 @@ static void test_live_card() {
 
 static void test_live_card_rules() {
   Rig r;
-  r.relay_up(0x03, 0x01, 0x02);
+  r.relay_up();
   r.step(6 * SEC);
   // A timer's run: the board's runs are on by default, so both phones.
   size_t mark = r.sent.size();
@@ -518,7 +518,7 @@ static void test_live_card_rules() {
 
 static void test_live_card_relay_down() {
   Rig r;
-  r.relay_up(0x01, 0x01, 0x01);
+  r.relay_up();
   r.step(6 * SEC);
   r.phone_start(0);
   r.step(SEC);
@@ -529,7 +529,7 @@ static void test_live_card_relay_down() {
   r.step(300 * SEC);
   r.link_ok = true;
   size_t mark = r.sent.size();
-  r.relay_up(0x01, 0x01, 0x01);
+  r.relay_up();
   r.step(SEC);
   auto ls = r.lives(mark);
   CHECK(ls.size() == 1 && ls[0][2] == fk::push::LIVE_UPDATE && ls[0][3] == fk::push::LIVE_IMPORTANT);
@@ -541,7 +541,7 @@ static void test_live_card_relay_down() {
   r.step(30 * SEC);
   r.link_ok = true;
   mark = r.sent.size();
-  r.relay_up(0x01, 0x01, 0x01);
+  r.relay_up();
   r.step(SEC);
   ls = r.lives(mark);
   CHECK(ls.size() == 1 && ls[0][2] == fk::push::LIVE_END);

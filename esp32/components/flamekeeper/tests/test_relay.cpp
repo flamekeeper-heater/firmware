@@ -164,8 +164,7 @@ static void test_messages() {
   CHECK(!rl::parse_control(open_bad, 4, k) && !rl::parse_control(open_slot, 4, k) && !rl::parse_control(open_zero, 4, k));
   CHECK(rl::parse_control(c, 5, k) && k.op == rl::op::CLOSE && k.channel == 2 && k.code == 4001);
   const uint8_t want[] = {0, 8, 0x05, 0x01, 0x03};
-  CHECK(rl::parse_control(want, 5, k) && k.push_mask == 5 && k.live_mask == 1 && k.startable_mask == 3);
-  CHECK(!rl::parse_control(want, 4, k));  // the three masks, always
+  CHECK(!rl::parse_control(want, 5, k));  // op 8 (WANT, no longer sent): ignored
   const uint8_t not_control[] = {1, 4, 1, 2}, unknown[] = {0, 0x7F};
   CHECK(!rl::parse_control(not_control, 4, k) && !rl::parse_control(unknown, 2, k));
 
@@ -248,9 +247,6 @@ static void test_client() {
   CHECK(!r.rc.send_frame(2, f, 2));  // no phone there
   r.msg({2, 0x11});                  // nor frames from there
   CHECK(r.events.back() == "frame 1 2");
-  // WANT.
-  r.msg({0, 8, 0x01, 0x00, 0x02});
-  CHECK(r.rc.push_mask() == 1 && r.rc.live_mask() == 0 && r.rc.startable_mask() == 2);
   // A second phone key: a new roster on the next pass.
   size_t before = r.sent.size();
   const uint8_t phone2[6] = {8, 8, 8, 8, 8, 8};
