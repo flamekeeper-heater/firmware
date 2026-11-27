@@ -947,7 +947,9 @@ for 10 minutes (no pump cut of more than 0.15 Hz, no fan rise of more than 10 %;
 pump rate). If it then falls 25 °C below where the fading began, still on steady fuel, the board
 stops the run (source board), raises the alert again with "the heater was stopped" and turns the
 automatic starts off (bit 3), so frost protection or a timer does not start it into the same
-fault. A recovery to within 5 °C ends the fading without a stop.
+fault. A recovery to within 5 °C ends the fading without a stop. Like the fast fall, the warning
+and the stop each need two readings in a row (10 s apart) past their line, so one odd reading
+neither raises the alert nor stops the heater.
 
 ### Bluetooth thermometers
 

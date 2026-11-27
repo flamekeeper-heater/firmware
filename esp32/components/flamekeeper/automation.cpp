@@ -506,7 +506,7 @@ void Automation::step_burn_(uint32_t now, const Status &s) {
     this->heating_since_ms_ = 0;
     this->hx_count_ = 0;
     this->hx_since_cut_ = 0;
-    this->fast_low_ = 0;
+    this->fast_low_ = this->fade_low_ = 0;
     this->fading_from_c_ = NAN;
     return;
   }
@@ -534,7 +534,7 @@ void Automation::step_burn_(uint32_t now, const Status &s) {
     this->steady_since_ms_ = now;
     this->fading_from_c_ = NAN;
     this->hx_since_cut_ = 0;
-    this->fast_low_ = 0;
+    this->fast_low_ = this->fade_low_ = 0;
   }
 
   if (this->hx_count_ != 0 && uint32_t(now - this->hx_last_ms_) < BURN_SAMPLE_MS)
@@ -570,16 +570,22 @@ void Automation::step_burn_(uint32_t now, const Status &s) {
     }
   }
 
-  // The flame fades: slowly, with the fuel and the air steady. Needs the pump rate.
+  // The flame fades: slowly, with the fuel and the air steady. Needs the pump rate. Each line (the
+  // warning 10 C under the top, the stop 25 C under where the fading began) needs two readings in a
+  // row past it: one odd reading neither warns nor stops the heater.
   if (!std::isfinite(s.pump_hz) || s.pump_hz <= 0.0f || uint32_t(now - this->steady_since_ms_) < STEADY_MS ||
-      this->hx_count_ < N)
+      this->hx_count_ < N) {
+    this->fade_low_ = 0;
     return;
+  }
   float top = hx;
   for (size_t i = 0; i < this->hx_count_; i++)
     top = std::max(top, this->hx_window_[i]);
   if (!std::isfinite(this->fading_from_c_)) {
-    if (top - hx < FADE_WARN_C)
+    this->fade_low_ = top - hx >= FADE_WARN_C ? uint8_t(this->fade_low_ + 1) : 0;
+    if (this->fade_low_ < 2)
       return;
+    this->fade_low_ = 0;
     this->fading_from_c_ = top;
     if (!this->burn_warned_) {
       this->burn_warned_ = true;
@@ -591,10 +597,13 @@ void Automation::step_burn_(uint32_t now, const Status &s) {
   }
   if (hx > this->fading_from_c_ - FADE_WARN_C / 2.0f) {  // it recovered
     this->fading_from_c_ = NAN;
+    this->fade_low_ = 0;
     return;
   }
-  if (this->fading_from_c_ - hx < FADE_STOP_C || this->stop_asked_)
+  this->fade_low_ = this->fading_from_c_ - hx >= FADE_STOP_C ? uint8_t(this->fade_low_ + 1) : 0;
+  if (this->fade_low_ < 2 || this->stop_asked_)
     return;
+  this->fade_low_ = 0;
   this->fading_from_c_ = NAN;
   this->stop_(Source::BOARD, "the flame was failing");
   this->raise_(alert::BURN,

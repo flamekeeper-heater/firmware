@@ -764,6 +764,47 @@ static void test_fast_fall() {
   }
 }
 
+static void test_fade_two_readings() {
+  // One reading 17 C low with the fuel steady: no warning.
+  {
+    Rig r;
+    CHECK(r.c.set_mode(Mode::HEAT, Source::PHONE).accepted());
+    r.heater_follows();
+    burn_steady(r, 187.0f, 30 * MIN);
+    r.h.st.heat_exchanger_c = 170.0f;
+    r.step(10 * SEC);
+    burn_steady(r, 187.0f, 10 * MIN);
+    CHECK(!(r.c.status().alerts & al::BURN));
+  }
+  // A real fade, 0.5 C every 10 s: the warning comes on the reading after the one 10 C down, the
+  // stop on the reading after the one 25 C under where the fading began; one reading past the stop
+  // line on the way does not stop the heater.
+  {
+    Rig r;
+    CHECK(r.c.set_mode(Mode::HEAT, Source::PHONE).accepted());
+    r.heater_follows();
+    burn_steady(r, 187.0f, 30 * MIN);
+    int warned = -1, stopped = -1, odd_at = -1;
+    for (int i = 1; i <= 120 && stopped < 0; i++) {
+      float hx = 187.0f - 0.5f * float(i);
+      if (warned > 0 && odd_at < 0 && hx < 187.0f - 20.0f) {
+        odd_at = i;
+        hx = 187.0f - 40.0f;  // one odd reading past the stop line
+      }
+      r.h.st.heat_exchanger_c = hx;
+      r.step(10 * SEC);
+      if (warned < 0 && (r.c.status().alerts & al::BURN))
+        warned = i;
+      if (stopped < 0 && r.c.status().mode == Mode::OFF)
+        stopped = i;
+    }
+    CHECK(warned == 21);              // 10 C down at reading 20, confirmed by reading 21
+    CHECK(odd_at > 0 && stopped > odd_at + 1);
+    CHECK(stopped == 51);             // 25 C under 187 at reading 50, confirmed by reading 51
+    CHECK(r.count(2) == 2);           // the warning, then the stop
+  }
+}
+
 static void test_run_until() {
   Rig r;
   // Not running: refused.
@@ -1566,6 +1607,7 @@ int main() {
   test_burn_alerts();
   test_fading_flame();
   test_fast_fall();
+  test_fade_two_readings();
   test_run_until();
   test_start_at();
   test_bluetooth_room();

@@ -276,6 +276,7 @@ class Automation {
   float fading_from_c_{NAN};   // the level the fading flame was warned from; NAN = not fading
   size_t hx_since_cut_{0};     // samples since the last fuel cut or air rise (or heating began), up to 30
   uint8_t fast_low_{0};        // samples in a row 30 C or more under the fast window's top
+  uint8_t fade_low_{0};        // samples in a row past the fading line in play (the warning's, then the stop's)
 
   // battery
   uint32_t battery_low_since_ms_{0};
