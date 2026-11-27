@@ -261,8 +261,9 @@ void PushEngine::loop(uint32_t now) {
   }
   this->read_log_(now);
 
-  // The relay is ready once signed in (it handles nothing before the AUTH, then ROSTER and PUSH in order).
-  const bool ready = this->relay_.authed();
+  // The relay is ready once its sign-in has stood a few seconds (it handles nothing before the AUTH,
+  // then ROSTER and PUSH in order; a refused AUTH closes the socket at once, and would lose them).
+  const bool ready = this->relay_.accepted(now);
 
   this->live_loop_(now, ready);
 

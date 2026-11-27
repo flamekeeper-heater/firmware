@@ -188,6 +188,7 @@ void RelayClient::message(const uint8_t *data, size_t len, uint32_t now) {
       size_t n = relay::encode_auth(this->id_, c.challenge, this->host(), this->random_, m, sizeof(m));
       if (n != 0 && this->io_.send && this->io_.send(m, n)) {
         this->authed_ = true;
+        this->authed_ms_ = now;
         this->state_ = RelayState::CONNECTED;
         this->send_roster_();
       }

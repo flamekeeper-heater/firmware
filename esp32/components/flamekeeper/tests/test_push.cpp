@@ -56,12 +56,17 @@ struct Rig {
     relay.set(true, nullptr, 0);
     step(0);
   }
-  // The relay connects and the board signs in: ready at once.
-  void relay_up() {
+  // The relay connects and the board answers its CHALLENGE.
+  void sign_in() {
     relay.connected(now);
     std::vector<uint8_t> ch = {0, 1};
     ch.resize(34, 9);
     relay.message(ch.data(), ch.size(), now);
+  }
+  // ...and the relay keeps the socket open: ready once the sign-in has stood.
+  void relay_up() {
+    sign_in();
+    step(fk::RelayClient::SIGN_IN_SETTLE_MS);
   }
   // The LIVE messages sent since index `from`.
   std::vector<std::vector<uint8_t>> lives(size_t from = 0) const {
@@ -287,6 +292,22 @@ static void test_held_while_relay_down() {
   q.relay_up();
   q.step(SEC);
   CHECK(q.pushes().empty());
+
+  // A refused sign-in (the relay closes right after AUTH): nothing held is sent or dropped.
+  Rig s;
+  s.step(SEC);
+  s.h.st.fault = fk::Fault::OVERHEAT;
+  s.step(10 * SEC);
+  s.sign_in();
+  s.step(2 * SEC);
+  CHECK(s.relay.authed() && s.pushes().empty());
+  s.relay.closed(4002, s.now);
+  s.step(SEC);
+  CHECK(s.pushes().empty());
+  s.step(60 * SEC);  // the board dials again and the relay takes it this time
+  s.relay_up();
+  s.step(SEC);
+  CHECK(s.pushes().size() == 1);
 }
 
 static void test_events() {

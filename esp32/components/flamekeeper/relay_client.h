@@ -27,6 +27,9 @@ class RelayClient : public RelayControl {
   static const uint32_t BACKOFF_MAX_MS = 300000;
   static const uint32_t BACKOFF_RESET_MS = 600000;  // connected this long: start again at 2 s
   static const uint32_t REPLACED_WAIT_MS = 60000;   // close 4001: another board took this id
+  // The relay answers nothing to a good AUTH and closes at once on a bad one (4002): open this long
+  // after AUTH, the sign-in stands, and what must not be lost (held pushes, an owed card end) may go.
+  static const uint32_t SIGN_IN_SETTLE_MS = 5000;
 
   // What the socket side does for us.
   struct Io {
@@ -76,6 +79,9 @@ class RelayClient : public RelayControl {
   // RELAY_STATUS and the Home Assistant sensor.
   RelayState state() const { return this->state_; }
   bool authed() const { return this->authed_; }
+  bool accepted(uint32_t now) const {
+    return this->authed_ && uint32_t(now - this->authed_ms_) >= SIGN_IN_SETTLE_MS;
+  }
   uint32_t seconds_since_connected(uint32_t now) const;
   uint8_t open_channels() const;
 
@@ -100,6 +106,7 @@ class RelayClient : public RelayControl {
   bool trying_{false};     // connect() asked, waiting for connected() or closed()
   bool no_answer_{false};  // the last try got no connection at all (state 4 while retrying)
   uint32_t linked_ms_{0};
+  uint32_t authed_ms_{0};  // when AUTH went out
   bool ever_connected_{false};
   uint32_t last_connected_ms_{0};
   uint32_t next_try_ms_{0};
