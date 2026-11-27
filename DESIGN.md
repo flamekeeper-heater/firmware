@@ -347,8 +347,8 @@ erased. DETAIL carries the state and a rough ppm reading.
   `FUZZ_ITERS`; libFuzzer when the compiler has it), and `test_soak --shrink SEED` cuts a failing
   seed down to a regression test.
 - `common/*/tests/run.sh`: the link codec and the CO alarm.
-- `stm32/tools/check_registers.py`: the driver's register map (`stm32/hal/`: bases, offsets, every
-  bit it writes, IRQ numbers, the flash layout) against ST's SVD for the STM32G030; usage at its top.
+- `stm32/tools/check_named_bits.sh` (run by `stm32/tests/run.sh`): every register write in the
+  driver names its bits, from ST's device header (`stm32/hal/st/`) or `stm32/hal/g030_fields.h`.
 - `esp32/tools/boot_test.sh`: boots a compiled image in Espressif's QEMU and fails on a crash or a
   restart. A C6 build checks its own signature at start-up, so pass the signed app with `--app`.
   The C6's log goes to USB Serial/JTAG, which QEMU does not emulate, so a clean C6 run ends with

@@ -2,7 +2,7 @@
 // against the ESP32 updater's own rule for the option bytes it writes (stm32_boot.h).
 #include <cstdio>
 
-// The ESP32's header first: the register macros in stm32g030.h would shadow its names.
+// The ESP32's header first: the register macros in ST's device header would shadow its names.
 #include "../../esp32/components/flamekeeper/stm32_boot.h"
 #include "../hal/hal_stm32g0.h"
 #include "../../common/test/check.h"
@@ -15,16 +15,16 @@ static void test_optr_bits() {
   CHECK(FLASH_OPTR_IWDG_SW == G030_OPTR_IWDG_SW);
   CHECK(FLASH_OPTR_IWDG_STOP == G030_OPTR_IWDG_STOP);
   CHECK(FLASH_OPTR_IWDG_STDBY == G030_OPTR_IWDG_STDBY);
-  CHECK(FLASH_OPTR_NBOOT_SEL == G030_OPTR_NBOOT_SEL);
-  CHECK(FLASH_OPTR_NBOOT1 == G030_OPTR_NBOOT1);
-  CHECK(FLASH_OPTR_NBOOT0 == G030_OPTR_NBOOT0);
+  CHECK(FLASH_OPTR_nBOOT_SEL == G030_OPTR_NBOOT_SEL);
+  CHECK(FLASH_OPTR_nBOOT1 == G030_OPTR_NBOOT1);
+  CHECK(FLASH_OPTR_nBOOT0 == G030_OPTR_NBOOT0);
 }
 
 // The MCU accepts exactly what the updater would leave alone, over every combination of the six
 // bits and a few values of the rest; OPTVERR fails it whatever the bits.
 static void test_optr_matches_updater() {
-  const uint32_t six = FLASH_OPTR_IWDG_SW | FLASH_OPTR_IWDG_STOP | FLASH_OPTR_IWDG_STDBY | FLASH_OPTR_NBOOT_SEL |
-                       FLASH_OPTR_NBOOT1 | FLASH_OPTR_NBOOT0;
+  const uint32_t six = FLASH_OPTR_IWDG_SW | FLASH_OPTR_IWDG_STOP | FLASH_OPTR_IWDG_STDBY | FLASH_OPTR_nBOOT_SEL |
+                       FLASH_OPTR_nBOOT1 | FLASH_OPTR_nBOOT0;
   const uint32_t rest[] = {0x00000000u, 0xDFFFE1AAu & ~six, 0xFFFFFFFFu & ~six, 0x000000BBu};
   int accepted = 0;
   for (uint32_t r : rest) {
@@ -49,10 +49,10 @@ static void test_optr_examples() {
   CHECK(!hal_optr_wdg1_ok(factory, 0));
   CHECK(hal_optr_wdg1_ok(ok, 0));
   CHECK(g030::optr_required(factory) == ok);
-  CHECK(!hal_optr_wdg1_ok(factory & ~FLASH_OPTR_NBOOT_SEL, 0));  // IWDG_SW still 1
+  CHECK(!hal_optr_wdg1_ok(factory & ~FLASH_OPTR_nBOOT_SEL, 0));  // IWDG_SW still 1
   CHECK(!hal_optr_wdg1_ok(factory & ~FLASH_OPTR_IWDG_SW, 0));    // nBOOT_SEL still 1
-  CHECK(!hal_optr_wdg1_ok(ok & ~FLASH_OPTR_NBOOT1, 0));          // BOOT0 high would boot SRAM
-  CHECK(!hal_optr_wdg1_ok(ok & ~FLASH_OPTR_NBOOT0, 0));
+  CHECK(!hal_optr_wdg1_ok(ok & ~FLASH_OPTR_nBOOT1, 0));          // BOOT0 high would boot SRAM
+  CHECK(!hal_optr_wdg1_ok(ok & ~FLASH_OPTR_nBOOT0, 0));
   CHECK(!hal_optr_wdg1_ok(ok & ~FLASH_OPTR_IWDG_STOP, 0));
   CHECK(!hal_optr_wdg1_ok(ok & ~FLASH_OPTR_IWDG_STDBY, 0));
   CHECK(hal_optr_wdg1_ok(ok, FLASH_SR_EOP));  // other FLASH_SR flags do not matter

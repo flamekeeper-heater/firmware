@@ -6,14 +6,14 @@
 
 #include "../board/board.h"
 #include "../hal/hal_stm32g0.h"
-#include "../hal/stm32g030.h"
+#include "../hal/g030_fields.h"
 #include "console.h"
 
 static board b;
 static console con;
 
 void bringup_sys_reset(void) {
-  SCB_AIRCR = SCB_AIRCR_VECTKEY_KEY | SCB_AIRCR_SYSRESETREQ;
+  SCB->AIRCR = SCB_AIRCR_VECTKEY_KEY | SCB_AIRCR_SYSRESETREQ_Msk;
   for (;;) {
   }
 }
@@ -27,9 +27,9 @@ int main(void) {
   hal_clock_init();
   hal_init();
   console_boot boot;
-  boot.csr = RCC_CSR; /* before hal_reset_reason clears the flags */
-  boot.optr = FLASH_OPTR;
-  boot.flash_sr = FLASH_SR;
+  boot.csr = RCC->CSR; /* before hal_reset_reason clears the flags */
+  boot.optr = FLASH->OPTR;
+  boot.flash_sr = FLASH->SR;
   uint8_t reason = hal_reset_reason();
   uint8_t faults = hal_option_faults();
   uint32_t now = 0;

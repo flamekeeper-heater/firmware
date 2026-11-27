@@ -157,3 +157,4 @@ if [ ! -e "$out/lane1.ok" ] || [ ! -e "$out/lane2.ok" ]; then
   echo "run.sh: FAILED" >&2
   exit 1
 fi
+sh "$here/../tools/check_named_bits.sh" || { echo "run.sh: FAILED" >&2; exit 1; }
